@@ -1,3 +1,7 @@
 pandas
 dash
 matplotlib
+pygad
+numpy
+scikit-learn
+torch
