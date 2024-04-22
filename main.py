@@ -1,5 +1,7 @@
+import copy
 import random
 import sqlite3
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
@@ -47,7 +49,7 @@ class Instance:
     original_protected_attrs: dict
     original_unprotected_attrs: dict
     other_attrs: dict
-    nb_repeat: int = None
+    granularity: int = None
     magnitude: float = None
     epis_uncertainty: float = None
     alea_uncertainty: float = None
@@ -55,7 +57,6 @@ class Instance:
     subgroup_id: str = None
     individual_id: str = None
     case: int = None
-    diff_outcome: float = None
 
     @property
     def nb_protected_attr(self):
@@ -73,9 +74,8 @@ class Instance:
                'case': self.case,
                'alea_uncertainty': self.alea_uncertainty, 'magnitude': self.magnitude,
                'epis_uncertainty': self.epis_uncertainty,
-               'granularity': len(self.original_protected_attrs),
-               'outcome': self.outcome,
-               'diff_outcome': self.diff_outcome}
+               'granularity': self.granularity,
+               'outcome': self.outcome}
         res.update(self.original_protected_attrs)
         res.update(self.original_unprotected_attrs)
         res.update(self.other_attrs)
@@ -144,99 +144,74 @@ class DatasetSchema:
         }
 
     def get_instance_from_discriminated_subgroup(self, subgroup: SubGroup,
-                                                 magnitude, epis_uncertainty, alea_uncertainty, case):
+                                                 subgroup_id,
+                                                 magnitude, granularity, epis_uncertainty, alea_uncertainty, case):
 
         instances = []
-        for i in range(alea_uncertainty * 100):
-            res = subgroup.protected_attr
+        for i in range(int(alea_uncertainty * 100)):
+            res = copy.deepcopy(subgroup.protected_attr)
             res.update(subgroup.unprotected_attr)
-            dgroup_i = hash(frozenset(res.items()))
             res.update(self._generate_other_vars_from_subgroup(subgroup))
 
             protected_attrs = np.array([res[e.name] for e in self.protected_attributes])
             unprotected_attrs = np.array([res[e.name] for e in self.unprotected_attributes])
 
-            outcome = np.concatenate([(magnitude * self.Wt * protected_attrs), (self.Wx * unprotected_attrs)],
-                                     axis=1).sum()
+            def sigmoid(z):
+                return 1 / (1 + np.exp(-z))
+
+            outcome = np.concatenate(
+                [(self.Wt * protected_attrs), (self.Wx * unprotected_attrs)],
+                axis=1).sum()
+            if case ==1:
+                outcome = magnitude*10 + outcome
             outcome = random.gauss(outcome, epis_uncertainty)
+            outcome = sigmoid(outcome)
             instance = Instance(
                 original_protected_attrs=subgroup.protected_attr,
                 original_unprotected_attrs=subgroup.unprotected_attr,
                 other_attrs=self._generate_other_vars_from_subgroup(subgroup),
                 outcome=outcome,
                 magnitude=magnitude,
-                subgroup_id=str(dgroup_i),
-                individual_id=f"{dgroup_i}_{i}",
+                granularity=granularity,
+                alea_uncertainty=alea_uncertainty,
+                epis_uncertainty=epis_uncertainty,
+                subgroup_id=subgroup_id,
+                individual_id=str(i),
                 case=case,
             )
             instances.append(instance)
         return instances
 
     def generate_instances_from_subgroups(self, num_individuals=100):
-        num_individuals = 100
         individuals = []
         for i in range(1, num_individuals + 1):
-            alea_uncertainty = random.uniform(0, 1)
+            alea_uncertainty = random.uniform(0.01, 1)
             epis_uncertainty = random.uniform(0, 1)
             magnitude = random.uniform(0, 1)
+            # magnitude = 0.9
 
             granularity = random.choice(list(range(1, 1 + len(self._get_attributes('protected')))))
             discriminated_sub_group = self.generate_subgroups(granularity)
-
+            subgroup_id = str(uuid4())
             instances1 = self.get_instance_from_discriminated_subgroup(discriminated_sub_group.subgroup1,
-                                                                      magnitude, epis_uncertainty, alea_uncertainty, case=1)
+                                                                       subgroup_id,
+                                                                       magnitude, granularity, epis_uncertainty,
+                                                                       alea_uncertainty,
+                                                                       case=1)
             instances2 = self.get_instance_from_discriminated_subgroup(discriminated_sub_group.subgroup2,
-                                                                      magnitude, epis_uncertainty, alea_uncertainty, case=2)
+                                                                       subgroup_id,
+                                                                       magnitude, granularity, epis_uncertainty,
+                                                                       alea_uncertainty,
+                                                                       case=2)
 
-        for dgroup_i, dgroup in enumerate(discriminated_sub_group):
-            for i in range(1, num_individuals + 1):
-                nb_repeat = i
-                magnitude = 1 - i / num_individuals
-                epis_uncertainty = 1 - i / num_individuals
+            df_temp = pd.DataFrame([e.to_values() for e in instances1 + instances2])
+            df_temp.sort_values(by=['subgroup_id', 'individual_id', 'case'], inplace=True)
+            df_temp['diff_outcome_ind'] = df_temp.groupby(['subgroup_id', 'individual_id'])[
+                'outcome'].diff().abs().bfill()
+            df_temp['diff_outcome'] = df_temp['diff_outcome_ind'].mean()
+            individuals.append(df_temp)
 
-                instance1_outcome = random.uniform(0, 1)
-                instance2_outcome = abs(random.gauss(abs(instance1_outcome - magnitude), epis_uncertainty))
-
-                diff_outcome = abs(instance1_outcome - instance2_outcome)
-                for el in range(nb_repeat):
-                    instance1 = Instance(
-                        original_protected_attrs=dgroup.subgroup1.protected_attr,
-                        original_unprotected_attrs=dgroup.subgroup1.unprotected_attr,
-                        other_attrs={
-                            attr.name: attr.random_value() for attr in self.attributes if
-                            attr.name not in dgroup.subgroup1.protected_attr and attr.name not in dgroup.subgroup1.unprotected_attr
-                        },
-                        nb_repeat=i,
-                        magnitude=magnitude,
-                        epis_uncertainty=epis_uncertainty,
-                        alea_uncertainty=i / num_individuals,
-                        outcome=instance1_outcome,
-                        subgroup_id=str(dgroup_i),
-                        individual_id=f"{dgroup_i}_{i}_{el}",
-                        case=1,
-                        diff_outcome=diff_outcome
-
-                    )
-
-                    instance2 = Instance(
-                        original_protected_attrs=dgroup.subgroup2.protected_attr,
-                        original_unprotected_attrs=dgroup.subgroup2.unprotected_attr,
-                        other_attrs={
-                            attr.name: attr.random_value() for attr in self.attributes if
-                            attr.name not in dgroup.subgroup2.protected_attr and attr.name not in dgroup.subgroup2.unprotected_attr
-                        },
-                        nb_repeat=i,
-                        magnitude=magnitude,
-                        epis_uncertainty=epis_uncertainty,
-                        alea_uncertainty=i / num_individuals,
-                        outcome=instance2_outcome,
-                        subgroup_id=str(dgroup_i),
-                        individual_id=f"{dgroup_i}_{i}_{el}",
-                        case=2,
-                        diff_outcome=diff_outcome
-                    )
-
-                    individuals.extend([instance1.to_values(), instance2.to_values()])
+        individuals = pd.concat(individuals)
 
         return individuals
 
@@ -250,9 +225,8 @@ attributes = [
 ]
 
 schema = DatasetSchema(attributes=attributes)
-all_individuals = schema.generate_instances_from_subgroups()
-df = pd.DataFrame(all_individuals)
-
+df = schema.generate_instances_from_subgroups()
+df = df.reset_index()
 connection = sqlite3.connect('elements.db')
 df.to_sql('discriminations', con=connection, if_exists='replace', index=False)
 connection.close()
@@ -263,10 +237,11 @@ fig = px.parallel_coordinates(
     color='diff_outcome', labels={"granularity": "granularity",
                                   "alea_uncertainty": "alea_uncertainty",
                                   "epis_uncertainty": "epis_uncertainty",
-                                  "magnitude": "magnitude"},
+                                  "magnitude": "magnitude"
+                                  },
     color_continuous_scale=px.colors.diverging.Tealrose,
     color_continuous_midpoint=3)
-fig.write_image("parallel_coordinates_plot1.png")
+fig.write_image("parallel_coordinates_plot6.png")
 print('done')
 # %%
 # print(df.head(5).to_string())
