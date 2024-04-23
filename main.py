@@ -225,24 +225,24 @@ attributes = [
 ]
 
 schema = DatasetSchema(attributes=attributes)
-df = schema.generate_instances_from_subgroups()
+df = schema.generate_instances_from_subgroups(1000)
 df = df.reset_index()
 connection = sqlite3.connect('elements.db')
 df.to_sql('discriminations', con=connection, if_exists='replace', index=False)
 connection.close()
 
 # %%
-fig = px.parallel_coordinates(
-    df[['granularity', 'alea_uncertainty', 'epis_uncertainty', 'magnitude', 'diff_outcome']].drop_duplicates(),
-    color='diff_outcome', labels={"granularity": "granularity",
-                                  "alea_uncertainty": "alea_uncertainty",
-                                  "epis_uncertainty": "epis_uncertainty",
-                                  "magnitude": "magnitude"
-                                  },
-    color_continuous_scale=px.colors.diverging.Tealrose,
-    color_continuous_midpoint=3)
-fig.write_image("parallel_coordinates_plot6.png")
-print('done')
+# fig = px.parallel_coordinates(
+#     df[['granularity', 'alea_uncertainty', 'epis_uncertainty', 'magnitude', 'diff_outcome']].drop_duplicates(),
+#     color='diff_outcome', labels={"granularity": "granularity",
+#                                   "alea_uncertainty": "alea_uncertainty",
+#                                   "epis_uncertainty": "epis_uncertainty",
+#                                   "magnitude": "magnitude"
+#                                   },
+#     color_continuous_scale=px.colors.diverging.Tealrose,
+#     color_continuous_midpoint=3)
+# fig.write_image("parallel_coordinates_plot6.png")
+# print('done')
 # %%
 # print(df.head(5).to_string())
 #
