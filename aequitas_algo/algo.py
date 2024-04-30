@@ -217,7 +217,7 @@ class Fully_Direct:
                     self.global_disc_inputs.add(tuple(map(tuple, inp0)))  # add the entire input, including original y
                     self.global_disc_inputs_list['discr_input'].append(inp0.tolist()[0])
                     self.global_disc_inputs_list['counter_discr_input'].append(inp1.tolist()[0])
-                    self.global_disc_inputs_list['magnitude'].append(inp1.tolist()[0])
+                    self.global_disc_inputs_list['magnitude'].append(diff)
                     return diff
         return 0
 
@@ -261,7 +261,7 @@ class Fully_Direct:
                     self.local_disc_inputs.add(tuple(map(tuple, inp0)))
                     self.local_disc_inputs_list['discr_input'].append(inp0.tolist()[0])
                     self.local_disc_inputs_list['counter_discr_input'].append(inp1.tolist()[0])
-                    self.local_disc_inputs_list['magnitude'].append(inp1.tolist()[0])
+                    self.local_disc_inputs_list['magnitude'].append(diff)
                     return diff
         return 0
 
@@ -417,7 +417,4 @@ def run_aequitas(df, col_to_be_predicted, sensitive_param_name_list, perturbatio
     return pd.DataFrame(results)
 
 
-# %%
-df = pd.read_csv(HERE.joinpath("aequitas/Employee.csv").as_posix())
-results_df = run_aequitas(df, col_to_be_predicted="LeaveOrNot", sensitive_param_name_list=["Education", "Age"],
-                          perturbation_unit=1, model_type="DecisionTree", threshold=0)
+

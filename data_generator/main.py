@@ -7,9 +7,6 @@ import numpy as np
 import pandas as pd
 from dataclasses import dataclass
 from typing import Literal, List, Optional
-import plotly.express as px
-import matplotlib.pyplot as plt
-from sklearn.ensemble import RandomForestClassifier
 
 
 @dataclass
@@ -206,12 +203,19 @@ class DatasetSchema:
             instances.append(instance)
         return instances
 
-    def generate_instances_from_subgroups(self, num_individuals=100):
+
+    def generate_subgroups(self):
+        subgroups = []
+        for el in []:
+            subgroups.append(el)
+
+    def generate_instances_from_subgroups(self, num_individuals=100, min_alea=0.01, max_alea=1.0,
+                                          min_epis=0, max_epis=1.0, min_magni=0, max_magni=1.0):
         individuals = []
         for i in range(1, num_individuals + 1):
-            alea_uncertainty = random.uniform(0.01, 1)
-            epis_uncertainty = random.uniform(0, 1)
-            magnitude = random.uniform(0, 1)
+            alea_uncertainty = random.uniform(min_alea, max_alea)
+            epis_uncertainty = random.uniform(min_epis, max_epis)
+            magnitude = random.uniform(min_magni, max_magni)
 
             granularity = random.choice(list(range(1, 1 + len(self._get_attributes('protected')))))
             discriminated_sub_group = self.generate_subgroups(granularity)
@@ -266,7 +270,7 @@ attributes = [
 schema = DatasetSchema(features=attributes)
 df = schema.generate_instances_from_subgroups(100)
 df = df.reset_index()
-connection = sqlite3.connect('elements.db')
+connection = sqlite3.connect('../elements.db')
 df.to_sql('discriminations', con=connection, if_exists='replace', index=False)
 connection.close()
 
@@ -274,80 +278,3 @@ df[['HairColor', 'Preference', 'Gender', 'outcome_out2']].to_csv(
     "/home/vaunorage/PycharmProjects/Aequitas1/Phemus/Examples/Synthetic/discriminations.csv", index=False)
 
 
-model = RandomForestClassifier(n_estimators = 10)
-
-# %%
-gg = df[['granularity', 'alea_uncertainty', 'epis_uncertainty', 'magnitude', 'diff_outcome']]. \
-    drop_duplicates().sort_values(['magnitude']).reset_index().astype(float).drop(columns=['index'])
-
-fig = px.parallel_coordinates(
-    gg,
-    color="diff_outcome",
-    labels={
-        "granularity": "granularity",
-        "alea_uncertainty": "alea_uncertainty",
-        "epis_uncertainty": "epis_uncertainty",
-        "magnitude": "magnitude",
-        "diff_outcome": "diff_outcome"
-    },
-    color_continuous_scale=px.colors.diverging.Tealrose,
-    color_continuous_midpoint=gg['diff_outcome'].max() / 2)
-
-fig.update_layout(coloraxis_showscale=True)
-
-fig.write_image("figure3.png")
-
-print("ddd")
-
-
-# %%
-def scale_dataframe(df, reverse=False, min_values=None, max_values=None):
-    if not reverse:
-        min_values = df.min()
-        max_values = df.max()
-        scaled_df = (df - min_values) / (max_values - min_values)
-        return scaled_df, min_values, max_values
-    else:
-        if min_values is None or max_values is None:
-            raise ValueError("min_values and max_values must be provided to reverse scaling.")
-        original_df = df * (max_values - min_values) + min_values
-        return original_df
-
-
-df['subgroup_id'] = df['subgroup_id'].replace(
-    {e: k for k, e in enumerate(df['subgroup_id'].drop_duplicates().tolist())})
-
-dff = df[
-    ['granularity', 'alea_uncertainty', 'epis_uncertainty', 'magnitude', 'Preference', 'Age', 'Expenditure', 'Income',
-     'Gender', 'diff_outcome', 'subgroup_id']].astype(float).drop_duplicates()
-scaled_df, min_values, max_values = scale_dataframe(dff)
-
-original_df = scale_dataframe(scaled_df, reverse=True, min_values=min_values, max_values=max_values)
-
-scaled_df_attr = scaled_df[['Preference', 'Age', 'Expenditure', 'Income', 'Gender']]
-scaled_df_meta = scaled_df[['granularity', 'alea_uncertainty', 'epis_uncertainty', 'magnitude']]
-
-
-def embd_to_1_dim(df):
-    vec = np.arange(1, df.shape[1] + 1)
-    ll = df.to_numpy().dot(vec)
-    minll, maxll = np.full_like(vec, 0).dot(vec), np.full_like(vec, 1).dot(vec)
-    res = (ll - minll) / (maxll - minll)
-    res = np.concatenate([res, np.array([0, 1])])
-    return res
-
-
-embd_attr = embd_to_1_dim(scaled_df_attr)
-embd_meta = embd_to_1_dim(scaled_df_meta)
-outcome = np.concatenate([dff['diff_outcome'].to_numpy(), [dff['diff_outcome'].min(), dff['diff_outcome'].max()]])
-
-plt.clf()
-
-plt.scatter(embd_attr, embd_meta, c=outcome, cmap='viridis', s=1)
-
-plt.colorbar(label='Values')
-
-plt.xlabel('Attributes')
-plt.ylabel('Metadata')
-
-plt.savefig("figure5.png")
