@@ -165,6 +165,19 @@ def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attrib
     return sets, protected_attr, attr_names
 
 
+def bin_array_values(array, num_bins):
+    min_val = np.min(array)
+    max_val = np.max(array)
+
+    bins = np.linspace(min_val, max_val, num_bins + 1)
+
+    binned_indices = np.digitize(array, bins) - 1
+
+    # bin_centers = (bins[:-1] + bins[1:]) / 2
+
+    return binned_indices
+
+
 # sets = [
 #     [-1, 0, 1, 2, 3, 4],  # T
 #     [-1, 0, 1, 2],  # F
@@ -182,8 +195,8 @@ def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attrib
 def generate_data(min_number_of_classes=2, max_number_of_classes=6, nb_attributes=6, prop_protected_attr=0.1,
                   nb_elems=100, hiddenlayers_depth=3, min_similarity=0.0, max_similarity=1.0, min_alea_uncertainty=0.0,
                   max_alea_uncertainty=1.0, min_epis_uncertainty=0.0, max_epis_uncertainty=1.0, min_magnitude=0.0,
-                  max_magnitude=1.0,
-                  min_frequency=0.0, max_frequency=1.0):
+                  max_magnitude=1.0, min_frequency=0.0, max_frequency=1.0, categorical_outcome: bool = False,
+                  nb_categories_outcome: int = 6):
     sets, sets_attr, attr_names = generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attributes,
                                                        prop_protected_attr)
     nb_protected = sum(sets_attr)
@@ -290,36 +303,45 @@ def generate_data(min_number_of_classes=2, max_number_of_classes=6, nb_attribute
 
         subgroup_num_array = np.array([subgroup_num]).repeat(nb_repeat).reshape(-1, 1)
 
-        couple_subgroup = np.array(
-            [f"{'|'.join(list(map(str, subgroup1)))}*{'|'.join(list(map(str, subgroup2)))}"]).repeat(
-            nb_repeat, axis=0).reshape(-1, 1)
         gen_attributes = np.array(
             [min_number_of_classes, max_number_of_classes, nb_attributes, prop_protected_attr, nb_elems,
              hiddenlayers_depth,
              granularity, intersectionality, similarity, alea_uncertainty, epis_uncertainty, magnitude,
              frequency]).reshape(-1, 1).repeat(nb_repeat, axis=1).T
 
-        res = np.concatenate(
-            [subgroup_num_array, gen_attributes, couple_subgroup, subgroup1_individuals, subgroup2_individuals,
-             subgroup1_outcomes, subgroup2_outcomes], axis=1)
+        subgroup1_array = np.array([f"{'|'.join(list(map(str, subgroup1)))}"]).repeat(nb_repeat, axis=0).reshape(-1, 1)
+        subgroup2_array = np.array([f"{'|'.join(list(map(str, subgroup2)))}"]).repeat(nb_repeat, axis=0).reshape(-1, 1)
 
-        results.append(res)
+        subgroup_ind = np.arange(nb_repeat).reshape(-1, 1)
+
+        res_subgroup1 = np.concatenate(
+            [subgroup_num_array, subgroup_ind, gen_attributes, subgroup1_array, subgroup1_individuals,
+             subgroup1_outcomes], axis=1)
+        res_subgroup2 = np.concatenate(
+            [subgroup_num_array, subgroup_ind, gen_attributes, subgroup2_array, subgroup2_individuals,
+             subgroup2_outcomes], axis=1)
+
+        results.append(np.concatenate([res_subgroup1, res_subgroup2]))
+
     # %%
-    col_names = ['subgroup_num', 'min_number_of_classes', 'max_number_of_classes', 'nb_attributes',
+    col_names = ['subgroup_num', 'subgroup_id', 'min_number_of_classes', 'max_number_of_classes', 'nb_attributes',
                  'prop_protected_attr', 'nb_elems', 'hiddenlayers_depth', 'granularity', 'intersectionality',
                  'similarity', 'alea_uncertainty', 'epis_uncertainty', 'magnitude', 'frequency'] + \
-                ['subgroups'] + [f"{e}_sub1" for e in attr_names] + [f"{e}_sub2" for e in attr_names] + \
-                ['out_sub1', 'out_sub2']
+                ['subgroup'] + attr_names + ['outcome']
     results = pd.DataFrame(np.concatenate(results), columns=col_names)
     results['collisions'] = collisions
 
     results = convert_to_float(results)
 
-    results['diff_outcome'] = results.apply(lambda x: abs(x['out_sub1'] - x['out_sub2']), axis=1)
+    if categorical_outcome:
+        results['outcome'] = bin_array_values(results['outcome'], nb_categories_outcome)
+
+    results = results.sort_values(['subgroup_num', 'subgroup_id'])
+
+    results[f'diff_outcome'] = results.groupby(['subgroup_num', 'subgroup_id'])[f'outcome'].diff().abs().bfill()
 
     results['diff_variation'] = coefficient_of_variation(results['diff_outcome'])
 
-    return results
+    protected_attr = {k: e for k, e in zip(attr_names, sets_attr)}
 
-
-
+    return results, protected_attr

@@ -354,7 +354,7 @@ def generate_sklearn_classifier(dataset: Dataset, model_type: str):
     scores.append({
         'model': model_name,
         'score': model.score(X_test, y_test),
-        'f1_score': f1_score(y_test, pred)
+        'f1_score': f1_score(y_test, pred, average='weighted')
     })
 
     model.score(X_test, y_test)
@@ -414,7 +414,30 @@ def run_aequitas(df, col_to_be_predicted, sensitive_param_name_list, perturbatio
         result = aequitas_fully_directed_sklearn(dataset, perturbation_unit, threshold, global_iteration_limit,
                                                  local_iteration_limit, sensitive_param_id, model, sensitive_attribute)
         results.append(result)
-    return pd.DataFrame(results)
 
+    results_df = pd.DataFrame(results)
 
+    ress_df = []
+    for row in results_df.iterrows():
+        sub1_discr = pd.DataFrame(row[1]['Local Discriminatory Inputs'], columns=df.columns)
+        sub1_discr['subgroup_id'] = list(range(sub1_discr.shape[0]))
+        sub1_discr['diff_outcome'] = np.array(row[1]['Local Magnitude'])
 
+        sub2_discr = pd.DataFrame(row[1]['Local Counter Discriminatory Inputs'], columns=df.columns)
+        sub2_discr['subgroup_id'] = list(range(sub1_discr.shape[0]))
+        sub2_discr['diff_outcome'] = np.array(row[1]['Local Magnitude'])
+
+        res_df = pd.concat([sub1_discr.reset_index(drop=True), sub2_discr.reset_index(drop=True)])
+
+        res_df['Sensitive Attribute'] = row[1]['Sensitive Attribute']
+        res_df['Total Inputs'] = row[1]['Total Inputs']
+        res_df['Discriminatory Inputs'] = row[1]['Discriminatory Inputs']
+        res_df['Percentage Discriminatory Inputs'] = row[1]['Percentage Discriminatory Inputs']
+
+        ress_df.append(res_df.reset_index(drop=True))
+
+    res = pd.concat(ress_df)
+
+    res = res.sort_values(['Sensitive Attribute', 'subgroup_id'])
+
+    return res
