@@ -323,7 +323,6 @@ def generate_data(min_number_of_classes=2, max_number_of_classes=6, nb_attribute
 
         results.append(np.concatenate([res_subgroup1, res_subgroup2]))
 
-    # %%
     col_names = ['subgroup_num', 'subgroup_id', 'min_number_of_classes', 'max_number_of_classes', 'nb_attributes',
                  'prop_protected_attr', 'nb_elems', 'hiddenlayers_depth', 'granularity', 'intersectionality',
                  'similarity', 'alea_uncertainty', 'epis_uncertainty', 'magnitude', 'frequency'] + \

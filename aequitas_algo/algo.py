@@ -420,11 +420,12 @@ def run_aequitas(df, col_to_be_predicted, sensitive_param_name_list, perturbatio
     ress_df = []
     for row in results_df.iterrows():
         sub1_discr = pd.DataFrame(row[1]['Local Discriminatory Inputs'], columns=df.columns)
-        sub1_discr['subgroup_id'] = list(range(sub1_discr.shape[0]))
+
+        sub1_discr['subgroup_num'] = list(range(sub1_discr.shape[0]))
         sub1_discr['diff_outcome'] = np.array(row[1]['Local Magnitude'])
 
         sub2_discr = pd.DataFrame(row[1]['Local Counter Discriminatory Inputs'], columns=df.columns)
-        sub2_discr['subgroup_id'] = list(range(sub1_discr.shape[0]))
+        sub2_discr['subgroup_num'] = list(range(sub1_discr.shape[0]))
         sub2_discr['diff_outcome'] = np.array(row[1]['Local Magnitude'])
 
         res_df = pd.concat([sub1_discr.reset_index(drop=True), sub2_discr.reset_index(drop=True)])
@@ -438,6 +439,7 @@ def run_aequitas(df, col_to_be_predicted, sensitive_param_name_list, perturbatio
 
     res = pd.concat(ress_df)
 
-    res = res.sort_values(['Sensitive Attribute', 'subgroup_id'])
+    res = res.sort_values(['Sensitive Attribute', 'subgroup_num'])
+    res['subgroup_id'] = res.groupby(['subgroup_num']).cumcount() + 1
 
     return res
