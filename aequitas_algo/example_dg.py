@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 from aequitas_algo.algo import run_aequitas
+
 from data_generator.main2 import generate_data
 from data_generator.utils import scale_dataframe, visualize_df
 
@@ -12,8 +13,8 @@ df, protected_attr = generate_data(min_number_of_classes=2, max_number_of_classe
                                    min_magnitude=0.0, max_magnitude=1.0, min_frequency=0.0, max_frequency=1.0,
                                    categorical_outcome=True, nb_categories_outcome=4)
 
-visualize_df(df, ['granularity', 'alea_uncertainty', 'epis_uncertainty', 'magnitude', 'diff_outcome'],
-             'diff_outcome', 'figure4.png')
+# visualize_df(df, ['granularity', 'alea_uncertainty', 'epis_uncertainty', 'magnitude', 'diff_outcome'],
+# 'diff_outcome', 'figure4.png')
 
 # %%
 dff = df[[e for e in protected_attr] + ['outcome']]
@@ -23,12 +24,20 @@ dff = df[[e for e in protected_attr] + ['outcome']]
 results_df = run_aequitas(dff, col_to_be_predicted="outcome",
                           sensitive_param_name_list=[k for k, e in protected_attr.items() if e],
                           perturbation_unit=1, model_type="DecisionTree", threshold=0)
+
 # %%
 
+create_ind_key = lambda df: df.groupby(['subgroup_num']).apply(
+    lambda x: '-'.join(list(map(str, x[list(protected_attr)].values.flatten().tolist()))))
+
+results_df['ind_discr_key'] = create_ind_key(results_df)
+dff['ind_discr_key'] = create_ind_key(results_df)
+
+# %%
 org_found = results_df[[e for e in protected_attr]].drop_duplicates().values.tolist()
 org1_found = dff[[e for e in protected_attr]].drop_duplicates().values.tolist()
-percent_of_org_in_found = sum([1 for e in org_found if e in org1_found])/len(org_found)
-percent_found = sum([1 for e in org_found if e in org1_found])/len(org1_found)
+percent_of_org_in_found = sum([1 for e in org_found if e in org1_found]) / len(org_found)
+percent_found = sum([1 for e in org_found if e in org1_found]) / len(org1_found)
 
 # il faut sassurer de trouver deux individus pour dire quil ya de la discrimination
 # il faut regarder si la magnitude est differente
