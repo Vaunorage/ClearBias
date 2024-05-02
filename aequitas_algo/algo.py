@@ -351,13 +351,13 @@ def generate_sklearn_classifier(dataset: Dataset, model_type: str):
     pred = model.predict(X_test.values)
 
     scores = []
-    scores.append({
+    ss = {
         'model': model_name,
         'score': model.score(X_test, y_test),
         'f1_score': f1_score(y_test, pred, average='weighted')
-    })
-
-    model.score(X_test, y_test)
+    }
+    print(ss)
+    scores.append(ss)
 
     return model
 
