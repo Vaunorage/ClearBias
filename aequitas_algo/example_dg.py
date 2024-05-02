@@ -62,6 +62,7 @@ merged_df_leftjoin_df2_ind= df2_ind.merge(results_df_ind, on='ind_discr_key', ho
                                suffixes=('_injected', '_found'))
 
 # %%
+# a quel point le modele est bon lorsquil y a de lallucination
 #pour les cas hallucinés, ils discriminent contre qui ? est ce que ceux qui trouvent sont proches
 # faire une analyse pour voir parmis les groupes de discrimination combien il en trouve ?
 
