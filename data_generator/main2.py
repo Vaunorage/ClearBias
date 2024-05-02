@@ -92,7 +92,9 @@ def generate_data_for_subgroup(sets, subgroup, skewness, num_samples_per_set):
     all_samples = []
     for k, s in enumerate(subgroup):
         if s == -1:
-            samples = generate_samples(sets[k], skewness, num_samples_per_set)
+            n_set = copy.deepcopy(sets[k])
+            n_set.remove(-1)
+            samples = generate_samples(n_set, skewness, num_samples_per_set)
             all_samples.append(samples)
         else:
             all_samples.append([s] * num_samples_per_set)

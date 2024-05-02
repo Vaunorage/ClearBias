@@ -323,7 +323,7 @@ def generate_sklearn_classifier(dataset: Dataset, model_type: str):
     cat_feature = list(df.columns)
 
     for col in cat_feature:
-        df[col] = le.fit_transform(df[col])
+        df.loc[:, col] = le.fit_transform(df[col])
 
     X = df.drop([col_to_be_predicted], axis=1)
     y = df[col_to_be_predicted]
@@ -421,11 +421,13 @@ def run_aequitas(df, col_to_be_predicted, sensitive_param_name_list, perturbatio
     for row in results_df.iterrows():
         sub1_discr = pd.DataFrame(row[1]['Local Discriminatory Inputs'], columns=df.columns)
 
-        sub1_discr['subgroup_num'] = list(range(sub1_discr.shape[0]))
+        subgroup_num = [f"{row[0]}{e}" for e in range(sub1_discr.shape[0])]
+
+        sub1_discr['subgroup_num'] = subgroup_num
         sub1_discr['diff_outcome'] = np.array(row[1]['Local Magnitude'])
 
         sub2_discr = pd.DataFrame(row[1]['Local Counter Discriminatory Inputs'], columns=df.columns)
-        sub2_discr['subgroup_num'] = list(range(sub1_discr.shape[0]))
+        sub2_discr['subgroup_num'] = subgroup_num
         sub2_discr['diff_outcome'] = np.array(row[1]['Local Magnitude'])
 
         res_df = pd.concat([sub1_discr.reset_index(drop=True), sub2_discr.reset_index(drop=True)])
