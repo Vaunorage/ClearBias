@@ -36,3 +36,4 @@ def visualize_df(df, columns, outcome_col, figure_path):
     fig.update_layout(coloraxis_showscale=True)
 
     fig.write_image(figure_path)
+    return fig
