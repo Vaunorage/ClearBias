@@ -34,15 +34,11 @@ def transform_subgroup(x):
     return pd.Series(res, index=x.index)
 
 
-results_df['ind_discr_key'] = results_df.apply(
-    lambda x: '|'.join(list(map(str, x[list(protected_attr)].values.tolist()))), axis=1)
+results_df['ind_discr_key'] = results_df.apply(lambda x: '|'.join(list(map(str, x[list(protected_attr)].values.tolist()))), axis=1)
 df['ind_discr_key'] = df.apply(lambda x: '|'.join(list(map(str, x[list(protected_attr)].values.tolist()))), axis=1)
 
-results_df['couple_discr_key'] = results_df.groupby(['subgroup_num']).apply(transform_subgroup).reset_index(level=0,
-                                                                                                            drop=True)
-df['couple_discr_key'] = df.groupby(['subgroup_num', 'subgroup_id']).apply(transform_subgroup).reset_index(level=0,
-                                                                                                           drop=True).reset_index(
-    level=0, drop=True)
+results_df['couple_discr_key'] = results_df.groupby(['subgroup_num']).apply(transform_subgroup).reset_index(level=0, drop=True)
+df['couple_discr_key'] = df.groupby(['subgroup_num', 'subgroup_id']).apply(transform_subgroup).reset_index(level=0, drop=True).reset_index(level=0, drop=True)
 
 # %%
 results_df_couple = results_df[['couple_discr_key', 'diff_outcome']].drop_duplicates().reset_index(drop=True)
@@ -50,8 +46,7 @@ df2_couple = df[['couple_discr_key', 'diff_outcome', 'intersectionality', 'simil
           'epis_uncertainty', 'magnitude', 'frequency']].drop_duplicates().reset_index(drop=True)
 
 #%%
-merged_df_leftjoin_df2_couple = df2_couple.merge(results_df_couple, on='couple_discr_key', how='inner',
-                               suffixes=('_injected', '_found'))
+merged_df_leftjoin_df2_couple = df2_couple.merge(results_df_couple, on='couple_discr_key', how='inner', suffixes=('_injected', '_found'))
 
 #%%
 results_df_ind = results_df[['ind_discr_key', 'diff_outcome']].drop_duplicates().reset_index(drop=True)
