@@ -175,24 +175,7 @@ def bin_array_values(array, num_bins):
 
     binned_indices = np.digitize(array, bins) - 1
 
-    # bin_centers = (bins[:-1] + bins[1:]) / 2
-
     return binned_indices
-
-
-# sets = [
-#     [-1, 0, 1, 2, 3, 4],  # T
-#     [-1, 0, 1, 2],  # F
-#     [-1, 0, 1],  # T
-#     [-1, 0, 1, 2, 3, 4, 5],  # T
-#     [-1, 0, 1, 2, 3],  # F
-#     [-1, 0, 1]  # F
-# ]
-#
-# sets_attr = [True, False, True, True, False, False]
-#
-# attr_names = ['A', 'B', 'C', 'D', 'E', 'F']
-
 
 def generate_data(min_number_of_classes=2, max_number_of_classes=6, nb_attributes=6, prop_protected_attr=0.1,
                   nb_elems=100, hiddenlayers_depth=3, min_similarity=0.0, max_similarity=1.0, min_alea_uncertainty=0.0,
