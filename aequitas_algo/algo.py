@@ -47,7 +47,7 @@ def mp_basinhopping(fully_direct, minimizer, local_iteration_limit):
 
     args = [(fully_direct, inputs, minimizer, local_iteration_limit, out_q) for inputs in divided_lists]
 
-    nprocs = 4
+    nprocs = len(fully_direct.global_disc_inputs_list["discr_input"]) // 4
     procs = []
 
     for i in range(nprocs):
@@ -303,8 +303,8 @@ class Fully_Direct:
                 - (self.direction_probability_change_size * self.perturbation_unit), 0)
 
         if ei:
-            self.param_probability[param_choice] = self.param_probability[
-                                                       param_choice] + self.param_probability_change_size
+            self.param_probability[param_choice] = self.param_probability[param_choice] + \
+                                                   self.param_probability_change_size
             self.normalise_probability()
         else:
             self.param_probability[param_choice] = max(
