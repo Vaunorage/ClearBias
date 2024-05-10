@@ -6,6 +6,7 @@ import sqlite3
 
 import pandas as pd
 import numpy as np
+from tqdm import tqdm
 
 
 def max_rank(sets):
@@ -198,7 +199,7 @@ def generate_data(min_number_of_classes=2, max_number_of_classes=6, nb_attribute
 
     collisions = 0
 
-    for subgroup_num in range(nb_elems):
+    for subgroup_num in tqdm(range(nb_elems), desc="Generating data"):
 
         granularity = random.randint(1, nb_unprotected)
         intersectionality = random.randint(1, nb_protected)
