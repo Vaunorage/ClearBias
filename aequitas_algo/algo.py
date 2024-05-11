@@ -15,6 +15,8 @@ import multiprocessing as mp
 from scipy.optimize import basinhopping
 import errno
 
+from tqdm import tqdm
+
 from paths import HERE
 
 
@@ -32,55 +34,40 @@ def my_queue_get(queue, block=True, timeout=None):
                 raise
 
 
-def worker(fully_direct, local_inputs, minimizer, local_iteration_limit, out_q):
+def worker(fully_direct, local_inputs, minimizer, local_iteration_limit):
+    results = []
     for inp in local_inputs:
         basinhopping(fully_direct.evaluate_local, inp, stepsize=1.0, take_step=fully_direct.local_perturbation,
                      minimizer_kwargs=minimizer, niter=local_iteration_limit)
-    out_q.put(
-        [[fully_direct.local_disc_inputs, fully_direct.local_disc_inputs_list, fully_direct.tot_inputs]])
+    results.append([fully_direct.local_disc_inputs, fully_direct.local_disc_inputs_list, fully_direct.tot_inputs])
+    return results
 
 
 def mp_basinhopping(fully_direct, minimizer, local_iteration_limit):
-    out_q = mp.Queue()
-
     divided_lists = chunks(fully_direct.global_disc_inputs_list["discr_input"], 4)
+    results = []
 
-    args = [(fully_direct, inputs, minimizer, local_iteration_limit, out_q) for inputs in divided_lists]
-
-    nprocs = len(fully_direct.global_disc_inputs_list["discr_input"]) // 4
-    procs = []
-
-    for i in range(nprocs):
-        p = mp.Process(target=worker, args=args[i])
-        procs.append(p)
-        p.start()
-
-    res = []
-    for i in range(nprocs):
-        res += my_queue_get(out_q)
-
-    for p in procs:
-        p.join()
+    # Adding tqdm to the loop for progress tracking
+    for inputs in tqdm(list(divided_lists), desc="Processing inputs"):
+        result = worker(fully_direct, inputs, minimizer, local_iteration_limit)
+        results.extend(result)
 
     local_inputs = set()
     local_inputs_list = {"discr_input": [], "counter_discr_input": [], 'magnitude': []}
     tot_inputs_out = set()
 
-    for pair in res:
-        set_inputs = pair[0]
-        list_inputs = pair[1]
-        tot_inputs = pair[2]
+    # Looping through results to collect data
+    for res in results:
+        set_inputs, list_inputs, tot_inputs = res
         for item in set_inputs:
-            if item not in local_inputs:
-                local_inputs.add(item)
+            local_inputs.add(item)
         for k, item in enumerate(list_inputs['discr_input']):
             if item not in local_inputs_list['discr_input']:
                 local_inputs_list['discr_input'].append(item)
                 local_inputs_list['counter_discr_input'].append(list_inputs['counter_discr_input'][k])
                 local_inputs_list['magnitude'].append(list_inputs['magnitude'][k])
         for item in tot_inputs:
-            if item not in tot_inputs_out:
-                tot_inputs_out.add(item)
+            tot_inputs_out.add(item)
 
     fully_direct.local_disc_inputs = local_inputs
     fully_direct.local_disc_inputs_list = local_inputs_list
@@ -340,7 +327,7 @@ def generate_sklearn_classifier(dataset: Dataset, model_type: str):
         model = SVC(gamma=0.0025)
         model_name = 'SVC'
     elif model_type == "RandomForest":
-        model = RandomForestClassifier(n_estimators=10)
+        model = RandomForestClassifier(n_estimators=4)
         model_name = 'RandomForestClassifier'
     else:
         error_message = 'The chosen types of model is not supported yet. Please choose from one of the following: \
@@ -359,7 +346,7 @@ def generate_sklearn_classifier(dataset: Dataset, model_type: str):
     print(ss)
     scores.append(ss)
 
-    return model
+    return model, scores
 
 
 def collect_results(fully_direct, sensitive_attribute):
@@ -409,7 +396,7 @@ def run_aequitas(df, col_to_be_predicted, sensitive_param_name_list, perturbatio
                  global_iteration_limit=1000, local_iteration_limit=100):
     results = []
     dataset = Dataset(df, col_to_be_predicted=col_to_be_predicted, sensitive_param_name_list=sensitive_param_name_list)
-    model = generate_sklearn_classifier(dataset, model_type)
+    model, model_scores = generate_sklearn_classifier(dataset, model_type)
     for sensitive_param_id, sensitive_attribute in zip(dataset.sensitive_param_idx_list, sensitive_param_name_list):
         result = aequitas_fully_directed_sklearn(dataset, perturbation_unit, threshold, global_iteration_limit,
                                                  local_iteration_limit, sensitive_param_id, model, sensitive_attribute)
@@ -444,4 +431,4 @@ def run_aequitas(df, col_to_be_predicted, sensitive_param_name_list, perturbatio
     res = res.sort_values(['Sensitive Attribute', 'subgroup_num'])
     res['subgroup_id'] = res.groupby(['subgroup_num']).cumcount() + 1
 
-    return res
+    return res, model_scores
