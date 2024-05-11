@@ -20,7 +20,7 @@ dff = df[[e for e in protected_attr] + ['outcome']]
 # scaled_df, min_values, max_values = scale_dataframe(dff)
 
 # %%
-results_df = run_aequitas(dff, col_to_be_predicted="outcome",
+results_df, model_scores = run_aequitas(dff, col_to_be_predicted="outcome",
                           sensitive_param_name_list=[k for k, e in protected_attr.items() if e],
                           perturbation_unit=1, model_type="DecisionTree", threshold=0,
                           global_iteration_limit=1000, local_iteration_limit=100)

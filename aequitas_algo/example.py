@@ -4,7 +4,7 @@ from aequitas_algo.algo import run_aequitas
 from paths import HERE
 
 df = pd.read_csv(HERE.joinpath("aequitas_algo/Employee.csv").as_posix())
-results_df = run_aequitas(df, col_to_be_predicted="LeaveOrNot",
+results_df, model_scores = run_aequitas(df, col_to_be_predicted="LeaveOrNot",
                           sensitive_param_name_list=["Education", "Age"],
                           perturbation_unit=1, model_type="DecisionTree", threshold=0)
 
