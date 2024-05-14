@@ -4,7 +4,7 @@
 from sqlalchemy import create_engine
 
 from aequitas_algo.algo import run_aequitas
-from data_generator.main import generate_data
+from data_generator.main2 import generate_data
 import random
 
 from paths import HERE
@@ -44,7 +44,8 @@ def run_algo(model_type, min_number_of_classes=2, max_number_of_classes=6, nb_at
                                             local_iteration_limit=local_iteration_limit)
 
     print("Merge results")
-    df_true_pos = df.drop(columns=list(protected_attr)).merge(results_df.drop(columns=list(protected_attr)), how='left', on='couple_key')
+    df_true_pos = df.drop(columns=list(protected_attr)).merge(results_df.drop(columns=list(protected_attr)), how='left',
+                                                              on='couple_key')
     df_false_pos = results_df.merge(df, how='left', on='couple_key')
 
     print("Calculate metrics")
@@ -102,40 +103,101 @@ def generate_parameters(parameter_bounds, min_max_labels):
 # In[8]:
 
 
-parameter_bounds = {
-    "model_type": (0, 3),
-    "nb_attributes": (3, 7),
-    "prop_protected_attr": (0.1, 0.4),
-    "nb_groups": (100, 600),
-    "max_group_size": (40, 60),
-    "hiddenlayers_depth": (1, 6),
-    "categorical_outcome": (True, True),  # assuming always True
-    "nb_categories_outcome": (2, 6),
-    "global_iteration_limit": (1000, 1100),
-    "local_iteration_limit": (100, 200),
-    "similarity": (0.0, 1.0),
-    "alea_uncertainty": (0.0, 1.0),
-    "epis_uncertainty": (0.0, 1.0),
-    "magnitude": (0.0, 1.0),
-    "frequency": (0.0, 1.0),
-    "number_of_classes": (2, 6),
-}
+# parameter_bounds = {
+#     "model_type": (0, 3),
+#     "nb_attributes": (3, 7),
+#     "prop_protected_attr": (0.1, 0.4),
+#     "nb_groups": (100, 600),
+#     "max_group_size": (40, 60),
+#     "hiddenlayers_depth": (1, 6),
+#     "categorical_outcome": (True, True),  # assuming always True
+#     "nb_categories_outcome": (2, 6),
+#     "global_iteration_limit": (1000, 1100),
+#     "local_iteration_limit": (100, 200),
+#     "similarity": (0.0, 1.0),
+#     "alea_uncertainty": (0.0, 1.0),
+#     "epis_uncertainty": (0.0, 1.0),
+#     "magnitude": (0.0, 1.0),
+#     "frequency": (0.0, 1.0),
+#     "number_of_classes": (2, 6),
+# }
+#
+# k = 1000
+#
+# for _ in range(k):
+#     min_max_labels = ["similarity", "alea_uncertainty", "epis_uncertainty",
+#                       "magnitude", "frequency", "number_of_classes"]
+#     params = generate_parameters(parameter_bounds, min_max_labels)
+#     print(params)
+#     couple_tpr, couple_fpr, model_scores, couple_df, protected_attr = run_algo(**params)
+#
+#     couple_df['couple_tpr'] = couple_tpr
+#     couple_df['couple_fpr'] = couple_fpr
+#     couple_df['model_scores'] = str(model_scores[0])
+#     couple_df['params'] = str(params)
+#     couple_df['attr'] = str(protected_attr)
+#     print(couple_tpr, couple_fpr)
+#     # save_results(0, 0, {}, {})
+#
+#     couple_df.to_sql('results4', con=engine, if_exists='append', index=False)
 
-k = 1000
+import optuna
 
-for _ in range(k):
-    min_max_labels = ["similarity", "alea_uncertainty", "epis_uncertainty",
-                      "magnitude", "frequency", "number_of_classes"]
-    params = generate_parameters(parameter_bounds, min_max_labels)
-    print(params)
+
+def objective(trial):
+    parameter_bounds = {
+        "model_type": (0, 3),
+        "nb_attributes": (3, 7),
+        "prop_protected_attr": (0.1, 0.4),
+        "nb_groups": (100, 600),
+        "max_group_size": (40, 60),
+        "hiddenlayers_depth": (1, 6),
+        "categorical_outcome": True,  # assuming always True
+        "nb_categories_outcome": (2, 6),
+        "global_iteration_limit": (1000, 1100),
+        "local_iteration_limit": (100, 200),
+        "similarity": (0.0, 1.0),
+        "alea_uncertainty": (0.0, 1.0),
+        "epis_uncertainty": (0.0, 1.0),
+        "magnitude": (0.0, 1.0),
+        "frequency": (0.0, 1.0),
+        "number_of_classes": (2, 6),
+    }
+
+    min_max_labels = ["similarity", "alea_uncertainty", "epis_uncertainty", "magnitude", "frequency",
+                      "number_of_classes"]
+    params = {}
+    for key, bounds in parameter_bounds.items():
+        if isinstance(bounds, bool):
+            params[key] = bounds
+        elif key in min_max_labels:
+            low, high = bounds
+            kk = trial.suggest_float(key, low, high)
+            params[f'min_{key}'], params[f'max_{key}'] = kk, kk
+        elif isinstance(bounds, tuple) and isinstance(bounds[0], int):
+            params[key] = trial.suggest_int(key, bounds[0], bounds[1])
+        else:
+            params[key] = trial.suggest_float(key, bounds[0], bounds[1])
+
+    # Assuming run_algo is the function you use to evaluate your model
     couple_tpr, couple_fpr, model_scores, couple_df, protected_attr = run_algo(**params)
 
-    couple_df['couple_tpr'] = couple_tpr
-    couple_df['couple_fpr'] = couple_fpr
-    couple_df['model_scores'] = str(model_scores[0])
-    couple_df['params'] = str(params)
-    couple_df['attr'] = str(protected_attr)
-    print(couple_tpr, couple_fpr)
-    # save_results(0, 0, {}, {})
+    # Log additional information if needed
+    trial.set_user_attr("couple_fpr", couple_fpr)
+    trial.set_user_attr("model_scores", model_scores)
+    trial.set_user_attr("protected_attr", protected_attr)
 
-    couple_df.to_sql('results4', con=engine, if_exists='append', index=False)
+    couple_df.to_sql('results_optuna', con=engine, if_exists='append', index=False)
+
+    return couple_tpr
+
+
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=100)  # You can adjust the number of trials
+
+print("Best trial:")
+trial = study.best_trial
+print(" Value: ", trial.value)
+print(" Params: ")
+for key, value in trial.params.items():
+    print(f"    {key}: {value}")
