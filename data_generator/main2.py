@@ -178,6 +178,7 @@ def bin_array_values(array, num_bins):
 
     return binned_indices
 
+
 def generate_data(min_number_of_classes=2, max_number_of_classes=6, nb_attributes=6, prop_protected_attr=0.1,
                   nb_elems=100, hiddenlayers_depth=3, min_similarity=0.0, max_similarity=1.0, min_alea_uncertainty=0.0,
                   max_alea_uncertainty=1.0, min_epis_uncertainty=0.0, max_epis_uncertainty=1.0, min_magnitude=0.0,
@@ -249,7 +250,7 @@ def generate_data(min_number_of_classes=2, max_number_of_classes=6, nb_attribute
         possible_chang = [k for k, e in enumerate(subgroup1) if e != -1]
         sim_ind_to_chang = random.choice([e for e in possible_chang if sets_attr[e]])
         random.shuffle(possible_chang)
-        possible_chang = possible_chang[:math.ceil(len(possible_chang) * similarity)]
+        possible_chang = possible_chang[:math.ceil(len(possible_chang) * (1 - similarity))]
         possible_chang.append(sim_ind_to_chang)
         possible_chang = set(possible_chang)
 
