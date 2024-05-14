@@ -9,7 +9,7 @@ import random
 
 from paths import HERE
 
-DB_PATH = HERE.joinpath('experiment_results.db').as_posix()
+DB_PATH = "/home/vaunorage/PycharmProjects/clear/ClearBias/experiment_results.db"
 engine = create_engine(f'sqlite:///{DB_PATH}')
 
 
