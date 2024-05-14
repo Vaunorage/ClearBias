@@ -431,4 +431,19 @@ def run_aequitas(df, col_to_be_predicted, sensitive_param_name_list, perturbatio
     res = res.sort_values(['Sensitive Attribute', 'subgroup_num'])
     res['subgroup_id'] = res.groupby(['subgroup_num']).cumcount() + 1
 
+    attr = list(df.columns)
+    attr.remove(col_to_be_predicted)
+    res['indv_key'] = res.apply(lambda x: '|'.join(list(map(str, x[attr].values.tolist()))), axis=1)
+
+    def transform_subgroup(x, protected_attr):
+        res = x['indv_key'].tolist()
+        res = ["*".join(res), "*".join(res[::-1])]
+        return pd.Series(res, index=x.index)
+
+    ress = res.groupby(['subgroup_num']).apply(lambda x: transform_subgroup(x, attr))
+    if ress.shape[0] > 0:
+        res['couple_key'] = ress.reset_index(level=0, drop=True)
+    else:
+        res['couple_key'] = None
+
     return res, model_scores
