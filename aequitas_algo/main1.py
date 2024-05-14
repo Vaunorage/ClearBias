@@ -4,7 +4,7 @@
 from sqlalchemy import create_engine
 
 from aequitas_algo.algo import run_aequitas
-from data_generator.main2 import generate_data
+from data_generator.main import generate_data
 import random
 
 from paths import HERE
@@ -172,8 +172,13 @@ def objective(trial):
             params[key] = bounds
         elif key in min_max_labels:
             low, high = bounds
-            kk = trial.suggest_float(key, low, high)
-            params[f'min_{key}'], params[f'max_{key}'] = kk, kk
+            if isinstance(bounds, tuple) and isinstance(bounds[0], int):
+                kk = trial.suggest_int(key, low, high)
+                kkmax = kk + 1
+            else:
+                kk = trial.suggest_float(key, low, high)
+                kkmax = kk + 0.01
+            params[f'min_{key}'], params[f'max_{key}'] = kk, kkmax
         elif isinstance(bounds, tuple) and isinstance(bounds[0], int):
             params[key] = trial.suggest_int(key, bounds[0], bounds[1])
         else:
