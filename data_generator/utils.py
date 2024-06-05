@@ -33,7 +33,13 @@ def visualize_df(df, columns, outcome_col, figure_path):
         color_continuous_scale=px.colors.diverging.Tealrose,
         color_continuous_midpoint=gg[outcome_col].max() / 2)
 
-    fig.update_layout(coloraxis_showscale=True)
+    fig.update_layout(title="",
+                      plot_bgcolor='white', coloraxis_showscale=True, font=dict(size=18))
+
+    # Set axes to start from 0 and end at 1
+    for dimension in fig.data[0]['dimensions']:
+        if dimension['label'] in ['frequency', 'similarity', 'alea_uncertainty', 'epis_uncertainty', 'magnitude']:
+            dimension['range'] = [0, 1]
 
     fig.write_image(figure_path)
     return fig
