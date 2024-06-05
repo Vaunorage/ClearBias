@@ -21,9 +21,9 @@ dff = df[[e for e in protected_attr] + ['outcome']]
 
 # %%
 results_df, model_scores = run_aequitas(dff, col_to_be_predicted="outcome",
-                          sensitive_param_name_list=[k for k, e in protected_attr.items() if e],
-                          perturbation_unit=1, model_type="DecisionTree", threshold=0,
-                          global_iteration_limit=1000, local_iteration_limit=100)
+                                        sensitive_param_name_list=[k for k, e in protected_attr.items() if e],
+                                        perturbation_unit=1, model_type="DecisionTree", threshold=0,
+                                        global_iteration_limit=1000, local_iteration_limit=100)
 
 
 # %%
@@ -34,31 +34,36 @@ def transform_subgroup(x):
     return pd.Series(res, index=x.index)
 
 
-results_df['ind_discr_key'] = results_df.apply(lambda x: '|'.join(list(map(str, x[list(protected_attr)].values.tolist()))), axis=1)
+results_df['ind_discr_key'] = results_df.apply(
+    lambda x: '|'.join(list(map(str, x[list(protected_attr)].values.tolist()))), axis=1)
 df['ind_discr_key'] = df.apply(lambda x: '|'.join(list(map(str, x[list(protected_attr)].values.tolist()))), axis=1)
 
-results_df['couple_discr_key'] = results_df.groupby(['subgroup_num']).apply(transform_subgroup).reset_index(level=0, drop=True)
-df['couple_discr_key'] = df.groupby(['subgroup_num', 'subgroup_id']).apply(transform_subgroup).reset_index(level=0, drop=True).reset_index(level=0, drop=True)
+results_df['couple_discr_key'] = results_df.groupby(['subgroup_num']).apply(transform_subgroup).reset_index(level=0,
+                                                                                                            drop=True)
+df['couple_discr_key'] = df.groupby(['subgroup_num', 'subgroup_id']).apply(transform_subgroup).reset_index(level=0,
+                                                                                                           drop=True).reset_index(
+    level=0, drop=True)
 
 # %%
 results_df_couple = results_df[['couple_discr_key', 'diff_outcome']].drop_duplicates().reset_index(drop=True)
 df2_couple = df[['couple_discr_key', 'diff_outcome', 'intersectionality', 'similarity', 'alea_uncertainty',
-          'epis_uncertainty', 'magnitude', 'frequency']].drop_duplicates().reset_index(drop=True)
+                 'epis_uncertainty', 'magnitude', 'frequency']].drop_duplicates().reset_index(drop=True)
 
-#%%
-merged_df_leftjoin_df2_couple = df2_couple.merge(results_df_couple, on='couple_discr_key', how='inner', suffixes=('_injected', '_found'))
+# %%
+merged_df_leftjoin_df2_couple = df2_couple.merge(results_df_couple, on='couple_discr_key', how='inner',
+                                                 suffixes=('_injected', '_found'))
 
-#%%
+# %%
 results_df_ind = results_df[['ind_discr_key', 'diff_outcome']].drop_duplicates().reset_index(drop=True)
 df2_ind = df[['ind_discr_key', 'diff_outcome', 'intersectionality', 'similarity', 'alea_uncertainty',
-          'epis_uncertainty', 'magnitude', 'frequency']].drop_duplicates().reset_index(drop=True)
+              'epis_uncertainty', 'magnitude', 'frequency']].drop_duplicates().reset_index(drop=True)
 
-merged_df_leftjoin_df2_ind= df2_ind.merge(results_df_ind, on='ind_discr_key', how='inner',
-                               suffixes=('_injected', '_found'))
+merged_df_leftjoin_df2_ind = df2_ind.merge(results_df_ind, on='ind_discr_key', how='inner',
+                                           suffixes=('_injected', '_found'))
 
 # %%
 # a quel point le modele est bon lorsquil y a de lallucination
-#pour les cas hallucinés, ils discriminent contre qui ? est ce que ceux qui trouvent sont proches
+# pour les cas hallucinés, ils discriminent contre qui ? est ce que ceux qui trouvent sont proches
 # faire une analyse pour voir parmis les groupes de discrimination combien il en trouve ?
 
 # contre combien de personnes il trouve la discrimination :
