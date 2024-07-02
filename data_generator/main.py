@@ -6,6 +6,7 @@ import sqlite3
 
 import pandas as pd
 import numpy as np
+from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
 
@@ -184,6 +185,30 @@ def bin_array_values(array, num_bins):
     return binned_indices
 
 
+class CBDataframe(pd.DataFrame):
+
+    @property
+    def x_cols(self):
+        return list(filter(lambda x: 'Attr' in x, self.columns))
+
+    @property
+    def y_col(self):
+        return ['outcome']
+
+    def random_split(self, p=0.2):
+        train, test = train_test_split(self, test_size=p, random_state=42)
+        return CBDataframe(train), CBDataframe(test)
+
+    def xdf(self):
+        return self[self.x_cols]
+
+    def ydf(self):
+        return self[self.y_col]
+
+    def adf(self):
+        return self[self.x_cols + self.y_col]
+
+
 def generate_data(min_number_of_classes=2, max_number_of_classes=6, nb_attributes=6, prop_protected_attr=0.1,
                   nb_groups=100, max_group_size=100, hiddenlayers_depth=3, min_similarity=0.0, max_similarity=1.0,
                   min_alea_uncertainty=0.0,
@@ -344,5 +369,7 @@ def generate_data(min_number_of_classes=2, max_number_of_classes=6, nb_attribute
     results['diff_variation'] = coefficient_of_variation(results['diff_outcome'])
 
     protected_attr = {k: e for k, e in zip(attr_names, sets_attr)}
+
+    results = CBDataframe(results)
 
     return results, protected_attr
