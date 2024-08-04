@@ -5,3 +5,6 @@ pygad
 numpy
 scikit-learn
 torch
+lime
+parsimonious
+z3-solver

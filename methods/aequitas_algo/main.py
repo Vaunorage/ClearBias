@@ -1,7 +1,7 @@
-from aequitas_algo.algo import run_aequitas
 import pandas as pd
 
 from data_generator.main import generate_data
+from methods.aequitas_algo.algo import run_aequitas
 
 
 def run_algo(model_type, min_number_of_classes=2, max_number_of_classes=6, nb_attributes=6,
