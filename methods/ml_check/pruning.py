@@ -1,251 +1,214 @@
 import pandas as pd
 import numpy as np
 from sklearn.tree import _tree
-from methods.ml_check.util import local_load, local_save, run_z3, conv_z3_out_to_data
+from methods.ml_check.util import local_load, local_save, run_z3_solver, conv_z3_out_to_data
 
 
-def getDataType(value, dfOrig, i):
-    data_type = str(dfOrig.dtypes[i])
-    if ('int' in data_type):
-        digit = int(value)
-    elif ('float' in data_type):
-        digit = float(value)
-    return digit
+class DataTypeConverter:
+    @staticmethod
+    def get_data_type(value, df_orig, i):
+        data_type = str(df_orig.dtypes[i])
+        if 'int' in data_type:
+            return int(value)
+        elif 'float' in data_type:
+            return float(value)
+        return value
 
 
-def funcAddCond2File(index):
-    condition_file_content = local_load('ConditionFile').splitlines()
+class SMTFileHandler:
+    @staticmethod
+    def add_condition_to_file(index):
+        condition_file_content = local_load('ConditionFile').splitlines()
+        smt_file_content = local_load('DecSmt').splitlines()
+        smt_file_content = [x.strip() for x in smt_file_content]
 
-    smt_file_content = local_load('DecSmt').splitlines()
+        toggle_branch_smt = '\n'.join(smt_file_content)
+        toggle_branch_smt = toggle_branch_smt.replace("(check-sat)", '').replace("(get-model)", '')
 
-    smt_file_content = [x.strip() for x in smt_file_content]
-    local_save('\n'.join(smt_file_content), 'ToggleBranchSmt', force_rewrite=True)
+        temp_cond_content = condition_file_content[index]
+        toggle_branch_smt += f"(assert (not {temp_cond_content}))\n(check-sat)\n(get-model)\n"
 
-    toggle_branch_smt = local_load('ToggleBranchSmt')
-
-    toggle_branch_smt = toggle_branch_smt.replace("(check-sat)", '')
-    toggle_branch_smt = toggle_branch_smt.replace("(get-model)", '')
-
-    local_save(toggle_branch_smt, 'ToggleBranchSmt', force_rewrite=True)
-
-    toggle_branch_smt = local_load('ToggleBranchSmt')
-
-    temp_cond_content = condition_file_content[index]
-
-    toggle_branch_smt += "(assert (not " + temp_cond_content + "))"
-    toggle_branch_smt += "\n"
-
-    toggle_branch_smt += "(check-sat) \n"
-    toggle_branch_smt += "(get-model) \n"
-
-    local_save(toggle_branch_smt, 'ToggleBranchSmt', force_rewrite=True)
+        local_save(toggle_branch_smt, 'ToggleBranchSmt', force_rewrite=True)
 
 
-def funcgetPath4multiLbl(tree, dfMain, noCex, no_param):
-    feature_names = dfMain.columns
-    tree_ = tree.tree_
-    feature_name = [
-        feature_names[i] if i != _tree.TREE_UNDEFINED else "undefined!"
-        for i in tree_.feature
-    ]
+class DecisionTreePathExtractor:
+    @staticmethod
+    def get_path(tree, df_main, no_cex):
+        feature_names = df_main.columns
+        tree_ = tree.tree_
+        feature_name = [
+            feature_names[i] if i != _tree.TREE_UNDEFINED else "undefined!"
+            for i in tree_.feature
+        ]
 
-    dfT = pd.read_csv('files/TestDataSMTMain.csv')
-    pred_arr = np.zeros((tree_.n_outputs))
+        df_t = local_load('TestDataSMTMain')
 
-    node = 0
-    depth = 1
-    f1 = open('files/SampleFile.txt', 'w')
-    f1.write("(assert (=> (and ")
-    pathCondFile = open('files/ConditionFile.txt', 'w')
+        node = 0
+        sample_file = "(assert (=> (and "
+        path_cond_file = ""
 
-    while (True):
-        name = feature_name[node]
-        threshold = tree_.threshold[node]
+        while True:
+            if tree_.feature[node] == _tree.TREE_UNDEFINED:
+                sample_file += f") (= Class {np.argmax(tree_.value[node][0])})))"
+                break
 
-        for i in range(0, dfT.shape[1]):
-            if (dfT.columns.values[i] == name):
-                index = i
+            name = feature_name[node]
+            threshold = tree_.threshold[node]
 
-        if (tree_.feature[node] == _tree.TREE_UNDEFINED):
-            for i in range(0, tree_.n_outputs):
-                pred_arr[i] = np.argmax(tree_.value[node][i])
-            if (no_param == 1):
-                f1.write(") (= " + str(pred_arr) + ")))")
+            if name == "undefined!":
+                # Skip this node and move to the left child
+                node = tree_.children_left[node]
+                continue
+
+            index = df_t.columns.get_loc(name)
+            threshold = DataTypeConverter.get_data_type(threshold, df_main, index)
+
+            if df_t.iloc[no_cex][index] <= threshold:
+                node = tree_.children_left[node]
+                operator = "<="
             else:
-                f1.write(") (= " + str(pred_arr) + " " + str(noCex) + ")))")
-            break
+                node = tree_.children_right[node]
+                operator = ">"
 
-        index = int(index)
+            condition = f"({operator} {name}{no_cex} {threshold})"
+            sample_file += condition + " "
+            path_cond_file += condition + "\n"
 
-        if (dfT.iloc[0][index] <= threshold):
+        local_save(sample_file, 'SampleFile', force_rewrite=True)
+        local_save(path_cond_file, 'ConditionFile', force_rewrite=True)
 
-            node = tree_.children_left[node]
+    @staticmethod
+    def get_path_for_multi_label(tree, df_main, no_cex, no_param):
+        feature_names = df_main.columns
+        tree_ = tree.tree_
+        feature_name = [feature_names[i] if i != _tree.TREE_UNDEFINED else "undefined!" for i in tree_.feature]
 
-            depth = depth + 1
+        df_t = local_load('TestDataSMTMain')
+        pred_arr = np.zeros((tree_.n_outputs))
 
-            threshold = getDataType(threshold, dfMain, index)
+        node = 0
+        sample_file = "(assert (=> (and "
+        path_cond_file = ""
+
+        while True:
+            if tree_.feature[node] == _tree.TREE_UNDEFINED:
+                for i in range(tree_.n_outputs):
+                    pred_arr[i] = np.argmax(tree_.value[node][i])
+                sample_file += f") (= {str(pred_arr)} {'' + str(no_cex) if no_param != 1 else ''})))"
+                break
+
+            name = feature_name[node]
+            threshold = tree_.threshold[node]
+
+            if name == "undefined!":
+                node = tree_.children_left[node]
+                continue
+
+            index = df_t.columns.get_loc(name)
+            threshold = DataTypeConverter.get_data_type(threshold, df_main, index)
             threshold = round(threshold, 5)
-            if (no_param == 1):
-                f1.write("(<= " + str(name) + " " + str(threshold) + ") ")
+
+            if df_t.iloc[0][index] <= threshold:
+                node = tree_.children_left[node]
+                operator = "<="
             else:
-                f1.write("(<= " + str(name) + " " + str(noCex) + " " + str(threshold) + ") ")
-            pathCondFile.write("(<= " + str(name) + " " + str(threshold) + ") ")
-            pathCondFile.write("\n")
+                node = tree_.children_right[node]
+                operator = ">"
 
+            condition = f"({operator} {name}{' ' + str(no_cex) if no_param != 1 else ''} {threshold})"
+            sample_file += condition + " "
+            path_cond_file += condition + "\n"
 
+        local_save(sample_file, 'SampleFile', force_rewrite=True)
+        local_save(path_cond_file, 'ConditionFile', force_rewrite=True)
 
+class Pruner:
+    @staticmethod
+    def prune_instance(df_orig, dnn_flag):
+        local_save(pd.DataFrame(columns=df_orig.columns), 'CandidateSetInst')
+
+        param_dict = local_load('param_dict')
+        no_class = int(param_dict['no_of_class']) if param_dict['multi_label'] else 1
+
+        df_read = local_load('TestDataSMTMain')
+        data_read = df_read.values
+
+        for j in range(df_read.shape[0]):
+            for i in range(df_read.columns.values.shape[0] - no_class):
+                Pruner._process_feature(df_orig, df_read, data_read, j, i, param_dict)
+
+    @staticmethod
+    def _process_feature(df_orig, df_read, data_read, j, i, param_dict):
+        smt_file_content = local_load('DecSmt').splitlines()
+        smt_file_content = [x.strip() for x in smt_file_content]
+        local_save('\n'.join(smt_file_content), 'ToggleFeatureSmt', force_rewrite=True)
+
+        toggle_feature_smt = local_load('ToggleFeatureSmt')
+        toggle_feature_smt = toggle_feature_smt.replace("(check-sat)", '').replace("(get-model)", '')
+
+        name = str(df_read.columns.values[i])
+        digit = Pruner._get_digit_value(df_orig, data_read, j, i)
+
+        if ((int(param_dict['no_of_params']) == 1) and (param_dict['multi_label']) and
+                (param_dict['white_box_model'] == 'Decision tree')):
+            toggle_feature_smt += f"(assert (not (= {name} {digit}))) \n"
         else:
+            toggle_feature_smt += f"(assert (not (= {name}{j} {digit}))) \n"
 
-            node = tree_.children_right[node]
+        toggle_feature_smt += "(check-sat) \n(get-model) \n"
 
-            depth = depth + 1
+        local_save(toggle_feature_smt, 'ToggleFeatureSmt', force_rewrite=True)
+        run_z3_solver("ToggleFeatureSmt", "FinalOutput")
 
-            threshold = getDataType(threshold, dfMain, index)
-            threshold = round(threshold, 5)
-            # print(threshold)
-            if (no_param == 1):
-                f1.write("(> " + str(name) + " " + str(threshold) + ") ")
+        if conv_z3_out_to_data(df_orig):
+            df_smt = local_load('TestDataSMT')
+            local_save(df_smt, 'CandidateSetInst')
+
+    @staticmethod
+    def _get_digit_value(df_orig, data_read, j, i):
+        data_type = str(df_orig.dtypes[i])
+        if 'int' in data_type:
+            digit = int(data_read[j][i])
+        elif 'float' in data_type:
+            digit = float(data_read[j][i])
+        else:
+            digit = data_read[j][i]
+
+        digit = str(digit)
+        if 'e' in digit:
+            digit = digit.split('e')[0]
+        return digit
+
+    @staticmethod
+    def prune_branch(df_orig, tree_model):
+        local_save(pd.DataFrame(columns=df_orig.columns.values), 'CandidateSetBranch', force_rewrite=True)
+
+        param_dict = local_load('param_dict')
+        df_read = local_load('TestDataSMTMain')
+
+        for row in range(df_read.shape[0]):
+            if param_dict['multi_label']:
+                DecisionTreePathExtractor.get_path_for_multi_label(tree_model, df_orig, row,
+                                                                   int(param_dict['no_of_params']))
             else:
-                f1.write("(> " + str(name) + " " + str(noCex) + " " + str(threshold) + ") ")
+                DecisionTreePathExtractor.get_path(tree_model, df_orig, row)
 
-            pathCondFile.write("(> " + str(name) + " " + str(threshold) + ") ")
-            pathCondFile.write("\n")
+            condition_file = local_load('ConditionFile')
+            if not condition_file:
+                return
 
-    f1.close()
-    pathCondFile.close()
-
-
-def funcgetPath(tree, dfMain, noCex):
-    feature_names = dfMain.columns
-    tree_ = tree.tree_
-    feature_name = [
-        feature_names[i] if i != _tree.TREE_UNDEFINED else "undefined!"
-        for i in tree_.feature
-    ]
-
-    dfT = local_load('TestDataSMTMain')
-
-    node = 0
-    depth = 1
-    sample_file = ""
-    sample_file += "(assert (=> (and "
-    pathCondFile = ""
-
-    while (True):
-        name = feature_name[node]
-        threshold = tree_.threshold[node]
-
-        for i in range(0, dfT.shape[1]):
-            if (dfT.columns.values[i] == name):
-                index = i
-
-        if (tree_.feature[node] == _tree.TREE_UNDEFINED):
-            sample_file += ") (= Class " + str(np.argmax(tree_.value[node][0])) + ")))"
-            break
-
-        index = int(index)
-        if (dfT.iloc[noCex][index] <= threshold):
-            if noCex > 1:
-                print('dddd')
-            node = tree_.children_left[node]
-            depth = depth + 1
-            threshold = getDataType(threshold, dfMain, index)
-            sample_file += "(<= " + str(name) + str(noCex) + " " + str(threshold) + ") "
-            pathCondFile += "(<= " + str(name) + str(noCex) + " " + str(threshold) + ") "
-            pathCondFile += "\n"
-        else:
-            node = tree_.children_right[node]
-            depth = depth + 1
-            threshold = getDataType(threshold, dfMain, index)
-            sample_file += "(> " + str(name) + str(noCex) + " " + str(threshold) + ") "
-            pathCondFile += "(> " + str(name) + str(noCex) + " " + str(threshold) + ") "
-            pathCondFile += "\n"
-
-    local_save(sample_file, 'SampleFile', force_rewrite=True)
-    local_save(pathCondFile, 'ConditionFile', force_rewrite=True)
+            for i in range(len(condition_file.splitlines())):
+                SMTFileHandler.add_condition_to_file(i)
+                run_z3_solver('ToggleBranchSmt', 'FinalOutput')
+                if conv_z3_out_to_data(df_orig):
+                    df_smt = local_load('TestDataSMT')
+                    local_save(df_smt, 'CandidateSetBranch')
 
 
-def funcPrunInst(dfOrig, dnn_flag):
-    local_save(pd.DataFrame(columns=dfOrig.columns), 'CandidateSetInst')
-
-    paramDict = local_load('param_dict')
-
-    if (paramDict['multi_label']):
-        noClass = int(paramDict['no_of_class'])
-    else:
-        noClass = 1
-
-    # Getting the counter example pair (x, x') and saving it to a permanent storage
-    dfRead = local_load('TestDataSMTMain')
-    dataRead = dfRead.values
-
-    # Combining loop in line 2 & 6 in a single loop
-    for j in range(0, dfRead.shape[0]):
-        for i in range(0, dfRead.columns.values.shape[0] - noClass):
-            # writing content of files/DecSmt.smt2 to another file named files/ToggleFeatureSmt.smt2
-            smt_file_content = local_load('DecSmt').splitlines()
-
-            smt_file_content = [x.strip() for x in smt_file_content]
-
-            local_save('\n'.join(smt_file_content), 'ToggleFeatureSmt', force_rewrite=True)
-
-            toggle_feature_smt = local_load('ToggleFeatureSmt')
-
-            toggle_feature_smt = toggle_feature_smt.replace("(check-sat)", '')
-            toggle_feature_smt = toggle_feature_smt.replace("(get-model)", '')
-
-            name = str(dfRead.columns.values[i])
-
-            data_type = str(dfOrig.dtypes[i])
-            if ('int' in data_type):
-                digit = int(dataRead[j][i])
-            elif ('float' in data_type):
-                digit = float(dataRead[j][i])
-
-            digit = str(digit)
-            if 'e' in digit:
-                dig = digit.split('e')
-                digit = dig[0]
-            if ((int(paramDict['no_of_params']) == 1) and (paramDict['multi_label']) and (
-                    paramDict['white_box_model'] == 'Decision tree')):
-                toggle_feature_smt += "(assert (not (= " + name + " " + digit + "))) \n"
-            else:
-                toggle_feature_smt += "(assert (not (= " + name + str(j) + " " + digit + "))) \n"
-            toggle_feature_smt += "(check-sat) \n"
-            toggle_feature_smt += "(get-model) \n"
-
-            run_z3("ToggleFeatureSmt", "FinalOutput")
-
-            satFlag = conv_z3_out_to_data(dfOrig)
-
-            # If sat then add the counter example to the candidate set, refer line 8,9 in prunInst algorithm
-            if (satFlag == True):
-                dfSmt = local_load('TestDataSMT')
-                local_save(dfSmt, 'CandidateSetInst')
+# Main functions to be called
+def prune_instance(df_orig, dnn_flag):
+    Pruner.prune_instance(df_orig, dnn_flag)
 
 
-def funcPrunBranch(dfOrig, tree_model):
-    # data set to hold set of candidate counter examples, refer to cand-set of prunBranch algorithm
-    local_save(pd.DataFrame(columns=dfOrig.columns.values), 'CandidateSetBranch', force_rewrite=True)
-
-    paramDict = local_load('param_dict')
-
-    dfRead = local_load('TestDataSMTMain')
-
-    for row in range(0, dfRead.shape[0]):
-        if (paramDict['multi_label']):
-            funcgetPath4multiLbl(tree_model, dfOrig, row, int(paramDict['no_of_params']))
-        else:
-            funcgetPath(tree_model, dfOrig, row)
-
-        condition_file = local_load('ConditionFile')
-        if not condition_file:
-            return
-        for i in range(len(condition_file.splitlines())):
-            funcAddCond2File(i)
-            run_z3('ToggleBranchSmt', 'FinalOutput')
-            satFlag = conv_z3_out_to_data(dfOrig)
-
-            if (satFlag == True):
-                dfSmt = local_load('TestDataSMT')
-                local_save(dfSmt, 'CandidateSetBranch')
+def prune_branch(df_orig, tree_model):
+    Pruner.prune_branch(df_orig, tree_model)

@@ -1,6 +1,6 @@
 import json
 import pickle
-
+import re
 import numpy as np
 import pandas as pd
 import os
@@ -122,57 +122,9 @@ def local_load(var_name):
     return data
 
 
-def run_z3(input_file, output_file):
+def run_z3_solver(input_file, output_file):
     os.system(
         f"z3 {files_folder.joinpath(input_file).as_posix()}.txt > {files_folder.joinpath(output_file).as_posix()}.txt")
-
-
-def convDataInst(X, df, j, no_of_class):
-    paramDict = local_load('param_dict')
-    if (paramDict['multi_label']):
-        no_of_class = 1
-    data_inst = np.zeros((1, df.shape[1] - no_of_class))
-    if (j > X.shape[0]):
-        raise Exception('Z3 has produced counter example with all 0 values of the features: Run the script Again')
-    for i in range(df.shape[1] - no_of_class):
-        data_inst[0][i] = X[j][i]
-    return data_inst
-
-
-def funcAdd2Oracle(data):
-    local_save(pd.DataFrame(data), 'TestingData')
-
-
-def funcCreateOracle(no_of_class, multi_label, model, output_class_name):
-    df = local_load('TestingData')
-    data = df.values
-    if multi_label:
-        X = df.drop(output_class_name, axis=1)
-        predict_class = model.predict(X)
-        for i in range(0, X.shape[0]):
-            df.loc[i, 'Class'] = predict_class[i]
-    else:
-        X = data[:, :-no_of_class]
-        predict_class = model.predict(X)
-        index = df.shape[1] - no_of_class
-        for i in range(0, no_of_class):
-            className = str(df.columns.values[index + i])
-            for j in range(0, X.shape[0]):
-                df.loc[j, className] = predict_class[j][i]
-    local_save(df, 'OracleData', force_rewrite=True)
-
-
-def addSatOpt(file_name):
-    hh = "\n (check-sat) \n (get-model)"
-    local_save(hh, file_name)
-
-
-def storeAssumeAssert(file_name, no_assumption=False):
-    if not no_assumption:
-        f2_content = local_load('assumeStmnt')
-        local_save(f2_content, file_name)
-    f3_content = local_load('assertStmnt')
-    local_save(f3_content, file_name)
 
 
 def update_dataframe_types(df: pd.DataFrame, categorical_cols=None) -> pd.DataFrame:
