@@ -104,7 +104,7 @@ def funcGetBranch(sinBranch, dfT, rep):
             funcConvBranch(sinBranch, dfT, rep)
 
 
-def funcGenBranch(dfT, rep):
+def gen_smt_branch(dfT, rep):
     file_content = local_load('TreeOutput').splitlines()
     file_content = [x.strip() for x in file_content]
 
@@ -145,7 +145,8 @@ def funcGenBranch(dfT, rep):
         funcGetBranch(temp_file_cont, dfT, rep)
 
 
-def funcGenSMTFairness(dfT, no_of_instances):
+def gen_tree_smt_fairness(tree, dfT, no_of_instances):
+    tree_to_code(tree, dfT.columns)
     feName_type = local_load('feNameType')
 
     f = ''
@@ -177,4 +178,4 @@ def funcGenSMTFairness(dfT, no_of_instances):
         f = local_load('DecSmt')
         f += '\n;-----------' + str(i) + '-----------number instance-------------- \n'
         local_save(f, 'DecSmt', force_rewrite=True)
-        funcGenBranch(dfT, i)
+        gen_smt_branch(dfT, i)
