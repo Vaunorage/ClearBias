@@ -28,9 +28,9 @@ class AssertionVisitor(NodeVisitor):
             for el in self.varList:
                 if el in node.text:
                     if self.mydict['no_assumption']:
-                        className = 'Class' + str(self.mydict[el])
+                        className = self.paramDict['output_class_name'] + str(self.mydict[el])
                     else:
-                        className = 'Class' + str(self.count - 1)
+                        className = self.paramDict['output_class_name'] + str(self.count - 1)
             self.currentClass.append(className)
 
     def visit_neg(self, node, children):

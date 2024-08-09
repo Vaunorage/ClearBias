@@ -75,22 +75,15 @@ class DataGenerator:
 
     def generate_sample(self):
         sample_data = []
-        weight_content = local_load('MUTWeight')
 
         for column, info in self.feature_info.items():
-            if 'distribution' in info:
-                value = self._generate_numeric_value(info, weight_content)
-            else:
-                value = self._generate_categorical_value(info)
+            value = self._generate_categorical_value(info)
             sample_data.append(value)
 
         return np.array(sample_data, dtype=object).reshape(1, -1)
 
-    def _generate_numeric_value(self, info, weight_content):
-        if weight_content == 'False\n':
-            value = np.random.normal(info['mean'], info['std'])
-        else:
-            value = np.random.uniform(info['min'], info['max'])
+    def _generate_numeric_value(self, info):
+        value = np.random.uniform(info['min'], info['max'])
         return np.clip(value, info['min'], info['max'])
 
     def _generate_categorical_value(self, info):
@@ -162,8 +155,8 @@ class OracleDataGenerator:
 
     def generate_oracle(self):
         df_test = local_load('TestingData')
-        X_test = df_test.drop(columns='Class').values
-        df_test['Class'] = self.model.predict(X_test)
+        X_test = df_test.drop(columns=self.param_dict['output_class_name']).values
+        df_test[self.param_dict['output_class_name']] = self.model.predict(X_test)
         local_save(df_test, 'OracleData', force_rewrite=True)
 
 
@@ -211,7 +204,6 @@ class PropertyChecker:
             self.paramDict["model_path"] = model_path
         self.paramDict["model_type"] = "sklearn"
         local_save(model, "MUT")
-        local_save("False", "MUTWeight", force_rewrite=True)
         return model
 
     def _handle_training_data(self, train_data_available, train_data_loc, train_ratio):
@@ -237,14 +229,14 @@ class RunChecker:
 
     def _initialize_data(self):
         self.df = local_load('OracleData')
-        self.MUTcontent = file_exists('MUTWeigsht')
+        # self.MUTcontent = file_exists('MUTWeigsht')
         self.paramDict = local_load('param_dict')
 
     def _initialize_model(self):
-        if not self.MUTcontent:
-            self._initialize_sklearn_model()
-        else:
-            self._initialize_weight_model()
+        # if not self.MUTcontent:
+        self._initialize_sklearn_model()
+        # else:
+        #     self._initialize_weight_model()
 
     def _initialize_sklearn_model(self):
         self.model_type = self.paramDict['model_type']
@@ -252,10 +244,6 @@ class RunChecker:
             self.model = local_load(self.paramDict['model_path'])
         else:
             self.model = local_load('MUT')
-
-    def _initialize_weight_model(self):
-        dfWeight = local_load('MUTWeight')
-        self.model = dfWeight.values[:, :-1]
 
     def _save_initial_data(self):
         local_save(self.df, 'TestSet', force_rewrite=True)
@@ -265,18 +253,18 @@ class RunChecker:
         dfTest = local_load('TestingData')
         X = dfTest.drop(self.paramDict['output_class_name'], axis=1)
 
-        if not self.MUTcontent:
-            self._create_sklearn_oracle(dfTest, X)
-        else:
-            self._create_weight_oracle(dfTest, X)
+        # if not self.MUTcontent:
+        self._create_sklearn_oracle(dfTest, X)
+        # else:
+        #     self._create_weight_oracle(dfTest, X)
 
     def _create_sklearn_oracle(self, dfTest, X):
-        dfTest['Class'] = self.model.predict(X)
+        dfTest[self.paramDict['output_class_name']] = self.model.predict(X)
         local_save(dfTest, 'OracleData', force_rewrite=True)
 
     def _create_weight_oracle(self, dfTest, X):
         predict_list = np.sign(np.dot(self.model, X.T)).flatten()
-        dfTest['Class'] = predict_list.astype(int)
+        dfTest[self.paramDict['output_class_name']] = predict_list.astype(int)
         local_save(dfTest, 'OracleData', force_rewrite=True)
 
     def check_pair_belongs(self, tempMatrix, noAttr):
@@ -307,18 +295,15 @@ class RunChecker:
         dfCexSet = local_load('CexSet')
         X = dfCexSet.drop(self.paramDict['output_class_name'], axis=1)
 
-        if not self.MUTcontent:
-            self._add_sklearn_predictions(dfCexSet, X)
-        else:
-            self._add_weight_predictions(dfCexSet, X)
+        self._add_sklearn_predictions(dfCexSet, X)
 
     def _add_sklearn_predictions(self, dfCexSet, X):
-        dfCexSet['Class'] = self.model.predict(X)
+        dfCexSet[self.paramDict['output_class_name']] = self.model.predict(X)
         local_save(dfCexSet, 'CexSet', force_rewrite=True)
 
     def _add_weight_predictions(self, dfCexSet, X):
         predict_list = np.sign(np.dot(self.model, X.T)).flatten()
-        dfCexSet['Class'] = np.maximum(predict_list, 0)
+        dfCexSet[self.paramDict['output_class_name']] = np.maximum(predict_list, 0)
         local_save(dfCexSet, 'CexSet', force_rewrite=True)
 
     def check_duplicate(self, pairfirst, pairsecond, testMatrix):
@@ -386,7 +371,7 @@ class RunChecker:
         return (time.time() - self.start_time) > self.deadline
 
     def train_and_prepare_tree(self):
-        tree = util.train_decision_tree()
+        tree = util.train_decision_tree(self.paramDict['output_class_name'])
         df = local_load('OracleData')
         gen_tree_smt_fairness(tree, df, self.no_of_params)
         self.prepare_smt_file()
@@ -505,11 +490,11 @@ class RunChecker:
         elif index is not None:
             X = X[index:index + 1]
 
-        if not self.MUTcontent:
-            return self.model.predict(X)[0]
-        else:
-            temp_class = np.sign(np.dot(self.model, X.flatten()))
-            return 0 if temp_class < 0 else temp_class
+        # if not self.MUTcontent:
+        return self.model.predict(X)[0]
+        # else:
+        #     temp_class = np.sign(np.dot(self.model, X.flatten()))
+        #     return 0 if temp_class < 0 else temp_class
 
     def process_counterexamples(self):
         dfCand = local_load('Cand-Set')
@@ -526,7 +511,7 @@ class RunChecker:
             if all(z3_pred != y_true for z3_pred, y_true in zip(z3_predictions, y_group)):
                 for j, x in enumerate(group):
                     self.discriminatory_cases.append({
-                        'group_id': str(uuid.uuid4()[:6]),
+                        'group_id': str(uuid.uuid4())[:6],
                         'features': x,
                         'z3_prediction': z3_predictions[j],
                         'whitebox_prediction': whitebox_predictions[j],
@@ -584,7 +569,6 @@ class RunChecker:
             self.add_model_predictions()
             return True
         return False
-
 
     def get_cex_count(self):
         dfCexSet = local_load('CexSet')

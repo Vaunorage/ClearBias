@@ -186,30 +186,6 @@ def bin_array_values(array, num_bins):
     return binned_indices
 
 
-class CBDataframe(pd.DataFrame):
-
-    @property
-    def x_cols(self):
-        return list(filter(lambda x: 'Attr' in x, self.columns))
-
-    @property
-    def y_col(self):
-        return ['outcome']
-
-    def random_split(self, p=0.2):
-        train, test = train_test_split(self, test_size=p, random_state=42)
-        return CBDataframe(train), CBDataframe(test)
-
-    def xdf(self):
-        return self[self.x_cols]
-
-    def ydf(self):
-        return self[self.y_col]
-
-    def adf(self):
-        return self[self.x_cols + self.y_col]
-
-
 @dataclass
 class GeneratedData:
     dataframe: pd.DataFrame
@@ -220,6 +196,10 @@ class GeneratedData:
     max_group_size: int
     hiddenlayers_depth: int
     outcome_column: str
+
+    @property
+    def training_dataframe(self):
+        return self.dataframe[list(self.protected_attributes) + [self.outcome_column]]
 
 
 def generate_data(
@@ -250,6 +230,8 @@ def generate_data(
     Returns:
     - GeneratedData: A dataclass containing the generated dataframe, metadata, and additional information.
     """
+
+    outcome_column = 'outcome'
 
     # Generate the data schema based on the input parameters
     sets, sets_attr, attr_names = generate_data_schema(
@@ -407,7 +389,7 @@ def generate_data(
                     'max_number_of_classes', 'nb_attributes', 'prop_protected_attr', 'nb_groups', 'max_group_size',
                     'hiddenlayers_depth', 'granularity', 'intersectionality', 'similarity', 'alea_uncertainty',
                     'epis_uncertainty', 'magnitude', 'frequency'
-                ] + attr_names + ['outcome']
+                ] + attr_names + [outcome_column]
 
     # Combine all generated results into a single dataframe
     results = pd.DataFrame(np.concatenate(results), columns=col_names)
@@ -417,28 +399,25 @@ def generate_data(
 
     # If categorical outcomes are required, bin the outcome into categories
     if categorical_outcome:
-        results['outcome'] = bin_array_values(results['outcome'], nb_categories_outcome)
+        results[outcome_column] = bin_array_values(results[outcome_column], nb_categories_outcome)
 
     results = results.sort_values(['group_key', 'couple_key'])
 
     # Calculate the difference in outcomes within each group and couple
-    results[f'diff_outcome'] = results.groupby(['group_key', 'couple_key'])[f'outcome'].diff().abs().bfill()
+    results[f'diff_outcome'] = results.groupby(['group_key', 'couple_key'])[outcome_column].diff().abs().bfill()
     results['diff_variation'] = coefficient_of_variation(results['diff_outcome'])
 
     # Map the attributes to whether they are protected or not
     protected_attr = {k: e for k, e in zip(attr_names, sets_attr)}
 
-    # Identify categorical columns
-    categorical_columns = [col for col in results.columns if results[col].dtype == 'object']
-
     # Return a GeneratedData instance containing the results and additional metadata
     return GeneratedData(
         dataframe=results,
-        categorical_columns=categorical_columns,
+        categorical_columns=list(attr_names) + [outcome_column],
         protected_attributes=protected_attr,
         collisions=collisions,
         nb_groups=nb_groups,
         max_group_size=max_group_size,
         hiddenlayers_depth=hiddenlayers_depth,
-        outcome_column='outcome'
+        outcome_column=outcome_column
     )

@@ -12,10 +12,10 @@ files_folder = HERE.joinpath(f"methods/ml_check/files")
 from sklearn.tree import DecisionTreeClassifier
 
 
-def train_decision_tree():
+def train_decision_tree(outcome_column):
     df = local_load('OracleData')
-    X = df.drop(columns='Class').values
-    y = df['Class'].values
+    X = df.drop(columns=outcome_column).values
+    y = df[outcome_column].values
 
     model = DecisionTreeClassifier(
         criterion="entropy",
