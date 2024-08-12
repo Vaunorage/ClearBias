@@ -3,8 +3,11 @@ dash
 matplotlib
 pygad
 numpy
+sqlalchemy
 scikit-learn
 torch
 lime
 parsimonious
 z3-solver
+aif360
+ucimlrepo

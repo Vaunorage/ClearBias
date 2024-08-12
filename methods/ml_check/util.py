@@ -172,7 +172,7 @@ def convert_z3_output_to_df(file_content, df, paramDict):
 
 def conv_z3_out_to_data(df):
     paramDict = local_load('param_dict')
-    file_content = local_load('FinalOutput')
+    file_content = local_load('z3_raw_output')
 
     if ('unknown' in file_content[0]):
         raise Exception('Encoding problem')
@@ -182,5 +182,5 @@ def conv_z3_out_to_data(df):
     # Create DataFrame from the data dictionary
     dfAgain = convert_z3_output_to_df(file_content, df, paramDict)
 
-    local_save(dfAgain, 'TestDataSMT', force_rewrite=True)
+    local_save(dfAgain, 'formatted_z3_output', force_rewrite=True)
     return True
