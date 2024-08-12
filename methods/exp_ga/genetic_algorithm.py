@@ -30,11 +30,27 @@ class GA:
 
     def select(self):
         fitness = self.get_fitness()
-        probabilities = fitness / np.sum(fitness)
-        if not np.isclose(np.sum(probabilities), 1):
-            probabilities = probabilities / np.sum(probabilities)  # Normalize to ensure sum is 1
-        self.POP = self.POP[
-            np.random.choice(np.arange(self.POP_SIZE), size=self.POP_SIZE, replace=True, p=list(probabilities.squeeze()))]
+
+        # Normalize fitness to probabilities
+        if len(fitness) == 0:
+            raise ValueError("Fitness array is empty.")
+
+        total_fitness = np.sum(fitness)
+        if total_fitness == 0:
+            probabilities = np.ones(len(fitness)) / len(fitness)  # Uniform probabilities if all fitness are zero
+        else:
+            probabilities = fitness / total_fitness
+
+        # Ensure probabilities are a 1-D array and sum to 1
+        probabilities = probabilities.squeeze()
+        if probabilities.ndim == 0:
+            probabilities = np.array([probabilities])
+
+        probabilities = probabilities / np.sum(probabilities)  # Normalize to ensure sum is 1
+
+        # Selection process
+        selected_indices = np.random.choice(np.arange(self.POP_SIZE), size=self.POP_SIZE, replace=True, p=probabilities)
+        self.POP = self.POP[selected_indices]
 
     def crossover(self):
         for i in range(self.POP_SIZE):

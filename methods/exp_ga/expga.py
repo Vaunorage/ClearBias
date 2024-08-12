@@ -1,4 +1,5 @@
 import math
+import uuid
 import warnings
 
 import numpy as np
@@ -9,6 +10,8 @@ import pandas as pd
 from tqdm import tqdm
 from sklearn.ensemble import RandomForestClassifier
 from lime.lime_tabular import LimeTabularExplainer
+
+from data_generator.main import GeneratedData, generate_data
 from methods.exp_ga.genetic_algorithm import GA
 from methods.exp_ga.config import census, credit, bank
 
@@ -52,12 +55,12 @@ class GlobalDiscovery:
         return samples
 
 
-def xai_fair_testing(dataset, threshold, threshold_rank, sensitive_param, max_global, max_local):
-    data_config = {"census": census, "credit": credit, "bank": bank}
-    config = data_config[dataset]()
+def xai_fair_testing(dataset: GeneratedData, threshold, threshold_rank, sensitive_param, max_global, max_local):
+    # data_config = {"census": census, "credit": credit, "bank": bank}
+    # config = data_config[dataset]()
 
     # Load data and prepare model
-    X, Y = config.get_dataframe(preprocess=True)
+    X, Y = dataset.xdf, dataset.ydf
     model = RandomForestClassifier(n_estimators=10, random_state=42)
     model.fit(X, Y)
 
@@ -72,28 +75,35 @@ def xai_fair_testing(dataset, threshold, threshold_rank, sensitive_param, max_gl
         input_array = input_sample.squeeze()
         total_inputs.add(tuple(input_array))
 
-        for val in range(*config.input_bounds[config.sensitive_indices[sensitive_param]]):
-            if val != input_sample[config.sensitive_indices[sensitive_param]]:
-                altered_input = input_array.copy()
-                altered_input[config.sensitive_indices[sensitive_param]] = val
+        output_original = model.predict(pd.DataFrame(input_array.reshape(1, -1), columns=dataset.feature_names))
+        output_altered = None
 
-                output_original = model.predict(pd.DataFrame(input_array.reshape(1, -1), columns=config.feature_name))
-                output_altered = model.predict(pd.DataFrame(altered_input.reshape(1, -1), columns=config.feature_name))
+        for val in range(*dataset.input_bounds[dataset.sensitive_indices[sensitive_param]]):
+            if val != input_sample[dataset.sensitive_indices[sensitive_param]]:
+                altered_input = input_array.copy()
+                altered_input[dataset.sensitive_indices[sensitive_param]] = val
+
+                output_altered = model.predict(
+                    pd.DataFrame(altered_input.reshape(1, -1), columns=dataset.feature_names))
 
                 if (abs(output_original - output_altered) > threshold and tuple(input_array)
                         not in global_disc_inputs.union(local_disc_inputs)):
                     local_disc_inputs.add(tuple(input_array))
                     results.append((input_array, altered_input, output_original[0], output_altered[0]))
                     return 2 * abs(output_altered - output_original) + 1
+
+        if output_altered is None:
+            output_altered = output_original
+
         return 2 * abs(output_altered - output_original) + 1
 
     global_discovery = GlobalDiscovery()
-    train_samples = global_discovery(max_global, config.params, config.input_bounds,
-                                     config.sensitive_indices[sensitive_param])
+    train_samples = global_discovery(max_global, len(dataset.feature_names), dataset.input_bounds,
+                                     dataset.sensitive_indices[sensitive_param])
 
-    explainer = construct_explainer(X, config.feature_name, config.class_name)
-    seed = search_seed(model, config.feature_name, config.sens_name[sensitive_param], explainer, train_samples,
-                       config.params, threshold_rank)
+    explainer = construct_explainer(X, dataset.feature_names, dataset.outcome_column)
+    seed = search_seed(model, dataset.feature_names, sensitive_param, explainer, train_samples,
+                       len(dataset.feature_names), threshold_rank)
 
     if not seed:
         logger.info("No seeds found. Exiting...")
@@ -105,8 +115,8 @@ def xai_fair_testing(dataset, threshold, threshold_rank, sensitive_param, max_gl
 
     # Local search
     ga = GA(
-        nums=list(global_disc_inputs), bound=config.input_bounds, func=evaluate_local,
-        DNA_SIZE=len(config.input_bounds), cross_rate=0.9, mutation=0.05
+        nums=list(global_disc_inputs), bound=dataset.input_bounds, func=evaluate_local,
+        DNA_SIZE=len(dataset.input_bounds), cross_rate=0.9, mutation=0.05
     )
 
     for _ in tqdm(range(max_local), desc="Local search progress"):
@@ -120,13 +130,54 @@ def xai_fair_testing(dataset, threshold, threshold_rank, sensitive_param, max_gl
 
     # Create DataFrame from results
     df = pd.DataFrame(results, columns=["Original Input", "Altered Input", "Original Outcome", "Altered Outcome"])
-    df["Original Input"] = df["Original Input"].apply(lambda x: list(x))
-    df["Altered Input"] = df["Altered Input"].apply(lambda x: list(x))
+    df['Outcome Difference'] = df['Altered Outcome'] - df['Original Outcome']
+    df['group_id'] = [str(uuid.uuid4())[:8] for e in range(df.shape[0])]
+
+    df1 = df[['group_id', "Original Input", 'Original Outcome', 'Outcome Difference']].copy()
+    df1.rename(columns={'Original Input': 'input', 'Original Outcome': 'outcome'}, inplace=True)
+
+    df2 = df[['group_id', "Altered Input", 'Altered Outcome', 'Outcome Difference']].copy()
+    df2.rename(columns={'Altered Input': 'input', 'Altered Outcome': 'outcome'}, inplace=True)
+
+    df = pd.concat([df1, df2])
+
+    df.rename(columns={'Outcome Difference': 'diff_outcome'}, inplace=True)
+
+    df['diff_outcome'] = df['diff_outcome'].apply(abs)
+
+    df_attr = pd.DataFrame(df['input'].apply(lambda x: list(x)).tolist(), columns=ge.feature_names)
+
+    df = pd.concat([df.reset_index(drop=True), df_attr.reset_index(drop=True)], axis=1)
+
+    df.drop(columns=['input'], inplace=True)
+
+    df.sort_values(by=['group_id'], inplace=True)
+
+    df['ind_key'] = df.apply(lambda row: '|'.join(str(int(row[col])) for col in list(ge.attributes)), axis=1)
+    df['couple_key'] = df.groupby(df.index // 2)['ind_key'].transform('*'.join)
 
     return df
 
     # Display DataFrame
 
-# Usage example:
-df = xai_fair_testing("census", 0.5, 0.5, "age", 50, 50)
-print('ddd')
+
+ge = generate_data(min_number_of_classes=2, max_number_of_classes=6, nb_attributes=6,
+                   prop_protected_attr=0.3, nb_groups=500, max_group_size=50, hiddenlayers_depth=3,
+                   min_similarity=0.0, max_similarity=1.0, min_alea_uncertainty=0.0, max_alea_uncertainty=1.0,
+                   min_epis_uncertainty=0.0, max_epis_uncertainty=1.0, min_magnitude=0.0, max_magnitude=1.0,
+                   min_frequency=0.0, max_frequency=1.0, categorical_outcome=True, nb_categories_outcome=4)
+
+
+def run_expga_analysis(dataset: GeneratedData, threshold=0.5, threshold_rank=0.5, max_global=50, max_local=50):
+    dfs = []
+
+    for p_attr in dataset.protected_attributes:
+        df = xai_fair_testing(ge, threshold, threshold_rank, p_attr, max_global, max_local)
+        dfs.append(df)
+
+    result = pd.concat(dfs)
+    return result
+
+dd = run_expga_analysis(ge, threshold=0.5, threshold_rank=0.5, max_global=50, max_local=50)
+
+print('dd')
