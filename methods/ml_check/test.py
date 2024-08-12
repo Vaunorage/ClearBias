@@ -18,9 +18,9 @@ warnings.filterwarnings("ignore")
 
 def delete_all():
     files = ['assumeStmnt', 'assertStmnt', 'Cand-Set', 'CexSet', 'CandidateSet',
-             'CandidateSetInst', 'CandidateSetBranch', 'TestDataSMT',
+             'CandidateSetInst', 'CandidateSetBranch', 'formatted_z3_output',
              'TestDataSMTMain', 'DecSmt', 'ToggleBranchSmt',
-             'ToggleFeatureSmt', 'TreeOutput', 'SampleFile', 'FinalOutput',
+             'ToggleFeatureSmt', 'TreeOutput', 'SampleFile', 'z3_raw_output',
              'ConditionFile', 'MUT', 'DNNSmt', 'TestData', 'TestDataSet', 'CandTestDataSet']
     for ff in files:
         local_delete(ff)
@@ -79,7 +79,8 @@ def run_analysis(generated_data: GeneratedData, iteration_no: int = 1):
     f.write('------MLC_DT results-----\n')
 
     for no in range(iteration_no):
-        PropertyChecker(output_class_name=generated_data.outcome_column, categorical_columns=categorical_columns,
+        PropertyChecker(output_class_name=generated_data.outcome_column, all_attributes=list(generated_data.attributes),
+                        categorical_columns=categorical_columns,
                         no_of_params=2, max_samples=6, mul_cex=True, train_data_available=True, train_ratio=30,
                         no_of_train=1000, model=model, train_data_loc=train_data_loc,
                         white_box_model=['Decision tree'], no_of_class=2)

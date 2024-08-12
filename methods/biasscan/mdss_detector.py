@@ -1,61 +1,29 @@
 from typing import Union
 
-from biasscan.ScoringFunction import (
+from methods.biasscan.ScoringFunction import (
     Bernoulli,
     BerkJones,
     Gaussian,
     ScoringFunction,
     Poisson,
 )
-from biasscan.MDSS import MDSS
+from methods.biasscan.MDSS import MDSS
 
 import pandas as pd
 
 
 def bias_scan(
-    data: pd.DataFrame,
-    observations: pd.Series,
-    expectations: Union[pd.Series, pd.DataFrame] = None,
-    favorable_value: Union[str, float] = None,
-    overpredicted: bool = True,
-    scoring: Union[str, ScoringFunction] = "Bernoulli",
-    num_iters: int = 10,
-    penalty: float = 1e-17,
-    mode: str = "binary",
-    **kwargs,
+        data: pd.DataFrame,
+        observations: pd.Series,
+        expectations: Union[pd.Series, pd.DataFrame] = None,
+        favorable_value: Union[str, float] = None,
+        overpredicted: bool = True,
+        scoring: Union[str, ScoringFunction] = "Bernoulli",
+        num_iters: int = 10,
+        penalty: float = 1e-17,
+        mode: str = "binary",
+        **kwargs,
 ):
-    """
-    scan to find the highest scoring subset of records
-
-    :param data (dataframe): the dataset (containing the features) the model was trained on
-    :param observations (series): ground truth (correct) target values
-    :param expectations (series,  dataframe, optional): pandas series estimated targets
-        as returned by a model for binary, continuous and ordinal modes.
-        If mode is nominal, this is a dataframe with columns containing expectations for each nominal class.
-        If None, model is assumed to be a dumb model that predicts the mean of the targets
-                or 1/(num of categories) for nominal mode.
-    :param favorable_value(str, float, optional): Should be high or low or float if the mode in [binary, ordinal, or continuous].
-            If float, value has to be minimum or maximum in the observations column. Defaults to high if None for these modes.
-            Support for float left in to keep the intuition clear in binary classification tasks.
-            If mode is nominal, favorable values should be one of the unique categories in the observations.
-            Defaults to a one-vs-all scan if None for nominal mode.
-    :param overpredicted (bool, optional): flag for group to scan for.
-        True means we scan for a group whose expectations/predictions are systematically higher than observed.
-        In other words, True means we scan for a group whose observeed is systematically lower than the expectations.
-        False means we scan for a group whose expectations/predictions are systematically lower than observed.
-        In other words, False means we scan for a group whose observed is systematically higher than the expectations.
-    :param scoring (str or class): One of 'Bernoulli', 'Gaussian', 'Poisson', or 'BerkJones' or subclass of
-            :class:`aif360.metrics.mdss.ScoringFunctions.ScoringFunction`.
-    :param num_iters (int, optional): number of iterations (random restarts). Should be positive.
-    :param penalty (float,optional): penalty term. Should be positive. The penalty term as with any regularization parameter may need to be
-        tuned for ones use case. The higher the penalty, the less complex (number of features and feature values) the
-        highest scoring subset that gets returned is.
-    :param mode: one of ['binary', 'continuous', 'nominal', 'ordinal']. Defaults to binary.
-            In nominal mode, up to 10 categories are supported by default.
-            To increase this, pass in keyword argument max_nominal = integer value.
-
-    :returns: the highest scoring subset and the score or dict of the highest scoring subset and the score for each category in nominal mode
-    """
     # Ensure correct mode is passed in.
     modes = ["binary", "continuous", "nominal", "ordinal"]
     assert mode in modes, f"Expected one of {modes}, got {mode}."
@@ -70,9 +38,9 @@ def bias_scan(
         favorable_value = min_val
     elif favorable_value is None:
         if mode in ["binary", "ordinal", "continuous"]:
-            favorable_value = max_val # Default to higher is better
+            favorable_value = max_val  # Default to higher is better
         elif mode == "nominal":
-            favorable_value = "flag-all" # Default to scan through all categories
+            favorable_value = "flag-all"  # Default to scan through all categories
             assert favorable_value in [
                 "flag-all",
                 *uniques,
@@ -110,15 +78,15 @@ def bias_scan(
     else:
         scoring = scoring(**kwargs)
 
-    if mode == "binary": # Flip observations if favorable_value is 0 in binary mode.
+    if mode == "binary":  # Flip observations if favorable_value is 0 in binary mode.
         observations = pd.Series(observations == favorable_value, dtype=int)
     elif mode == "nominal":
         unique_outs = set(sorted(observations.unique()))
         size_unique_outs = len(unique_outs)
-        if expectations is not None: # Set expectations to 1/(num of categories) for nominal mode
+        if expectations is not None:  # Set expectations to 1/(num of categories) for nominal mode
             expectations_cols = set(sorted(expectations.columns))
             assert (
-                unique_outs == expectations_cols
+                    unique_outs == expectations_cols
             ), f"Expected {unique_outs} in expectation columns, got {expectations_cols}"
         else:
             expectations = pd.Series(
@@ -127,10 +95,10 @@ def bias_scan(
         max_nominal = kwargs.get("max_nominal", 10)
 
         assert (
-            size_unique_outs <= max_nominal
+                size_unique_outs <= max_nominal
         ), f"Nominal mode only support up to {max_nominal} labels, got {size_unique_outs}. Use keyword argument max_nominal to increase the limit."
 
-        if favorable_value != "flag-all": # If favorable flag is set, use one-vs-others strategy to scan, else use one-vs-all strategy
+        if favorable_value != "flag-all":  # If favorable flag is set, use one-vs-others strategy to scan, else use one-vs-all strategy
             observations = observations.map({favorable_value: 1})
             observations = observations.fillna(0)
             if isinstance(expectations, pd.DataFrame):

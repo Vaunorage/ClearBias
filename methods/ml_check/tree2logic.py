@@ -59,7 +59,7 @@ def tree_to_code(tree, feature_names):
     local_save(f, 'TreeOutput', force_rewrite=True)
 
 
-def funcConvBranch(single_branch, dfT, rep):
+def funcConvBranch(single_branch, dfT, rep, outcome_class_name):
     f = local_load('DecSmt')
     f += "(assert (=> (and "
     for i in range(0, len(single_branch)):
@@ -92,19 +92,19 @@ def funcConvBranch(single_branch, dfT, rep):
         elif ('return' in temp_Str):
             digit_class = int(re.search(r'\d+', temp_Str).group(0))
             digit_class = str(digit_class)
-            f += ") (= Class" + str(rep) + " " + digit_class + ")))"
+            f += f") (= {outcome_class_name}" + str(rep) + " " + digit_class + ")))"
             f += '\n'
     local_save(f, 'DecSmt', force_rewrite=True)
 
 
-def funcGetBranch(sinBranch, dfT, rep):
+def funcGetBranch(sinBranch, dfT, rep, outcome_class_name):
     for i in range(0, len(sinBranch)):
         tempSt = sinBranch[i]
         if ('return' in tempSt):
-            funcConvBranch(sinBranch, dfT, rep)
+            funcConvBranch(sinBranch, dfT, rep, outcome_class_name)
 
 
-def gen_smt_branch(dfT, rep):
+def gen_smt_branch(dfT, rep, outcome_class_name):
     file_content = local_load('TreeOutput').splitlines()
     file_content = [x.strip() for x in file_content]
 
@@ -117,7 +117,7 @@ def gen_smt_branch(dfT, rep):
 
         j = k - 1
         if temp_file_cont[j] == '}':
-            funcGetBranch(temp_file_cont, dfT, rep)
+            funcGetBranch(temp_file_cont, dfT, rep, outcome_class_name)
             while True:
                 if (temp_file_cont[j] == '{'):
                     temp_file_cont[j] = ''
@@ -138,14 +138,14 @@ def gen_smt_branch(dfT, rep):
     if ('return' in file_content[1]):
         digit = int(re.search(r'\d+', file_content[1]).group(0))
         f = local_load('DecSmt')
-        f += "(assert (= Class" + str(rep) + " " + str(digit) + "))"
+        f += f"(assert (= {outcome_class_name}" + str(rep) + " " + str(digit) + "))"
         f += "\n"
         local_save(f, 'DecSmt', force_rewrite=True)
     else:
-        funcGetBranch(temp_file_cont, dfT, rep)
+        funcGetBranch(temp_file_cont, dfT, rep, outcome_class_name)
 
 
-def gen_tree_smt_fairness(tree, dfT, no_of_instances):
+def gen_tree_smt_fairness(tree, dfT, no_of_instances, outcome_class_name):
     tree_to_code(tree, dfT.columns)
     feName_type = local_load('feNameType')
 
@@ -178,4 +178,4 @@ def gen_tree_smt_fairness(tree, dfT, no_of_instances):
         f = local_load('DecSmt')
         f += '\n;-----------' + str(i) + '-----------number instance-------------- \n'
         local_save(f, 'DecSmt', force_rewrite=True)
-        gen_smt_branch(dfT, i)
+        gen_smt_branch(dfT, i, outcome_class_name)

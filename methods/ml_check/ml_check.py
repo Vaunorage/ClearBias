@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 
 import pandas as pd
@@ -9,8 +10,10 @@ import re
 import torch
 from joblib import load
 import time
+from itertools import tee
 
 from methods.ml_check import util, assume2logic, assert2logic
+from methods.ml_check.pruning import Pruner
 from methods.ml_check.tree2logic import gen_tree_smt_fairness
 from methods.ml_check.util import local_save, local_load, file_exists, run_z3_solver
 from methods.ml_check import pruning
@@ -77,7 +80,10 @@ class DataGenerator:
         sample_data = []
 
         for column, info in self.feature_info.items():
-            value = self._generate_categorical_value(info)
+            if 'distribution' in info:
+                value = self._generate_numeric_value(info)
+            else:
+                value = self._generate_categorical_value(info)
             sample_data.append(value)
 
         return np.array(sample_data, dtype=object).reshape(1, -1)
@@ -161,7 +167,8 @@ class OracleDataGenerator:
 
 
 class PropertyChecker:
-    def __init__(self, output_class_name, categorical_columns, max_samples=1000, deadline=500000, model=None,
+    def __init__(self, output_class_name, all_attributes, categorical_columns, max_samples=1000,
+                 deadline=500000, model=None,
                  no_of_params=None, mul_cex=False, white_box_model="Decision tree", no_of_class=None,
                  no_EPOCHS=100, train_data_available=False, train_data_loc="", multi_label=False,
                  model_path="", no_of_train=1000, train_ratio=100):
@@ -180,7 +187,8 @@ class PropertyChecker:
             "train_data_loc": train_data_loc,
             "train_ratio": train_ratio,
             'output_class_name': output_class_name,
-            'categorical_columns': categorical_columns
+            'categorical_columns': categorical_columns,
+            'attributes': all_attributes
         }
 
         self._validate_params(no_of_params)
@@ -229,14 +237,10 @@ class RunChecker:
 
     def _initialize_data(self):
         self.df = local_load('OracleData')
-        # self.MUTcontent = file_exists('MUTWeigsht')
         self.paramDict = local_load('param_dict')
 
     def _initialize_model(self):
-        # if not self.MUTcontent:
         self._initialize_sklearn_model()
-        # else:
-        #     self._initialize_weight_model()
 
     def _initialize_sklearn_model(self):
         self.model_type = self.paramDict['model_type']
@@ -252,11 +256,7 @@ class RunChecker:
     def create_oracle(self):
         dfTest = local_load('TestingData')
         X = dfTest.drop(self.paramDict['output_class_name'], axis=1)
-
-        # if not self.MUTcontent:
         self._create_sklearn_oracle(dfTest, X)
-        # else:
-        #     self._create_weight_oracle(dfTest, X)
 
     def _create_sklearn_oracle(self, dfTest, X):
         dfTest[self.paramDict['output_class_name']] = self.model.predict(X)
@@ -295,15 +295,7 @@ class RunChecker:
         dfCexSet = local_load('CexSet')
         X = dfCexSet.drop(self.paramDict['output_class_name'], axis=1)
 
-        self._add_sklearn_predictions(dfCexSet, X)
-
-    def _add_sklearn_predictions(self, dfCexSet, X):
         dfCexSet[self.paramDict['output_class_name']] = self.model.predict(X)
-        local_save(dfCexSet, 'CexSet', force_rewrite=True)
-
-    def _add_weight_predictions(self, dfCexSet, X):
-        predict_list = np.sign(np.dot(self.model, X.T)).flatten()
-        dfCexSet[self.paramDict['output_class_name']] = np.maximum(predict_list, 0)
         local_save(dfCexSet, 'CexSet', force_rewrite=True)
 
     def check_duplicate(self, pairfirst, pairsecond, testMatrix):
@@ -373,17 +365,18 @@ class RunChecker:
     def train_and_prepare_tree(self):
         tree = util.train_decision_tree(self.paramDict['output_class_name'])
         df = local_load('OracleData')
-        gen_tree_smt_fairness(tree, df, self.no_of_params)
+        gen_tree_smt_fairness(tree, df, self.no_of_params, self.paramDict['output_class_name'])
         self.prepare_smt_file()
         return tree
 
     def prepare_smt_file(self):
         f2_content = local_load('assumeStmnt')
         f3_content = local_load('assertStmnt')
-        local_save(f2_content + f3_content + "\n (check-sat) \n (get-model)", 'DecSmt')
+        final_smt = f2_content + f3_content + "\n (check-sat) \n (get-model)"
+        local_save(final_smt, 'DecSmt')
 
     def check_satisfiability(self):
-        run_z3_solver('DecSmt', 'FinalOutput')
+        run_z3_solver('DecSmt', 'z3_raw_output')
         return util.conv_z3_out_to_data(self.df)
 
     def handle_unsatisfiable_case(self):
@@ -407,18 +400,38 @@ class RunChecker:
         return cex_count
 
     def process_candidate_set(self, tree):
-        df = local_load('TestDataSMT')
+        df = local_load('formatted_z3_output')
         local_save(df, 'CandidateSet', force_rewrite=True)
         local_save(df, 'TestDataSMTMain', force_rewrite=True)
 
         df = local_load('OracleData')
-        pruning.prune_instance(df, False)
-        pruning.prune_branch(df, tree)
+        Pruner.prune_instance(df)
+        Pruner.prune_branch(df, tree, self.paramDict['output_class_name'])
 
-        self.remove_duplicates_from_candidate_set()
+        df_smt_inst = local_load('CandidateSetInst')
+        df_smt_branch = local_load('CandidateSetBranch')
 
-    def remove_duplicates_from_candidate_set(self):
+        pruned_candidates_result = pd.concat([df_smt_inst, df_smt_branch])
+        local_save(pruned_candidates_result, 'CandidateSet')
+
         dfCandidate = local_load('CandidateSet')
+
+        testMatrix = self.remove_duplicates_from_candidate_set(dfCandidate)
+
+        testMatrix = pd.DataFrame(testMatrix, columns=dfCandidate.columns)
+        testMatrix = testMatrix[(testMatrix.T != 0).any()]
+
+        local_save(testMatrix, 'TestSet')
+
+        testMatrix['ind_key'] = testMatrix.apply(
+            lambda row: '|'.join(str(int(row[col])) for col in self.paramDict['attributes']), axis=1)
+
+        testMatrix['couple_key'] = testMatrix.groupby(testMatrix.index // 2)['ind_key'].transform('*'.join)
+
+        local_save(testMatrix, 'Cand-Set', force_rewrite=True)
+
+    def remove_duplicates_from_candidate_set(self, dfCandidate):
+
         dataCandidate = dfCandidate.values
         testMatrix = np.zeros((dfCandidate.shape[0], dfCandidate.shape[1]))
 
@@ -435,16 +448,78 @@ class RunChecker:
                 testIndx += 2
                 candIndx += 2
 
-        self._save_processed_data(testMatrix, dfCandidate.columns)
+        return testMatrix
 
-    def _save_processed_data(self, testMatrix, columns):
-        local_save(pd.DataFrame(testMatrix), 'TestSet')
-        local_save(pd.DataFrame(testMatrix, columns=columns), 'Cand-Set')
+    # def remove_duplicates_from_candidate_set(self):
+    #     dfCandidate = local_load('CandidateSet')
+    #     dfTest = local_load('TestSet')
+    #
+    # def remove_duplicates_from_candidate_set(self, n=2):
+    #     def hash_rows(*rows):
+    #         return hashlib.md5(pd.concat(rows).to_string().encode()).hexdigest()
+    #
+    #     def create_n_row_hashes(df, n):
+    #         if len(df) < n:
+    #             return pd.Series([], index=df.index)
+    #
+    #         iters = tee(df.iterrows(), n)
+    #         for i, it in enumerate(iters[1:], 1):
+    #             for _ in range(i):
+    #                 next(it, None)
+    #
+    #         hashes = []
+    #         for group in zip(*iters):
+    #             if len(group) == n:
+    #                 hashes.append(hash_rows(*[row for _, row in group]))
+    #             else:
+    #                 break  # Stop when we can't form a full group
+    #
+    #         return pd.Series(hashes, index=df.index[:len(hashes)])
+    #
+    #     df1 = local_load('CandidateSet')
+    #     df2 = local_load('TestSet')
+    #
+    #     df1['n_row_hash'] = create_n_row_hashes(df1, n)
+    #     df2['n_row_hash'] = create_n_row_hashes(df2, n)
+    #
+    #     duplicate_hashes = pd.concat([df1['n_row_hash'], df2['n_row_hash']]).value_counts()
+    #     duplicate_hashes = duplicate_hashes[duplicate_hashes > 1].index
+    #
+    #     def create_mask(df):
+    #         if 'n_row_hash' not in df.columns or df['n_row_hash'].empty:
+    #             return pd.Series(True, index=df.index)
+    #         mask = ~df['n_row_hash'].isin(duplicate_hashes)
+    #         for i in range(1, n):
+    #             mask &= ~df['n_row_hash'].shift(-i).isin(duplicate_hashes)
+    #         return mask
+    #
+    #     df1_result = df1[create_mask(df1)].drop('n_row_hash', axis=1).reset_index(drop=True)
+    #
+    #     for file_name in ['TestSet', 'Cand-Set']:
+    #         df = df1_result if file_name == 'Cand-Set' else df2[create_mask(df2)].drop('n_row_hash',
+    #                                                                                    axis=1).reset_index(drop=True)
+    #         df = df[(df.T != 0).any()]
+    #         local_save(df, file_name, force_rewrite=True)
 
-        for file_name in ['TestSet', 'Cand-Set']:
-            df = local_load(file_name)
-            df = df[(df.T != 0).any()]
-            local_save(df, file_name, force_rewrite=True)
+    #     df_unique = dfCandidate.drop_duplicates()
+    #
+    #     df_unique = pd.merge(df_unique, dfTest, how='outer', indicator=True).query('_merge == "left_only"').drop(
+    #         '_merge', axis=1)
+
+    # dfCombined = pd.concat([dfTest, dfCandidate])
+    # pairs = dfCombined.values.reshape(-1, 2, dfCombined.shape[1])
+    # df_pairs = pd.DataFrame(pairs.reshape(-1, 2 * dfCombined.shape[1]))
+    # df_unique = df_pairs.drop_duplicates()
+    # unique_pairs = df_unique.values.reshape(-1, 2, dfCombined.shape[1])
+    # testMatrix = unique_pairs.reshape(-1, dfCombined.shape[1])
+
+    # local_save(df_unique, 'TestSet')
+    # local_save(df_unique, 'Cand-Set')
+    #
+    # for file_name in ['TestSet', 'Cand-Set']:
+    #     df = local_load(file_name)
+    #     df = df[(df.T != 0).any()]
+    #     local_save(df, file_name, force_rewrite=True)
 
     def process_pruned_candidates(self):
         dfCand = local_load('Cand-Set')
@@ -490,37 +565,17 @@ class RunChecker:
         elif index is not None:
             X = X[index:index + 1]
 
-        # if not self.MUTcontent:
         return self.model.predict(X)[0]
-        # else:
-        #     temp_class = np.sign(np.dot(self.model, X.flatten()))
-        #     return 0 if temp_class < 0 else temp_class
 
     def process_counterexamples(self):
         dfCand = local_load('Cand-Set')
-        X = dfCand.drop(self.paramDict['output_class_name'], axis=1).values
+        X = dfCand[self.paramDict['attributes']].values
         y = dfCand[self.paramDict['output_class_name']]
 
-        for i in range(0, len(X), self.no_of_params):
-            group = X[i:i + self.no_of_params]
-            y_group = y[i:i + self.no_of_params]
+        dfCand.rename(columns={self.paramDict['output_class_name']: 'z3_pred'}, inplace=True)
+        dfCand['whitebox_pred'] = self.model.predict(X)
 
-            z3_predictions = [self.predict(x.reshape(1, -1)) for x in group]
-            whitebox_predictions = self.model.predict(group)
-
-            if all(z3_pred != y_true for z3_pred, y_true in zip(z3_predictions, y_group)):
-                for j, x in enumerate(group):
-                    self.discriminatory_cases.append({
-                        'group_id': str(uuid.uuid4())[:6],
-                        'features': x,
-                        'z3_prediction': z3_predictions[j],
-                        'whitebox_prediction': whitebox_predictions[j],
-                        'true_label': y_group.iloc[j],
-                        'agreement': z3_predictions[j] == whitebox_predictions[j]
-                    })
-
-                if not self.mul_cex:
-                    return True
+        self.discriminatory_cases.append(dfCand)
 
         return len(self.discriminatory_cases) > 0
 
@@ -529,21 +584,21 @@ class RunChecker:
             print("No discriminatory cases found.")
             return
 
-        df = pd.DataFrame(self.discriminatory_cases)
+        df = pd.concat(self.discriminatory_cases)
 
-        # Convert feature arrays to separate columns
-        feature_df = pd.DataFrame(df['features'].tolist(),
-                                  columns=[f'feature_{i}' for i in range(len(df['features'][0]))])
+        # # Convert feature arrays to separate columns
+        # feature_df = pd.DataFrame(df['features'].tolist(),
+        #                           columns=[f'feature_{i}' for i in range(len(df['features'][0]))])
+        #
+        # # Combine with other columns
+        # result_df = pd.concat([
+        #     df[['group_id']],
+        #     feature_df,
+        #     df.drop(['group_id', 'features'], axis=1)
+        # ], axis=1)
 
-        # Combine with other columns
-        result_df = pd.concat([
-            df[['group_id']],
-            feature_df,
-            df.drop(['group_id', 'features'], axis=1)
-        ], axis=1)
-
-        local_save(result_df, 'DiscriminatoryCases', force_rewrite=True)
-        print(f"Saved {len(result_df)} discriminatory cases in {result_df['group_id'].nunique()} groups to file.")
+        local_save(df, 'DiscriminatoryCases', force_rewrite=True)
+        print(f"Saved {len(df)} discriminatory cases in {df['group_id'].nunique()} groups to file.")
 
     def is_counterexample_group(self, group):
         misclassified = []

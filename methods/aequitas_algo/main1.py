@@ -3,7 +3,7 @@
 
 from sqlalchemy import create_engine
 
-from aequitas_algo.algo import run_aequitas
+from methods.aequitas_algo.algo import run_aequitas
 from data_generator.main import generate_data
 import random
 
@@ -23,33 +23,33 @@ def run_algo(model_type, min_number_of_classes=2, max_number_of_classes=6, nb_at
     modelst = ["DecisionTree", "MLPC", "SVM", "RandomForest"]
 
     model_type = modelst[model_type]
-    df, protected_attr = generate_data(min_number_of_classes=min_number_of_classes, max_group_size=max_group_size,
-                                       max_number_of_classes=max_number_of_classes, nb_attributes=nb_attributes,
-                                       prop_protected_attr=prop_protected_attr, nb_groups=nb_groups,
-                                       hiddenlayers_depth=hiddenlayers_depth, min_similarity=min_similarity,
-                                       max_similarity=max_similarity, min_alea_uncertainty=min_alea_uncertainty,
-                                       max_alea_uncertainty=max_alea_uncertainty,
-                                       min_epis_uncertainty=min_epis_uncertainty,
-                                       max_epis_uncertainty=max_epis_uncertainty,
-                                       min_magnitude=min_magnitude, max_magnitude=max_magnitude,
-                                       min_frequency=min_frequency, max_frequency=max_frequency,
-                                       categorical_outcome=categorical_outcome,
-                                       nb_categories_outcome=nb_categories_outcome)
+    ge = generate_data(min_number_of_classes=min_number_of_classes, max_group_size=max_group_size,
+                       max_number_of_classes=max_number_of_classes, nb_attributes=nb_attributes,
+                       prop_protected_attr=prop_protected_attr, nb_groups=nb_groups,
+                       hiddenlayers_depth=hiddenlayers_depth, min_similarity=min_similarity,
+                       max_similarity=max_similarity, min_alea_uncertainty=min_alea_uncertainty,
+                       max_alea_uncertainty=max_alea_uncertainty,
+                       min_epis_uncertainty=min_epis_uncertainty,
+                       max_epis_uncertainty=max_epis_uncertainty,
+                       min_magnitude=min_magnitude, max_magnitude=max_magnitude,
+                       min_frequency=min_frequency, max_frequency=max_frequency,
+                       categorical_outcome=categorical_outcome,
+                       nb_categories_outcome=nb_categories_outcome)
 
-    dff = df[[e for e in protected_attr] + ['outcome']]
-    results_df, model_scores = run_aequitas(dff, col_to_be_predicted="outcome",
-                                            sensitive_param_name_list=[k for k, e in protected_attr.items() if e],
+    dff = ge.dataframe[[e for e in list(ge.attributes)] + [ge.outcome_column]]
+    results_df, model_scores = run_aequitas(dff, col_to_be_predicted=ge.outcome_column,
+                                            sensitive_param_name_list=[k for k, e in ge.attributes.items() if e],
                                             perturbation_unit=1, model_type=model_type, threshold=0,
                                             global_iteration_limit=global_iteration_limit,
                                             local_iteration_limit=local_iteration_limit)
 
     print("Merge results")
-    df_true_pos = df.drop(columns=list(protected_attr)).merge(results_df.drop(columns=list(protected_attr)), how='left',
-                                                              on='couple_key')
-    df_false_pos = results_df.merge(df, how='left', on='couple_key')
+    df_true_pos = ge.dataframe.drop(columns=list(protected_attr)).merge(results_df.drop(columns=list(protected_attr)),
+                                                                        how='left', on='couple_key')
+    df_false_pos = results_df.merge(ge.dataframe, how='left', on='couple_key')
 
     print("Calculate metrics")
-    unique_couple_keys_in_df = df['couple_key'].nunique()
+    unique_couple_keys_in_df = ge.dataframe['couple_key'].nunique()
     unique_couple_keys_in_results_df = results_df['couple_key'].nunique()
 
     couple_tpr, couple_fpr = 0, 0
@@ -62,7 +62,7 @@ def run_algo(model_type, min_number_of_classes=2, max_number_of_classes=6, nb_at
         couple_fpr = df_false_pos[~df_false_pos['collisions'].isnull()]['couple_key'].unique().shape[
                          0] / unique_couple_keys_in_results_df
 
-    return couple_tpr, couple_fpr, model_scores, df_true_pos, protected_attr
+    return results_df, couple_tpr, couple_fpr, model_scores, df_true_pos, protected_attr
 
 
 def random_scale_boundary(boundary, min_scale=0.0, max_scale=1.0):
@@ -129,7 +129,7 @@ for _ in range(k):
                       "magnitude", "frequency", "number_of_classes"]
     params = generate_parameters(parameter_bounds, min_max_labels)
     print(params)
-    couple_tpr, couple_fpr, model_scores, couple_df, protected_attr = run_algo(**params)
+    results_df, couple_tpr, couple_fpr, model_scores, couple_df, protected_attr = run_algo(**params)
 
     couple_df['couple_tpr'] = couple_tpr
     couple_df['couple_fpr'] = couple_fpr
@@ -141,7 +141,7 @@ for _ in range(k):
 
     couple_df.to_sql('results4', con=engine, if_exists='append', index=False)
 
-import optuna
+# import optuna
 
 
 # def objective(trial):

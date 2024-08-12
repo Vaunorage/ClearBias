@@ -190,7 +190,7 @@ def bin_array_values(array, num_bins):
 class GeneratedData:
     dataframe: pd.DataFrame
     categorical_columns: list
-    protected_attributes: dict
+    attributes: dict
     collisions: int
     nb_groups: int
     max_group_size: int
@@ -198,8 +198,12 @@ class GeneratedData:
     outcome_column: str
 
     @property
+    def protected_attributes(self):
+        return [k for k, v in self.attributes.items() if v]
+
+    @property
     def training_dataframe(self):
-        return self.dataframe[list(self.protected_attributes) + [self.outcome_column]]
+        return self.dataframe[list(self.attributes) + [self.outcome_column]]
 
 
 def generate_data(
@@ -414,7 +418,7 @@ def generate_data(
     return GeneratedData(
         dataframe=results,
         categorical_columns=list(attr_names) + [outcome_column],
-        protected_attributes=protected_attr,
+        attributes=protected_attr,
         collisions=collisions,
         nb_groups=nb_groups,
         max_group_size=max_group_size,
