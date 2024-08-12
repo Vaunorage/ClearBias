@@ -202,8 +202,31 @@ class GeneratedData:
         return [k for k, v in self.attributes.items() if v]
 
     @property
+    def feature_names(self):
+        return list(self.attributes)
+
+    @property
+    def sensitive_indices(self):
+        return {k: i for i, (k, v) in enumerate(self.attributes.items()) if v}
+
+    @property
     def training_dataframe(self):
         return self.dataframe[list(self.attributes) + [self.outcome_column]]
+
+    @property
+    def xdf(self):
+        return self.dataframe[list(self.attributes)]
+
+    @property
+    def ydf(self):
+        return self.dataframe[self.outcome_column]
+
+    def __post_init__(self):
+        self.input_bounds = []
+        for col in list(self.attributes):
+            min_val = math.floor(self.xdf[col].min())
+            max_val = math.ceil(self.xdf[col].max())
+            self.input_bounds.append([min_val, max_val])
 
 
 def generate_data(
@@ -399,7 +422,8 @@ def generate_data(
     results = pd.DataFrame(np.concatenate(results), columns=col_names)
     results['collisions'] = collisions
 
-    results = convert_to_float(results)
+    for column in attr_names + [outcome_column]:
+        results[column] = pd.to_numeric(results[column], errors='ignore')
 
     # If categorical outcomes are required, bin the outcome into categories
     if categorical_outcome:
