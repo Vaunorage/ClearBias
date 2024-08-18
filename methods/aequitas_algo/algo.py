@@ -131,6 +131,9 @@ class Fully_Direct:
         self.direction_probability = [self.init_prob] * len(self.input_bounds)
         self.direction_probability[self.col_to_be_predicted_idx] = 0  # nullify the y col
         self.param_probability = [1.0 / self.num_params] * len(self.input_bounds)
+
+        self.normalise_probability()
+
         self.param_probability[self.col_to_be_predicted_idx] = 0
 
         self.global_disc_inputs = set()
@@ -263,6 +266,7 @@ class Fully_Direct:
 
     def local_perturbation(self, x):
         columns = [i for i in range(len(self.input_bounds))]  # we're only perturbing non-y columns right?
+        self.normalise_probability()
         param_choice = np.random.choice(columns, p=self.param_probability)
         act = [-1, 1]
         direction_choice = np.random.choice(act, p=[self.direction_probability[param_choice],
@@ -330,9 +334,10 @@ def generate_sklearn_classifier(dataset: Dataset, model_type: str):
         model = RandomForestClassifier(n_estimators=4)
         model_name = 'RandomForestClassifier'
     else:
-        error_message = 'The chosen types of model is not supported yet. Please choose from one of the following: \
-                            DecisionTree, MLPC, SVM and RandomForest'
-        raise ValueError(error_message)
+        print('dddd')
+        # error_message = 'The chosen types of model is not supported yet. Please choose from one of the following: \
+        #                     DecisionTree, MLPC, SVM and RandomForest'
+        # raise ValueError(error_message)
 
     model.fit(X_train.values, y_train.values)
     pred = model.predict(X_test.values)
@@ -383,13 +388,13 @@ def aequitas_fully_directed_sklearn(dataset, perturbation_unit, threshold, globa
     basinhopping(fully_direct.evaluate_global, initial_input, stepsize=1.0, take_step=fully_direct.global_discovery,
                  minimizer_kwargs=minimizer, niter=global_iteration_limit)
     print("Finished Global Search")
-    global_results = collect_results(fully_direct, sensitive_attribute)
+    results = collect_results(fully_direct, sensitive_attribute)
 
     fully_direct = mp_basinhopping(fully_direct, minimizer, local_iteration_limit)
     print("Local Search Finished")
-    local_results = collect_results(fully_direct, sensitive_attribute)
+    results = collect_results(fully_direct, sensitive_attribute)
 
-    return {**global_results, **local_results}
+    return results
 
 
 def run_aequitas(df, col_to_be_predicted, sensitive_param_name_list, perturbation_unit, model_type, threshold=0,

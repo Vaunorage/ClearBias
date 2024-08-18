@@ -13,14 +13,14 @@ DB_PATH = "/home/vaunorage/PycharmProjects/clear/ClearBias/experiment_results.db
 engine = create_engine(f'sqlite:///{DB_PATH}')
 
 
-def run_algo(model_type, min_number_of_classes=2, max_number_of_classes=6, nb_attributes=6,
-             prop_protected_attr=0.3, nb_groups=500, max_group_size=50, hiddenlayers_depth=3, min_similarity=0.0,
-             max_similarity=1.0, min_alea_uncertainty=0.0, max_alea_uncertainty=1.0,
-             min_epis_uncertainty=0.0, max_epis_uncertainty=1.0,
-             min_magnitude=0.0, max_magnitude=1.0, min_frequency=0.0, max_frequency=1.0,
-             categorical_outcome=True, nb_categories_outcome=4,
-             global_iteration_limit=1000, local_iteration_limit=100):
-    modelst = ["DecisionTree", "MLPC", "SVM", "RandomForest"]
+def run_experiment(model_type, min_number_of_classes=2, max_number_of_classes=6, nb_attributes=6,
+                   prop_protected_attr=0.1, nb_groups=500, max_group_size=50, hiddenlayers_depth=3, min_similarity=0.0,
+                   max_similarity=1.0, min_alea_uncertainty=0.0, max_alea_uncertainty=1.0,
+                   min_epis_uncertainty=0.0, max_epis_uncertainty=1.0,
+                   min_magnitude=0.0, max_magnitude=1.0, min_frequency=0.0, max_frequency=1.0,
+                   categorical_outcome=True, nb_categories_outcome=4,
+                   global_iteration_limit=100, local_iteration_limit=10):
+    modelst = ["DecisionTree", "SVM", "MLPC", "RandomForest"]
 
     model_type = modelst[model_type]
     ge = generate_data(min_number_of_classes=min_number_of_classes, max_group_size=max_group_size,
@@ -36,9 +36,9 @@ def run_algo(model_type, min_number_of_classes=2, max_number_of_classes=6, nb_at
                        categorical_outcome=categorical_outcome,
                        nb_categories_outcome=nb_categories_outcome)
 
-    dff = ge.dataframe[[e for e in list(ge.attributes)] + [ge.outcome_column]]
+    dff = ge.dataframe[list(ge.attributes.keys()) + [ge.outcome_column]]
     results_df, model_scores = run_aequitas(dff, col_to_be_predicted=ge.outcome_column,
-                                            sensitive_param_name_list=[k for k, e in ge.attributes.items() if e],
+                                            sensitive_param_name_list=ge.protected_attributes,
                                             perturbation_unit=1, model_type=model_type, threshold=0,
                                             global_iteration_limit=global_iteration_limit,
                                             local_iteration_limit=local_iteration_limit)
@@ -104,7 +104,7 @@ def generate_parameters(parameter_bounds, min_max_labels):
 
 
 parameter_bounds = {
-    "model_type": (0, 3),
+    "model_type": (0,1),
     "nb_attributes": (5, 10),
     "prop_protected_attr": (0.1, 0.5),
     "nb_groups": (100, 600),
@@ -129,7 +129,7 @@ for _ in range(k):
                       "magnitude", "frequency", "number_of_classes"]
     params = generate_parameters(parameter_bounds, min_max_labels)
     print(params)
-    results_df, couple_tpr, couple_fpr, model_scores, couple_df, protected_attr = run_algo(**params)
+    results_df, couple_tpr, couple_fpr, model_scores, couple_df, protected_attr = run_experiment(**params)
 
     couple_df['couple_tpr'] = couple_tpr
     couple_df['couple_fpr'] = couple_fpr
