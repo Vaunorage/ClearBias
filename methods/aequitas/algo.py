@@ -415,7 +415,7 @@ def aequitas_fully_directed_sklearn(dataset, perturbation_unit, threshold, globa
 
 
 def run_aequitas(df, col_to_be_predicted, sensitive_param_name_list, perturbation_unit, model_type, threshold=0,
-                 global_iteration_limit=1000, local_iteration_limit=100):
+                 global_iteration_limit=1000, local_iteration_limit=100) -> pd.DataFrame:
     results = []
     dataset = Dataset(df, col_to_be_predicted=col_to_be_predicted, sensitive_param_name_list=sensitive_param_name_list)
     model, model_scores = generate_sklearn_classifier(dataset, model_type)
@@ -447,15 +447,17 @@ def run_aequitas(df, col_to_be_predicted, sensitive_param_name_list, perturbatio
     attr.remove(col_to_be_predicted)
     res2['indv_key'] = res2.apply(lambda x: '|'.join(list(map(str, x[attr].values.tolist()))), axis=1)
 
-    def transform_subgroup(x, protected_attr):
+    def transform_subgroup(x):
         res = x['indv_key'].tolist()
         res = ["*".join(res), "*".join(res[::-1])]
         return pd.Series(res, index=x.index)
 
-    ress = res2.groupby(['case_id']).apply(lambda x: transform_subgroup(x, attr))
+    ress = res2.groupby(['case_id']).apply(lambda x: transform_subgroup(x))
     if ress.shape[0] > 0:
         res2['couple_key'] = ress.reset_index(level=0, drop=True)
     else:
         res2['couple_key'] = None
 
-    return res2, model_scores
+    res2['model_scores'] = model_scores
+
+    return res2

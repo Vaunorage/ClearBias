@@ -3,7 +3,7 @@
 
 from sqlalchemy import create_engine
 
-from methods.aequitas_algo.algo import run_aequitas
+from methods.aequitas.algo import run_aequitas
 from data_generator.main import generate_data
 import random
 

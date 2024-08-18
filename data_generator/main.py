@@ -185,7 +185,7 @@ def bin_array_values(array, num_bins):
 
 
 @dataclass
-class GeneratedData:
+class DiscriminationData:
     dataframe: pd.DataFrame
     categorical_columns: list
     attributes: dict
@@ -247,7 +247,7 @@ def generate_data(
         max_frequency=1.0,
         categorical_outcome: bool = False,
         nb_categories_outcome: int = 6
-) -> GeneratedData:
+) -> DiscriminationData:
     """
     Generates synthetic data with configurable parameters for protected and unprotected attributes,
     group sizes, and different types of uncertainties.
@@ -437,7 +437,7 @@ def generate_data(
     protected_attr = {k: e for k, e in zip(attr_names, sets_attr)}
 
     # Return a GeneratedData instance containing the results and additional metadata
-    return GeneratedData(
+    return DiscriminationData(
         dataframe=results,
         categorical_columns=list(attr_names) + [outcome_column],
         attributes=protected_attr,

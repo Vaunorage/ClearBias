@@ -4,7 +4,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from dataclasses import dataclass
 
-from data_generator.main import generate_data, GeneratedData
+from data_generator.main import generate_data, DiscriminationData
 from paths import HERE
 from methods.ml_check.ml_check import Assume, Assert, RunChecker, PropertyChecker
 from methods.ml_check.util import local_delete, local_load, update_dataframe_types, file_exists
@@ -31,7 +31,7 @@ def func_calculate_sem(samples):
     return standard_dev / math.sqrt(len(samples))
 
 
-def run_analysis(generated_data: GeneratedData, iteration_no: int = 1):
+def run_analysis(generated_data: DiscriminationData, iteration_no: int = 1):
     delete_all()
 
     # Save training dataframe to CSV
