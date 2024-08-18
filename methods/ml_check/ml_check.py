@@ -598,7 +598,7 @@ class RunChecker:
         # ], axis=1)
 
         local_save(df, 'DiscriminatoryCases', force_rewrite=True)
-        print(f"Saved {len(df)} discriminatory cases in {df['group_id'].nunique()} groups to file.")
+        print(f"Saved {len(df)} discriminatory cases in {df['couple_key'].nunique()} groups to file.")
 
     def is_counterexample_group(self, group):
         misclassified = []
