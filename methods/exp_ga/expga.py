@@ -11,7 +11,7 @@ from tqdm import tqdm
 from sklearn.ensemble import RandomForestClassifier
 from lime.lime_tabular import LimeTabularExplainer
 
-from data_generator.main import GeneratedData, generate_data
+from data_generator.main import DiscriminationData, generate_data
 from methods.exp_ga.genetic_algorithm import GA
 from methods.exp_ga.config import census, credit, bank
 
@@ -55,7 +55,7 @@ class GlobalDiscovery:
         return samples
 
 
-def xai_fair_testing(dataset: GeneratedData, threshold, threshold_rank, sensitive_param, max_global, max_local):
+def xai_fair_testing(dataset: DiscriminationData, threshold, threshold_rank, sensitive_param, max_global, max_local):
     # data_config = {"census": census, "credit": credit, "bank": bank}
     # config = data_config[dataset]()
 
@@ -168,7 +168,7 @@ ge = generate_data(min_number_of_classes=2, max_number_of_classes=6, nb_attribut
                    min_frequency=0.0, max_frequency=1.0, categorical_outcome=True, nb_categories_outcome=4)
 
 
-def run_expga_analysis(dataset: GeneratedData, threshold=0.5, threshold_rank=0.5, max_global=50, max_local=50):
+def run_expga_analysis(dataset: DiscriminationData, threshold=0.5, threshold_rank=0.5, max_global=50, max_local=50):
     dfs = []
 
     for p_attr in dataset.protected_attributes:
