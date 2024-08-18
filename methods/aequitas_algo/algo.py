@@ -394,7 +394,24 @@ def aequitas_fully_directed_sklearn(dataset, perturbation_unit, threshold, globa
     print("Local Search Finished")
     results = collect_results(fully_direct, sensitive_attribute)
 
-    return results
+    res_global = pd.DataFrame({k: results[k] for k in
+                               ['Global Discriminatory Inputs', 'Global Counter Discriminatory Inputs',
+                                'Global Magnitude']})
+
+    res_global['type'] = 'global'
+
+    res_local = pd.DataFrame({k: results[k] for k in
+                              ['Local Discriminatory Inputs', 'Local Counter Discriminatory Inputs',
+                               'Local Magnitude']})
+    res_local['type'] = 'local'
+
+    res = pd.DataFrame(np.concatenate([res_global.values, res_local.values]),
+                       columns=['discrimination', 'counter_discrimination', 'magnitude', 'type'])
+
+    for e in ['Sensitive Attribute', 'Total Inputs', 'Discriminatory Inputs', 'Percentage Discriminatory Inputs']:
+        res[e] = results[e]
+
+    return res
 
 
 def run_aequitas(df, col_to_be_predicted, sensitive_param_name_list, perturbation_unit, model_type, threshold=0,
@@ -407,48 +424,38 @@ def run_aequitas(df, col_to_be_predicted, sensitive_param_name_list, perturbatio
                                                  local_iteration_limit, sensitive_param_id, model, sensitive_attribute)
         results.append(result)
 
-    results_df = pd.DataFrame(results)
+    res = pd.concat(results)
 
-    ress_df = []
-    for row in results_df.iterrows():
-        sub1_discr = pd.DataFrame(row[1]['Local Discriminatory Inputs'], columns=df.columns)
+    res['case_id'] = np.arange(res.shape[0])
 
-        subgroup_num = [f"{row[0]}{e}" for e in range(sub1_discr.shape[0])]
+    res1 = pd.DataFrame(np.concatenate(
+        [res.drop(columns=['discrimination']).values, res.drop(columns=['counter_discrimination']).values]),
+        columns=['discrimination', 'magnitude', 'type', 'Sensitive Attribute', 'Total Inputs', 'Discriminatory Inputs',
+                 'Percentage Discriminatory Inputs', 'case_id'])
 
-        sub1_discr['subgroup_num'] = subgroup_num
-        sub1_discr['diff_outcome'] = np.array(row[1]['Local Magnitude'])
+    disc_df = pd.DataFrame(res1['discrimination'].tolist(), columns=dataset.column_names)
 
-        sub2_discr = pd.DataFrame(row[1]['Local Counter Discriminatory Inputs'], columns=df.columns)
-        sub2_discr['subgroup_num'] = subgroup_num
-        sub2_discr['diff_outcome'] = np.array(row[1]['Local Magnitude'])
+    res2 = pd.concat([disc_df, res1.drop(columns=['discrimination'])], axis=1)
 
-        res_df = pd.concat([sub1_discr.reset_index(drop=True), sub2_discr.reset_index(drop=True)])
+    res2['outcome'] = model.predict(res2[dataset.column_names].drop(columns=[dataset.col_to_be_predicted]))
 
-        res_df['Sensitive Attribute'] = row[1]['Sensitive Attribute']
-        res_df['Total Inputs'] = row[1]['Total Inputs']
-        res_df['Discriminatory Inputs'] = row[1]['Discriminatory Inputs']
-        res_df['Percentage Discriminatory Inputs'] = row[1]['Percentage Discriminatory Inputs']
+    res2['magnitude'] = res2['magnitude'].apply(lambda x: x[0])
 
-        ress_df.append(res_df.reset_index(drop=True))
-
-    res = pd.concat(ress_df)
-
-    res = res.sort_values(['Sensitive Attribute', 'subgroup_num'])
-    res['subgroup_id'] = res.groupby(['subgroup_num']).cumcount() + 1
+    res2.sort_values(by=['case_id'], inplace=True)
 
     attr = list(df.columns)
     attr.remove(col_to_be_predicted)
-    res['indv_key'] = res.apply(lambda x: '|'.join(list(map(str, x[attr].values.tolist()))), axis=1)
+    res2['indv_key'] = res2.apply(lambda x: '|'.join(list(map(str, x[attr].values.tolist()))), axis=1)
 
     def transform_subgroup(x, protected_attr):
         res = x['indv_key'].tolist()
         res = ["*".join(res), "*".join(res[::-1])]
         return pd.Series(res, index=x.index)
 
-    ress = res.groupby(['subgroup_num']).apply(lambda x: transform_subgroup(x, attr))
+    ress = res2.groupby(['case_id']).apply(lambda x: transform_subgroup(x, attr))
     if ress.shape[0] > 0:
-        res['couple_key'] = ress.reset_index(level=0, drop=True)
+        res2['couple_key'] = ress.reset_index(level=0, drop=True)
     else:
-        res['couple_key'] = None
+        res2['couple_key'] = None
 
-    return res, model_scores
+    return res2, model_scores
