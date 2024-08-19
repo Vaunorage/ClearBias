@@ -8,6 +8,10 @@ import numpy as np
 from tqdm import tqdm
 from dataclasses import dataclass
 
+from pandas import DataFrame
+from pandas._typing import Dtype
+from typing import Literal, TypeVar, Any, List, Dict
+
 
 def max_rank(sets):
     total_combinations = 1
@@ -184,16 +188,66 @@ def bin_array_values(array, num_bins):
     return binned_indices
 
 
+# Create a TypeVar for the attribute columns
+AttrCol = TypeVar('AttrCol', bound=str)
+
+
+class DiscriminationDataFrame(DataFrame):
+    group_key: str
+    subgroup_key: str
+    couple_key: str
+    indv_key: str
+    group_size: int
+    min_number_of_classes: int
+    max_number_of_classes: int
+    nb_attributes: int
+    prop_protected_attr: float
+    nb_groups: int
+    max_group_size: int
+    hiddenlayers_depth: int
+    granularity: int
+    intersectionality: int
+    similarity: float
+    alea_uncertainty: float
+    epis_uncertainty: float
+    magnitude: float
+    frequency: float
+    outcome: float  # or int if categorical_outcome is True
+    collisions: int
+    diff_outcome: float
+    diff_variation: float
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+
+    def __getitem__(self, key: AttrCol) -> Any:
+        return super().__getitem__(key)
+
+    # Add a method to get all attribute columns
+    def get_attr_columns(self) -> list[str]:
+        return [col for col in self.columns if col.startswith('Attr')]
+
+    # Add a method to get a specific attribute column
+    def get_attr_column(self, index: int, protected: bool) -> Any:
+        suffix = '_T' if protected else '_X'
+        col_name = f'Attr{index}{suffix}'
+        return self[col_name] if col_name in self.columns else None
+
+
 @dataclass
 class DiscriminationData:
-    dataframe: pd.DataFrame
-    categorical_columns: list
-    attributes: dict
+    dataframe: DiscriminationDataFrame
+    categorical_columns: List[str]
+    attributes: Dict[str, bool]
     collisions: int
     nb_groups: int
     max_group_size: int
     hiddenlayers_depth: int
-    outcome_column: str
+    outcome_column: Literal['outcome']
+
+    @property
+    def attr_columns(self) -> List[str]:
+        return self.dataframe.get_attr_columns()
 
     @property
     def protected_attributes(self):
@@ -437,6 +491,9 @@ def generate_data(
     protected_attr = {k: e for k, e in zip(attr_names, sets_attr)}
 
     # Return a GeneratedData instance containing the results and additional metadata
+
+    results = DiscriminationDataFrame(results, columns=col_names)
+
     return DiscriminationData(
         dataframe=results,
         categorical_columns=list(attr_names) + [outcome_column],

@@ -2,7 +2,8 @@ import time
 import random
 import numpy as np
 import pandas as pd
-
+from typing import TypedDict, List, Tuple, Dict, Any, Union
+from pandas import DataFrame
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score
@@ -10,14 +11,10 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neural_network import MLPClassifier
-
-import multiprocessing as mp
 from scipy.optimize import basinhopping
 import errno
 
 from tqdm import tqdm
-
-from paths import HERE
 
 
 def chunks(lst, n):
@@ -334,10 +331,9 @@ def generate_sklearn_classifier(dataset: Dataset, model_type: str):
         model = RandomForestClassifier(n_estimators=4)
         model_name = 'RandomForestClassifier'
     else:
-        print('dddd')
-        # error_message = 'The chosen types of model is not supported yet. Please choose from one of the following: \
-        #                     DecisionTree, MLPC, SVM and RandomForest'
-        # raise ValueError(error_message)
+        error_message = 'The chosen types of model is not supported yet. Please choose from one of the following: \
+                            DecisionTree, MLPC, SVM and RandomForest'
+        raise ValueError(error_message)
 
     model.fit(X_train.values, y_train.values)
     pred = model.predict(X_test.values)
@@ -374,6 +370,22 @@ def collect_results(fully_direct, sensitive_attribute):
         "Local Magnitude": fully_direct.local_disc_inputs_list["magnitude"],
     }
     return results
+
+
+class AequitasResultRow(TypedDict, total=False):
+    outcome: Union[int, float]
+    diff_outcome: float
+    type: str
+    Sensitive_Attribute: str
+    Total_Inputs: int
+    Discriminatory_Inputs: int
+    Percentage_Discriminatory_Inputs: float
+    case_id: int
+    indv_key: str
+    couple_key: str
+
+
+AequitasResultDF = DataFrame
 
 
 def aequitas_fully_directed_sklearn(dataset, perturbation_unit, threshold, global_iteration_limit,
@@ -414,50 +426,59 @@ def aequitas_fully_directed_sklearn(dataset, perturbation_unit, threshold, globa
     return res
 
 
-def run_aequitas(df, col_to_be_predicted, sensitive_param_name_list, perturbation_unit, model_type, threshold=0,
-                 global_iteration_limit=1000, local_iteration_limit=100) -> pd.DataFrame:
-    results = []
+def run_aequitas(df: DataFrame,
+                 col_to_be_predicted: str,
+                 sensitive_param_name_list: List[str],
+                 perturbation_unit: float,
+                 model_type: str,
+                 threshold: float = 0,
+                 global_iteration_limit: int = 1000,
+                 local_iteration_limit: int = 100) -> Tuple[AequitasResultDF, Dict[str, Union[str, float]]]:
+    results: List[AequitasResultDF] = []
     dataset = Dataset(df, col_to_be_predicted=col_to_be_predicted, sensitive_param_name_list=sensitive_param_name_list)
     model, model_scores = generate_sklearn_classifier(dataset, model_type)
+
     for sensitive_param_id, sensitive_attribute in zip(dataset.sensitive_param_idx_list, sensitive_param_name_list):
         result = aequitas_fully_directed_sklearn(dataset, perturbation_unit, threshold, global_iteration_limit,
                                                  local_iteration_limit, sensitive_param_id, model, sensitive_attribute)
         results.append(result)
 
-    res = pd.concat(results)
+    res: AequitasResultDF = pd.concat(results)
 
     res['case_id'] = np.arange(res.shape[0])
 
-    res1 = pd.DataFrame(np.concatenate(
+    res1: AequitasResultDF = pd.DataFrame(np.concatenate(
         [res.drop(columns=['discrimination']).values, res.drop(columns=['counter_discrimination']).values]),
-        columns=['discrimination', 'magnitude', 'type', 'Sensitive Attribute', 'Total Inputs', 'Discriminatory Inputs',
+        columns=['discrimination', 'diff_outcome', 'type', 'Sensitive Attribute', 'Total Inputs',
+                 'Discriminatory Inputs',
                  'Percentage Discriminatory Inputs', 'case_id'])
 
-    disc_df = pd.DataFrame(res1['discrimination'].tolist(), columns=dataset.column_names)
+    disc_df: DataFrame = pd.DataFrame(res1['discrimination'].tolist(), columns=dataset.column_names)
 
-    res2 = pd.concat([disc_df, res1.drop(columns=['discrimination'])], axis=1)
+    res2: AequitasResultDF = pd.concat([disc_df, res1.drop(columns=['discrimination'])], axis=1)
 
-    res2['outcome'] = model.predict(res2[dataset.column_names].drop(columns=[dataset.col_to_be_predicted]))
+    if res.shape[0] > 0:
+        res2['outcome'] = model.predict(res2[dataset.column_names].drop(columns=[dataset.col_to_be_predicted]))
 
-    res2['magnitude'] = res2['magnitude'].apply(lambda x: x[0])
+        res2['diff_outcome'] = res2['diff_outcome'].apply(lambda x: x[0])
 
-    res2.sort_values(by=['case_id'], inplace=True)
+        res2.sort_values(by=['case_id'], inplace=True)
 
-    attr = list(df.columns)
-    attr.remove(col_to_be_predicted)
-    res2['indv_key'] = res2.apply(lambda x: '|'.join(list(map(str, x[attr].values.tolist()))), axis=1)
+        attr = list(df.columns)
+        attr.remove(col_to_be_predicted)
+        res2['indv_key'] = res2.apply(lambda x: '|'.join(list(map(str, x[attr].values.tolist()))), axis=1)
 
-    def transform_subgroup(x):
-        res = x['indv_key'].tolist()
-        res = ["*".join(res), "*".join(res[::-1])]
-        return pd.Series(res, index=x.index)
+        def transform_subgroup(x):
+            res = x['indv_key'].tolist()
+            res = ["*".join(res), "*".join(res[::-1])]
+            return pd.Series(res, index=x.index)
 
-    ress = res2.groupby(['case_id']).apply(lambda x: transform_subgroup(x))
-    if ress.shape[0] > 0:
-        res2['couple_key'] = ress.reset_index(level=0, drop=True)
-    else:
-        res2['couple_key'] = None
+        ress = res2.groupby(['case_id']).apply(lambda x: transform_subgroup(x))
+        if ress.shape[0] > 0:
+            res2['couple_key'] = ress.reset_index(level=0, drop=True)
+        else:
+            res2['couple_key'] = None
 
-    res2['model_scores'] = model_scores
+        return res2, model_scores[0]
 
-    return res2
+    return pd.DataFrame(), {}
