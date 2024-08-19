@@ -1,19 +1,18 @@
+from typing import TypedDict, List, Tuple, Dict, Any, Union
 import math
 import uuid
 import warnings
-
 import numpy as np
 import random
 import logging
-
 import pandas as pd
+from pandas import DataFrame
 from tqdm import tqdm
 from sklearn.ensemble import RandomForestClassifier
 from lime.lime_tabular import LimeTabularExplainer
 
-from data_generator.main import DiscriminationData, generate_data
+from data_generator.main import DiscriminationData
 from methods.exp_ga.genetic_algorithm import GA
-from methods.exp_ga.config import census, credit, bank
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -21,15 +20,24 @@ logger = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
+class ExpGAResultRow(TypedDict, total=False):
+    group_id: str
+    outcome: float
+    diff_outcome: float
+    indv_key: str
+    couple_key: str
 
-def construct_explainer(train_vectors, feature_names, class_names):
+ExpGAResultDF = DataFrame
+
+def construct_explainer(train_vectors: np.ndarray, feature_names: List[str], class_names: List[str]) -> LimeTabularExplainer:
     return LimeTabularExplainer(
         train_vectors, feature_names=feature_names, class_names=class_names, discretize_continuous=False
     )
 
-
-def search_seed(model, feature_names, sens_name, explainer, train_vectors, num, threshold_l):
-    seed = []
+def search_seed(model: RandomForestClassifier, feature_names: List[str], sens_name: str, 
+                explainer: LimeTabularExplainer, train_vectors: np.ndarray, num: int, 
+                threshold_l: float) -> List[np.ndarray]:
+    seed: List[np.ndarray] = []
     for x in train_vectors:
         exp = explainer.explain_instance(x, model.predict_proba, num_features=num)
         exp_result = exp.as_list(label=exp.available_labels()[0])
@@ -41,12 +49,12 @@ def search_seed(model, feature_names, sens_name, explainer, train_vectors, num, 
             break
     return seed
 
-
 class GlobalDiscovery:
-    def __init__(self, step_size=1):
+    def __init__(self, step_size: int = 1):
         self.step_size = step_size
 
-    def __call__(self, iteration, params, input_bounds, sensitive_param):
+    def __call__(self, iteration: int, params: int, input_bounds: List[Tuple[int, int]], 
+                 sensitive_param: int) -> List[np.ndarray]:
         samples = []
         for _ in range(iteration):
             sample = [random.randint(bounds[0], bounds[1]) for bounds in input_bounds]
@@ -54,23 +62,22 @@ class GlobalDiscovery:
             samples.append(np.array(sample))
         return samples
 
-
-def xai_fair_testing(dataset: DiscriminationData, threshold, threshold_rank, sensitive_param, max_global, max_local):
-    # data_config = {"census": census, "credit": credit, "bank": bank}
-    # config = data_config[dataset]()
-
+def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_rank: float, 
+                     sensitive_param: str, max_global: int, max_local: int,
+                     random_forest_n_estimators: int = 10, 
+                     random_forest_random_state: int = 42) -> ExpGAResultDF:
     # Load data and prepare model
     X, Y = dataset.xdf, dataset.ydf
-    model = RandomForestClassifier(n_estimators=10, random_state=42)
+    model = RandomForestClassifier(n_estimators=random_forest_n_estimators, random_state=random_forest_random_state)
     model.fit(X, Y)
 
-    global_disc_inputs = set()
-    local_disc_inputs = set()
-    total_inputs = set()
+    global_disc_inputs: Set[Tuple[float, ...]] = set()
+    local_disc_inputs: Set[Tuple[float, ...]] = set()
+    total_inputs: Set[Tuple[float, ...]] = set()
 
-    results = []
+    results: List[Tuple[np.ndarray, np.ndarray, float, float]] = []
 
-    def evaluate_local(input_sample):
+    def evaluate_local(input_sample: np.ndarray) -> float:
         input_sample = input_sample.squeeze()
         input_array = input_sample.squeeze()
         total_inputs.add(tuple(input_array))
@@ -107,7 +114,7 @@ def xai_fair_testing(dataset: DiscriminationData, threshold, threshold_rank, sen
 
     if not seed:
         logger.info("No seeds found. Exiting...")
-        return
+        return pd.DataFrame()
 
     for input_sample in seed:
         input_array = np.array([int(i) for i in input_sample]).reshape(1, -1)
@@ -129,9 +136,9 @@ def xai_fair_testing(dataset: DiscriminationData, threshold, threshold_rank, sen
     )
 
     # Create DataFrame from results
-    df = pd.DataFrame(results, columns=["Original Input", "Altered Input", "Original Outcome", "Altered Outcome"])
+    df: ExpGAResultDF = pd.DataFrame(results, columns=["Original Input", "Altered Input", "Original Outcome", "Altered Outcome"])
     df['Outcome Difference'] = df['Altered Outcome'] - df['Original Outcome']
-    df['group_id'] = [str(uuid.uuid4())[:8] for e in range(df.shape[0])]
+    df['group_id'] = [str(uuid.uuid4())[:8] for _ in range(df.shape[0])]
 
     df1 = df[['group_id', "Original Input", 'Original Outcome', 'Outcome Difference']].copy()
     df1.rename(columns={'Original Input': 'input', 'Original Outcome': 'outcome'}, inplace=True)
@@ -145,7 +152,7 @@ def xai_fair_testing(dataset: DiscriminationData, threshold, threshold_rank, sen
 
     df['diff_outcome'] = df['diff_outcome'].apply(abs)
 
-    df_attr = pd.DataFrame(df['input'].apply(lambda x: list(x)).tolist(), columns=ge.feature_names)
+    df_attr = pd.DataFrame(df['input'].apply(lambda x: list(x)).tolist(), columns=dataset.feature_names)
 
     df = pd.concat([df.reset_index(drop=True), df_attr.reset_index(drop=True)], axis=1)
 
@@ -153,31 +160,20 @@ def xai_fair_testing(dataset: DiscriminationData, threshold, threshold_rank, sen
 
     df.sort_values(by=['group_id'], inplace=True)
 
-    df['ind_key'] = df.apply(lambda row: '|'.join(str(int(row[col])) for col in list(ge.attributes)), axis=1)
-    df['couple_key'] = df.groupby(df.index // 2)['ind_key'].transform('*'.join)
+    df['indv_key'] = df.apply(lambda row: '|'.join(str(int(row[col])) for col in list(dataset.attributes)), axis=1)
+    df['couple_key'] = df.groupby(df.index // 2)['indv_key'].transform('*'.join)
 
     return df
 
-    # Display DataFrame
-
-
-ge = generate_data(min_number_of_classes=2, max_number_of_classes=6, nb_attributes=6,
-                   prop_protected_attr=0.3, nb_groups=500, max_group_size=50, hiddenlayers_depth=3,
-                   min_similarity=0.0, max_similarity=1.0, min_alea_uncertainty=0.0, max_alea_uncertainty=1.0,
-                   min_epis_uncertainty=0.0, max_epis_uncertainty=1.0, min_magnitude=0.0, max_magnitude=1.0,
-                   min_frequency=0.0, max_frequency=1.0, categorical_outcome=True, nb_categories_outcome=4)
-
-
-def run_expga_analysis(dataset: DiscriminationData, threshold=0.5, threshold_rank=0.5, max_global=50, max_local=50):
-    dfs = []
+def run_expga(dataset: DiscriminationData, threshold: float = 0.5, threshold_rank: float = 0.5, 
+              max_global: int = 50, max_local: int = 50,
+              random_forest_n_estimators: int = 10, 
+              random_forest_random_state: int = 42) -> ExpGAResultDF:
+    dfs: List[ExpGAResultDF] = []
 
     for p_attr in dataset.protected_attributes:
-        df = xai_fair_testing(ge, threshold, threshold_rank, p_attr, max_global, max_local)
+        df = xai_fair_testing(dataset, threshold, threshold_rank, p_attr, max_global, max_local,
+                              random_forest_n_estimators, random_forest_random_state)
         dfs.append(df)
 
-    result = pd.concat(dfs)
-    return result
-
-dd = run_expga_analysis(ge, threshold=0.5, threshold_rank=0.5, max_global=50, max_local=50)
-
-print('dd')
+    return pd.concat(dfs)

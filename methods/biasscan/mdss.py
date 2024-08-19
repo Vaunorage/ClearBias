@@ -1,6 +1,6 @@
 from methods.biasscan.generator import get_entire_subset, get_random_subset
 
-from methods.biasscan.ScoringFunction import (
+from methods.biasscan.scoring_function import (
     Bernoulli,
     BerkJones,
     Gaussian,

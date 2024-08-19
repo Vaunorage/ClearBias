@@ -1,13 +1,13 @@
 from typing import Union
 
-from methods.biasscan.ScoringFunction import (
+from methods.biasscan.scoring_function import (
     Bernoulli,
     BerkJones,
     Gaussian,
     ScoringFunction,
     Poisson,
 )
-from methods.biasscan.MDSS import MDSS
+from methods.biasscan.mdss import MDSS
 
 import pandas as pd
 
