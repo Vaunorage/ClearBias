@@ -1,5 +1,5 @@
 from data_generator.main import generate_data
-from methods.biasscan.algo import perform_bias_scan
+from methods.biasscan.algo import run_bias_scan
 
 ge = generate_data(min_number_of_classes=2, max_number_of_classes=6, nb_attributes=6,
                    prop_protected_attr=0.3, nb_groups=500, max_group_size=50, hiddenlayers_depth=3,
@@ -8,7 +8,7 @@ ge = generate_data(min_number_of_classes=2, max_number_of_classes=6, nb_attribut
                    min_magnitude=0.0, max_magnitude=1.0, min_frequency=0.0, max_frequency=1.0,
                    categorical_outcome=True, nb_categories_outcome=4)
 
-result_df, accuracy, report = perform_bias_scan(
+result_df, accuracy, report = run_bias_scan(
     ge,
     test_size=0.3,
     random_state=42,

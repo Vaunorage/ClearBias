@@ -48,7 +48,7 @@ def run_mlcheck(generated_data: DiscriminationData,
                 mul_cex: bool = True,
                 train_data_available: bool = True,
                 train_ratio: int = 30,
-                no_of_train: int = 1000) -> Tuple[MLCheckResultDF, float, float]:
+                no_of_train: int = 1000) -> Tuple[MLCheckResultDF, dict]:
     delete_all()
 
     # Save training dataframe to CSV
@@ -143,4 +143,4 @@ def run_mlcheck(generated_data: DiscriminationData,
     f.write(f'Mean value is: {mean_cex_count}\n')
     f.write(f'Standard Error of the Mean is: +- {cex_count_sem}\n \n ')
 
-    return discrimination_cases, mean_cex_count, cex_count_sem
+    return discrimination_cases, {'mean_cex_count': mean_cex_count, 'cex_count_sem': cex_count_sem}
