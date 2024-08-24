@@ -1,4 +1,4 @@
-from typing import TypedDict, List, Tuple, Dict, Any, Union
+from typing import TypedDict, List, Tuple, Dict, Any, Union, Set
 import math
 import uuid
 import warnings
@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
+
 class ExpGAResultRow(TypedDict, total=False):
     group_id: str
     outcome: float
@@ -27,15 +28,19 @@ class ExpGAResultRow(TypedDict, total=False):
     indv_key: str
     couple_key: str
 
+
 ExpGAResultDF = DataFrame
 
-def construct_explainer(train_vectors: np.ndarray, feature_names: List[str], class_names: List[str]) -> LimeTabularExplainer:
+
+def construct_explainer(train_vectors: np.ndarray, feature_names: List[str],
+                        class_names: List[str]) -> LimeTabularExplainer:
     return LimeTabularExplainer(
         train_vectors, feature_names=feature_names, class_names=class_names, discretize_continuous=False
     )
 
-def search_seed(model: RandomForestClassifier, feature_names: List[str], sens_name: str, 
-                explainer: LimeTabularExplainer, train_vectors: np.ndarray, num: int, 
+
+def search_seed(model: RandomForestClassifier, feature_names: List[str], sens_name: str,
+                explainer: LimeTabularExplainer, train_vectors: np.ndarray, num: int,
                 threshold_l: float) -> List[np.ndarray]:
     seed: List[np.ndarray] = []
     for x in train_vectors:
@@ -49,11 +54,12 @@ def search_seed(model: RandomForestClassifier, feature_names: List[str], sens_na
             break
     return seed
 
+
 class GlobalDiscovery:
     def __init__(self, step_size: int = 1):
         self.step_size = step_size
 
-    def __call__(self, iteration: int, params: int, input_bounds: List[Tuple[int, int]], 
+    def __call__(self, iteration: int, params: int, input_bounds: List[Tuple[int, int]],
                  sensitive_param: int) -> List[np.ndarray]:
         samples = []
         for _ in range(iteration):
@@ -62,9 +68,10 @@ class GlobalDiscovery:
             samples.append(np.array(sample))
         return samples
 
-def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_rank: float, 
+
+def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_rank: float,
                      sensitive_param: str, max_global: int, max_local: int,
-                     random_forest_n_estimators: int = 10, 
+                     random_forest_n_estimators: int = 10,
                      random_forest_random_state: int = 42) -> ExpGAResultDF:
     # Load data and prepare model
     X, Y = dataset.xdf, dataset.ydf
@@ -136,7 +143,8 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     )
 
     # Create DataFrame from results
-    df: ExpGAResultDF = pd.DataFrame(results, columns=["Original Input", "Altered Input", "Original Outcome", "Altered Outcome"])
+    df: ExpGAResultDF = pd.DataFrame(results,
+                                     columns=["Original Input", "Altered Input", "Original Outcome", "Altered Outcome"])
     df['Outcome Difference'] = df['Altered Outcome'] - df['Original Outcome']
     df['group_id'] = [str(uuid.uuid4())[:8] for _ in range(df.shape[0])]
 
@@ -165,10 +173,11 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
 
     return df
 
-def run_expga(dataset: DiscriminationData, threshold: float = 0.5, threshold_rank: float = 0.5, 
+
+def run_expga(dataset: DiscriminationData, threshold: float = 0.5, threshold_rank: float = 0.5,
               max_global: int = 50, max_local: int = 50,
-              random_forest_n_estimators: int = 10, 
-              random_forest_random_state: int = 42) -> ExpGAResultDF:
+              random_forest_n_estimators: int = 10,
+              random_forest_random_state: int = 42) -> Tuple[ExpGAResultDF, dict]:
     dfs: List[ExpGAResultDF] = []
 
     for p_attr in dataset.protected_attributes:
@@ -176,4 +185,4 @@ def run_expga(dataset: DiscriminationData, threshold: float = 0.5, threshold_ran
                               random_forest_n_estimators, random_forest_random_state)
         dfs.append(df)
 
-    return pd.concat(dfs)
+    return pd.concat(dfs), {}

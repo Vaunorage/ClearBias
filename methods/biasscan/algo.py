@@ -24,33 +24,55 @@ class ResultRow(TypedDict, total=False):
 ResultDF = DataFrame
 
 
-def perform_bias_scan(ge,
-                      test_size=0.2,
-                      random_state=42,
-                      n_estimators=100,
-                      bias_scan_num_iters=50,
-                      bias_scan_scoring='Poisson',
-                      bias_scan_favorable_value='high',
-                      bias_scan_mode='ordinal'):
-    def format_mdss_results(subsets1, subsets2, all_attributes) -> Tuple[ResultDF, float, str]:
+def run_bias_scan(ge,
+                  test_size=0.2,
+                  random_state=42,
+                  n_estimators=100,
+                  bias_scan_num_iters=50,
+                  bias_scan_scoring='Poisson',
+                  bias_scan_favorable_value='high',
+                  bias_scan_mode='ordinal') -> Tuple[pd.DataFrame, dict]:
+    def format_mdss_results(subsets1, subsets2, all_attributes) -> pd.DataFrame:
         def make_products_df(subsets):
             product_dfs = []
             for subset, val in subsets:
                 product_lists = product(*subset.values())
                 columns = subset.keys()
                 product_df = pd.DataFrame(product_lists, columns=columns)
+                print(f"Shape after creating DataFrame: {product_df.shape}")
                 for attr in all_attributes:
                     if attr not in product_df.columns:
                         product_df[attr] = None
-                product_df['val'] = val
-                product_dfs.append(product_df)
-            product_dfs = pd.concat(product_dfs, axis=0)
-            product_dfs = product_dfs.drop_duplicates().dropna()
-            product_dfs[ge.outcome_column] = model.predict(product_dfs[list(ge.attributes)])
-            return product_dfs
+                    product_df['val'] = val
+                    product_dfs.append(product_df)
+
+                if not product_dfs:
+                    print("Warning: product_dfs is empty")
+                    return pd.DataFrame(columns=all_attributes + ['val'])
+
+                product_dfs = pd.concat(product_dfs, axis=0)
+                print(f"Shape after concatenation: {product_dfs.shape}")
+
+                product_dfs = product_dfs.drop_duplicates()
+                print(f"Shape after drop_duplicates: {product_dfs.shape}")
+
+                product_dfs = product_dfs.dropna()
+                print(f"Shape after dropna: {product_dfs.shape}")
+
+                if product_dfs.empty:
+                    print("Warning: product_dfs is empty after preprocessing")
+                    return pd.DataFrame(columns=all_attributes + ['val'])  # Ensure consistent columns
+
+                product_dfs[ge.outcome_column] = model.predict(product_dfs[list(ge.attributes)])
+                return product_dfs
 
         product_dfs1 = make_products_df(subsets1)
         product_dfs2 = make_products_df(subsets2)
+
+        if product_dfs1.empty and product_dfs2.empty:
+            print("Warning: Both product_dfs1 and product_dfs2 are empty")
+            return pd.DataFrame(columns=all_attributes + ['val', ge.outcome_column])
+
         product_dfs = pd.concat([product_dfs1, product_dfs2])
 
         def select_min_max(group):
@@ -70,6 +92,14 @@ def perform_bias_scan(ge,
         grouped = product_dfs.groupby(grouping_cols)
         filtered_groups = grouped.filter(lambda x: len(x) >= 2)
         result = filtered_groups.groupby(grouping_cols).apply(select_min_max).reset_index(drop=True)
+
+        if result.empty:
+            print("Warning: result DataFrame is empty")
+            return pd.DataFrame(columns=[
+                'group_id', *grouping_cols, *[col for col in all_attributes if col not in grouping_cols],
+                'val', ge.outcome_column, 'indv_key', 'couple_key', 'diff_outcome'
+            ])
+
         result['group_id'] = result.groupby(grouping_cols).ngroup()
         other_cols = [col for col in result.columns if
                       col not in grouping_cols and col != 'group_id' and col != ge.outcome_column]
@@ -78,7 +108,7 @@ def perform_bias_scan(ge,
         result = result.reset_index(drop=True)
 
         result['indv_key'] = result.apply(lambda row: '|'.join(str(int(row[col])) for col in list(ge.attributes)),
-                                         axis=1)
+                                          axis=1)
         result['couple_key'] = result.groupby(result.index // 2)['indv_key'].transform('*'.join)
 
         result['diff_outcome'] = result.groupby('couple_key')['outcome'].transform(lambda x: abs(x.diff().iloc[-1]))
@@ -145,5 +175,4 @@ def perform_bias_scan(ge,
     # Format results
     result_df = format_mdss_results(subsets1, subsets2, list(ge.attributes))
 
-    return result_df, accuracy, report
-
+    return result_df, {'accuracy': accuracy, 'report': report}

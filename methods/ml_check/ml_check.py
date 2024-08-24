@@ -322,7 +322,7 @@ class RunChecker:
         self.initialize_parameters()
 
         while self.count < self.max_samples and not self.is_timeout():
-            print(f'count is: {self.count}')
+            # print(f'count is: {self.count}')
 
             tree = self.train_and_prepare_tree()
 
@@ -422,11 +422,15 @@ class RunChecker:
         testMatrix = testMatrix[(testMatrix.T != 0).any()]
 
         local_save(testMatrix, 'TestSet')
+        if not testMatrix.empty:
+            testMatrix['indv_key'] = testMatrix.apply(
+                lambda row: '|'.join(str(int(row[col])) for col in self.paramDict['attributes']), axis=1)
+            testMatrix['couple_key'] = testMatrix.groupby(testMatrix.index // 2)['indv_key'].transform('*'.join)
 
-        testMatrix['indv_key'] = testMatrix.apply(
-            lambda row: '|'.join(str(int(row[col])) for col in self.paramDict['attributes']), axis=1)
+        else:
+            testMatrix['indv_key'] = ''
+            testMatrix['couple_key'] = ''
 
-        testMatrix['couple_key'] = testMatrix.groupby(testMatrix.index // 2)['indv_key'].transform('*'.join)
 
         local_save(testMatrix, 'Cand-Set', force_rewrite=True)
 
@@ -573,7 +577,8 @@ class RunChecker:
         y = dfCand[self.paramDict['output_class_name']]
 
         dfCand.rename(columns={self.paramDict['output_class_name']: 'z3_pred'}, inplace=True)
-        dfCand['whitebox_pred'] = self.model.predict(X)
+        if not dfCand.empty:
+            dfCand['whitebox_pred'] = self.model.predict(X)
 
         self.discriminatory_cases.append(dfCand)
 

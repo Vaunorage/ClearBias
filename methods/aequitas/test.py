@@ -10,8 +10,7 @@ ge = generate_data(min_number_of_classes=2, max_number_of_classes=6, nb_attribut
                    categorical_outcome=True, nb_categories_outcome=4)
 global_iteration_limit = 100
 local_iteration_limit = 10
-dff = ge.dataframe[list(ge.attributes.keys()) + [ge.outcome_column]]
-results_df, model_scores = run_aequitas(dff, col_to_be_predicted=ge.outcome_column,
+results_df, model_scores = run_aequitas(ge.training_dataframe, col_to_be_predicted=ge.outcome_column,
                                         sensitive_param_name_list=ge.protected_attributes,
                                         perturbation_unit=1, model_type=model_type, threshold=0,
                                         global_iteration_limit=global_iteration_limit,
