@@ -143,7 +143,7 @@ def run_with_timeout(func, *args, timeout=300, **kwargs):
         result = func(*args, **kwargs)
     except TimeoutException:
         logger.warning(f"Function {func.__name__} timed out after {timeout} seconds")
-        result = None
+        result = pd.DataFrame(), {}
     finally:
         signal.alarm(0)  # Disable the alarm
 
@@ -184,15 +184,15 @@ def run_experiment_with_params(params: Dict[str, Any]) -> Dict[str, Union[Dict[s
                 method_results[method] = result if result is not None else None
         except Exception as e:
             logger.error(f"An error occurred while running {method}: {str(e)}")
-            continue
+            method_results[method] = (pd.DataFrame, {})
 
-    results = {
-        method: analyze_method(set(res[0]['couple_key']),
-                               original_couple_keys) if res[0] is not None and 'couple_key' in res[0] else {
-            'matching': 0,
-            'new': 0}
-        for method, res in method_results.items() if isinstance(res[0], pd.DataFrame)
-    }
+    results = []
+    for method, res in method_results.items():
+        if res[0] is not None and isinstance(res[0], pd.DataFrame) and 'couple_key' in res[0]:
+            results[method] = analyze_method(set(res[0]['couple_key']),
+                                             original_couple_keys)
+        else:
+            results[method] = {'matching': 0, 'new': 0}
 
     results_dfs = {method: res[0] for method, res in method_results.items() if isinstance(res[0], pd.DataFrame)}
     results_metas = {method: res[1] for method, res in method_results.items() if isinstance(res[0], pd.DataFrame)}
