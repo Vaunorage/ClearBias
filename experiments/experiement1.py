@@ -186,9 +186,9 @@ def run_experiment_with_params(params: Dict[str, Any]) -> Dict[str, Union[Dict[s
             logger.error(f"An error occurred while running {method}: {str(e)}")
             method_results[method] = (pd.DataFrame, {})
 
-    results = []
+    results = {}
     for method, res in method_results.items():
-        if res[0] is not None and isinstance(res[0], pd.DataFrame) and 'couple_key' in res[0]:
+        if res[0] is not None and isinstance(res[0], pd.DataFrame) and not res[0].empty and 'couple_key' in res[0]:
             results[method] = analyze_method(set(res[0]['couple_key']),
                                              original_couple_keys)
         else:
