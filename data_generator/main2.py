@@ -8,16 +8,21 @@ from tqdm import tqdm
 from dataclasses import dataclass, field
 from pandas import DataFrame
 from typing import Literal, TypeVar, Any, List, Dict, Tuple, Union
-from scipy.stats import norm, multivariate_normal, beta
+from scipy.stats import norm, multivariate_normal, beta, stats, gaussian_kde
 import itertools
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
 from scipy.optimize import minimize_scalar
 from scipy.stats import bernoulli
-import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
 import warnings
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, f1_score, recall_score
+from sklearn.preprocessing import LabelEncoder
+import matplotlib.pyplot as plt
+import seaborn as sns
+from matplotlib.colors import LinearSegmentedColormap
 
 warnings.filterwarnings("ignore")
 # Ignore specific warnings
@@ -467,7 +472,7 @@ def calculate_actual_mean_diff_outcome(data):
     return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_diff)
 
 
-def calculate_relevance(data):
+def calculate_actual_metrics_and_relevance(data):
     """
     Calculate the relevance metric for each group.
     """
@@ -502,6 +507,7 @@ def safe_normalize(p):
 
 def create_group(
         possibility, attr_categories, sets_attr, correlation_matrix, gen_order, W,
+        subgroup_bias,
         min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
         min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
         min_diff_subgroup_size, max_diff_subgroup_size, max_group_size, attr_names
@@ -542,7 +548,6 @@ def create_group(
     subgroup1_size = max(1, (total_group_size + diff_size) // 2)
     subgroup2_size = max(1, total_group_size - subgroup1_size)
 
-    subgroup_bias = random.uniform(0.1, 0.5)
     generator = IndividualsGenerator(
         schema=attr_categories,
         graph=correlation_matrix,
@@ -633,9 +638,10 @@ def estimate_min_attributes_and_classes(num_groups, max_iterations=1000):
 
 def generate_data(
         gen_order: List[int] = None,
+        correlation_matrix=None,
         W: np.ndarray = None,
         nb_groups=100,
-        nb_attributes=None,
+        nb_attributes=20,
         min_number_of_classes=None,
         max_number_of_classes=None,
         prop_protected_attr=0.2,
@@ -655,7 +661,8 @@ def generate_data(
 ):
     outcome_column = 'outcome'
 
-    correlation_matrix = generate_valid_correlation_matrix(nb_attributes)
+    if correlation_matrix is None:
+        correlation_matrix = generate_valid_correlation_matrix(nb_attributes)
 
     if min_number_of_classes is None or max_number_of_classes is None:
         min_number_of_classes, max_number_of_classes = estimate_min_attributes_and_classes(nb_groups)
@@ -673,25 +680,19 @@ def generate_data(
         min_number_of_classes, max_number_of_classes, nb_attributes, prop_protected_attr
     )
 
-    nb_protected = sum(sets_attr)
-    nb_unprotected = len(sets_attr) - nb_protected
-
     protected_indexes = [index for index, value in enumerate(sets_attr) if value]
     unprotected_indexes = [index for index, value in enumerate(sets_attr) if not value]
 
     collision_tracker = CollisionTracker(nb_attributes)
-
-    granularity_weights = calculate_weights(nb_unprotected)
-    intersectionality_weights = calculate_weights(nb_protected)
 
     results = []
     collisions = 0
 
     with tqdm(total=nb_groups, desc="Generating data") as pbar:
         while len(results) < nb_groups:
-            granularity = random.choices(range(1, len(unprotected_indexes) + 1), weights=granularity_weights)[0]
-            intersectionality = random.choices(range(1, len(protected_indexes) + 1), weights=intersectionality_weights)[
-                0]
+            granularity = random.choice(range(1, len(unprotected_indexes)))
+            intersectionality = random.choice(range(1, len(protected_indexes)))
+            subgroup_bias = random.uniform(0.1, 0.5)
 
             possible_gran = list(itertools.combinations(unprotected_indexes, granularity))
             possible_intersec = list(itertools.combinations(protected_indexes, intersectionality))
@@ -706,6 +707,7 @@ def generate_data(
                     collision_tracker.add_combination(possibility)
                     group = create_group(
                         possibility, attr_categories, sets_attr, correlation_matrix, gen_order, W,
+                        subgroup_bias,
                         min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
                         min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
                         min_diff_subgroup_size, max_diff_subgroup_size, max_group_size, attr_names
@@ -754,7 +756,7 @@ def generate_data(
     )
 
     # Calculate and add relevance metrics
-    relevance_metrics = calculate_relevance(data)
+    relevance_metrics = calculate_actual_metrics_and_relevance(data)
     data.relevance_metrics = relevance_metrics
 
     # Merge relevance metrics with the main dataframe
@@ -764,139 +766,22 @@ def generate_data(
 
 
 # %%
+nb_attributes = 20
+correlation_matrix = generate_valid_correlation_matrix(nb_attributes)
 
 data = generate_data(
-    nb_attributes=10,
+    nb_attributes=nb_attributes,
+    correlation_matrix=correlation_matrix,
     min_number_of_classes=8,
     max_number_of_classes=10,
     prop_protected_attr=0.4,
-    nb_groups=1000,
-    max_group_size=50,
+    nb_groups=200,
+    max_group_size=100,
     categorical_outcome=True,
-    nb_categories_outcome=4
-)
+    nb_categories_outcome=4)
 
 print(f"Generated {len(data.dataframe)} samples in {data.nb_groups} groups")
 print(f"Collisions: {data.collisions}")
-
-
-# %%%
-
-def plot_and_print_metric_distributions_with_uncertainty(data_list, num_bins=10):
-    metrics = [
-        'granularity', 'intersectionality', 'diff_subgroup_size', 'actual_similarity',
-        'actual_alea_uncertainty', 'actual_epis_uncertainty', 'actual_mean_diff_outcome_subgroups', 'relevance'
-    ]
-
-    # Combine all experiment results
-    combined_data = pd.concat([exp_data for exp_data in data_list if not exp_data.empty])
-
-    fig, axes = plt.subplots(4, 2, figsize=(15, 20), tight_layout=True)
-    axes = axes.flatten()  # Flatten the 2D array of axes for easier iteration
-
-    for i, (metric, ax) in enumerate(zip(metrics, axes)):
-        # Remove NaN values
-        clean_data = combined_data[metric].dropna()
-
-        if clean_data.empty:
-            print(f"\nWarning: All values for {metric} are NaN. Skipping this metric.")
-            ax.text(0.5, 0.5, f"No valid data for {metric}", ha='center', va='center')
-            continue
-
-        try:
-            # Create histogram
-            n, bins, patches = ax.hist(clean_data, bins=num_bins, edgecolor='black')
-
-            # Calculate bin centers
-            bin_centers = 0.5 * (bins[:-1] + bins[1:])
-
-            # Calculate mean and standard error for each bin across experiments
-            bin_means = []
-            bin_errors = []
-            for j in range(len(n)):
-                bin_data = [exp_data[(exp_data[metric] >= bins[j]) & (exp_data[metric] < bins[j + 1])][metric]
-                            for exp_data in data_list]
-                bin_counts = [len(bd) for bd in bin_data]
-                bin_means.append(np.mean(bin_counts))
-                bin_errors.append(stats.sem(bin_counts) if len(bin_counts) > 0 else 0)
-
-            # Plot error bars
-            ax.errorbar(bin_centers, bin_means, yerr=bin_errors, fmt='none', ecolor='red', capsize=3)
-
-            # Add labels and title
-            ax.set_xlabel(metric)
-            ax.set_ylabel('Average Frequency')
-            ax.set_title(f'Distribution of {metric}')
-
-            # Add percentage labels on top of each bar
-            total_count = sum(bin_means)
-            for j, (mean, rect) in enumerate(zip(bin_means, patches)):
-                percentage = mean / total_count * 100
-                ax.text(rect.get_x() + rect.get_width() / 2., mean,
-                        f'{percentage:.1f}%',
-                        ha='center', va='bottom', rotation=90, fontsize=8)
-
-            # Adjust y-axis to make room for percentage labels
-            ax.set_ylim(top=ax.get_ylim()[1] * 1.2)
-
-            # Print bin information
-            print(f"\nDistribution of {metric}:")
-            print(f"Total experiments: {len(data_list)}")
-            print("\nBin ranges, average counts, percentages, and standard errors:")
-            for k in range(len(bin_means)):
-                bin_start = bins[k]
-                bin_end = bins[k + 1]
-                avg_count = bin_means[k]
-                percentage = (avg_count / total_count) * 100
-                std_error = bin_errors[k]
-                print(f"Bin {k + 1}: {bin_start:.2f} to {bin_end:.2f}")
-                print(f"  Average Count: {avg_count:.2f}")
-                print(f"  Percentage: {percentage:.1f}%")
-                print(f"  Standard Error: {std_error:.4f}")
-
-        except Exception as e:
-            print(f"\nError processing {metric}: {str(e)}")
-            ax.text(0.5, 0.5, f"Error processing {metric}", ha='center', va='center')
-
-    plt.show()
-
-
-# %%
-
-def run_experiments_and_visualize(
-        num_experiments: int = 10,
-        nb_attributes: int = 10,
-        min_number_of_classes: int = 8,
-        max_number_of_classes: int = 10,
-        prop_protected_attr: float = 0.4,
-        nb_groups: int = 1000,
-        max_group_size: int = 50,
-        categorical_outcome: bool = True,
-        nb_categories_outcome: int = 4
-) -> None:
-    experiment_results: List[pd.DataFrame] = []
-
-    for i in range(num_experiments):
-        print(f"Running experiment {i + 1}/{num_experiments}")
-        data = generate_data(
-            nb_attributes=nb_attributes,
-            min_number_of_classes=min_number_of_classes,
-            max_number_of_classes=max_number_of_classes,
-            prop_protected_attr=prop_protected_attr,
-            nb_groups=nb_groups,
-            max_group_size=max_group_size,
-            categorical_outcome=categorical_outcome,
-            nb_categories_outcome=nb_categories_outcome
-        )
-        experiment_results.append(data.dataframe)
-
-    print("All experiments completed. Plotting results...")
-    plot_and_print_metric_distributions_with_uncertainty(experiment_results)
-
-
-# %%
-
-run_experiments_and_visualize()
 
 
 # %%
@@ -977,6 +862,7 @@ create_parallel_coordinates_plot(data.dataframe)
 
 
 # %%
+
 def plot_and_print_metric_distributions(data, num_bins=10):
     metrics = [
         'granularity', 'intersectionality', 'diff_subgroup_size', 'actual_similarity',
@@ -998,8 +884,17 @@ def plot_and_print_metric_distributions(data, num_bins=10):
             continue
 
         try:
+            # Determine the number of bins
+            unique_values = clean_data.nunique()
+            actual_bins = min(num_bins, unique_values)
+
             # Create histogram
-            n, bins, patches = ax.hist(clean_data, bins=num_bins, edgecolor='black')
+            if actual_bins == unique_values:
+                bins = np.sort(clean_data.unique())
+            else:
+                bins = actual_bins
+
+            n, bins, patches = ax.hist(clean_data, bins=bins, edgecolor='black')
 
             # Add labels and title
             ax.set_xlabel(metric)
@@ -1021,10 +916,11 @@ def plot_and_print_metric_distributions(data, num_bins=10):
             # Print bin information
             print(f"\nDistribution of {metric}:")
             print(f"Total data points: {total_count}")
+            print(f"Number of bins: {actual_bins}")
             print("\nBin ranges, counts, and percentages:")
             for k in range(len(n)):
                 bin_start = bins[k]
-                bin_end = bins[k + 1]
+                bin_end = bins[k + 1] if k < len(bins) - 1 else bin_start
                 count = n[k]
                 percentage = (count / total_count) * 100
                 print(f"Bin {k + 1}: {bin_start:.2f} to {bin_end:.2f}")
@@ -1044,204 +940,378 @@ plot_and_print_metric_distributions(data.dataframe)
 
 # %%
 
-def create_parallel_coordinates_plot(data):
-    group_properties = data.groupby('group_key').agg({
-        'granularity': 'mean',
-        'intersectionality': 'mean',
-        'diff_subgroup_size': 'mean',
-        'actual_similarity': 'mean',
-        'actual_alea_uncertainty': 'mean',
-        'actual_epis_uncertainty': 'mean',
-        'actual_mean_diff_outcome_subgroups': 'mean',
-        'relevance': 'mean'
-    }).reset_index()
+def test_models_on_generated_data(data):
+    # Extract features and target
+    X = data.dataframe[data.feature_names]
+    y = data.dataframe[data.outcome_column]
 
-    group_properties.rename(columns={
-        'actual_similarity': 'similarity',
-        'actual_alea_uncertainty': 'alea_uncertainty',
-        'actual_epis_uncertainty': 'epis_uncertainty',
-        'actual_mean_diff_outcome_subgroups': 'diff_outcome'
-    }, inplace=True)
+    # Encode categorical variables
+    label_encoders = {}
+    for column in X.columns:
+        if X[column].dtype == 'object':
+            le = LabelEncoder()
+            X[column] = le.fit_transform(X[column])
+            label_encoders[column] = le
 
-    group_properties = group_properties.dropna()
+    # Encode target variable if it's categorical
+    if y.dtype == 'object':
+        le = LabelEncoder()
+        y = le.fit_transform(y)
 
-    columns_to_plot = ['granularity', 'intersectionality', 'diff_subgroup_size', 'similarity',
-                       'alea_uncertainty', 'epis_uncertainty', 'diff_outcome', 'relevance']
-    normalized_data = group_properties[columns_to_plot].apply(lambda x: (x - x.min()) / (x.max() - x.min()))
+    # Split the data
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    fig, ax = plt.subplots(figsize=(12, 6))
-    x = list(range(len(columns_to_plot)))
+    # Initialize models
+    rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
 
-    norm = Normalize(vmin=group_properties['relevance'].min(), vmax=group_properties['relevance'].max())
-    cmap = plt.get_cmap('viridis')
+    # Train and evaluate Random Forest
+    rf_model.fit(X_train, y_train)
+    rf_predictions = rf_model.predict(X_test)
+    rf_accuracy = accuracy_score(y_test, rf_predictions)
+    rf_f1 = f1_score(y_test, rf_predictions, average='weighted')
+    rf_recall = recall_score(y_test, rf_predictions, average='weighted')
 
-    for _, row in normalized_data.iterrows():
-        y = row[columns_to_plot].values
-        color = cmap(norm(group_properties.loc[_, 'relevance']))
-        ax.plot(x, y, c=color, alpha=0.5)
+    # Feature importance
+    rf_feature_importance = rf_model.feature_importances_
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(columns_to_plot, rotation=45, ha='right')
-    ax.set_ylim(0, 1)
-    ax.set_title('Parallel Coordinates Plot of Discrimination Metrics')
-    ax.set_xlabel('Metrics')
-    ax.set_ylabel('Normalized Values')
-    ax.grid(True, axis='x', linestyle='--', alpha=0.7)
+    # Sort feature importances
+    rf_sorted_idx = np.argsort(rf_feature_importance)
+    rf_top_features = X.columns[rf_sorted_idx][-5:][::-1]
 
-    sm = ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    plt.colorbar(sm, ax=ax, label='Relevance')
+    # Print results
+    print("Random Forest Results:")
+    print(f"Accuracy: {rf_accuracy:.4f}")
+    print(f"F1 Score: {rf_f1:.4f}")
+    print(f"Recall: {rf_recall:.4f}")
+    print("Top 5 important features:", ", ".join(rf_top_features))
 
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_metric_distributions(data, num_bins=10):
-    metrics = [
-        'granularity', 'intersectionality', 'diff_subgroup_size', 'actual_similarity',
-        'actual_alea_uncertainty', 'actual_epis_uncertainty', 'actual_mean_diff_outcome_subgroups', 'relevance'
-    ]
-
-    group_properties = data.groupby('group_key').agg({metric: 'mean' for metric in metrics}).reset_index()
-
-    fig, axes = plt.subplots(4, 2, figsize=(15, 20), tight_layout=True)
-    axes = axes.flatten()
-
-    for metric, ax in zip(metrics, axes):
-        n, bins, patches = ax.hist(group_properties[metric], bins=num_bins, edgecolor='black')
-
-        ax.set_xlabel(metric)
-        ax.set_ylabel('Frequency')
-        ax.set_title(f'Distribution of {metric}')
-
-        for rect in patches:
-            height = rect.get_height()
-            percentage = height / len(group_properties) * 100
-            ax.text(rect.get_x() + rect.get_width() / 2., height,
-                    f'{percentage:.1f}%',
-                    ha='center', va='bottom', rotation=90, fontsize=8)
-
-        ax.set_ylim(top=ax.get_ylim()[1] * 1.2)
-
-    plt.show()
-
-
-def plot_correlation_heatmap(data):
-    """
-    Plot a correlation heatmap for the metrics in the dataset.
-    """
-    metrics = [
-        'granularity', 'intersectionality', 'diff_subgroup_size', 'actual_similarity',
-        'actual_alea_uncertainty', 'actual_epis_uncertainty', 'actual_mean_diff_outcome_subgroups', 'relevance'
-    ]
-
-    group_properties = data.groupby('group_key').agg({metric: 'mean' for metric in metrics}).reset_index()
-    correlation_matrix = group_properties[metrics].corr()
-
-    plt.figure(figsize=(12, 10))
-    sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', vmin=-1, vmax=1, center=0)
-    plt.title('Correlation Heatmap of Discrimination Metrics')
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_pairplot(data):
-    """
-    Create a pairplot to visualize relationships between metrics.
-    """
-    metrics = [
-        'granularity', 'intersectionality', 'diff_subgroup_size', 'actual_similarity',
-        'actual_alea_uncertainty', 'actual_epis_uncertainty', 'actual_mean_diff_outcome_subgroups', 'relevance'
-    ]
-
-    group_properties = data.groupby('group_key').agg({metric: 'mean' for metric in metrics}).reset_index()
-    sns.pairplot(group_properties[metrics], corner=True, diag_kind='kde')
-    plt.suptitle('Pairplot of Discrimination Metrics', y=1.02)
-    plt.tight_layout()
-    plt.show()
-
-
-def analyze_group_composition(data):
-    """
-    Analyze the composition of groups based on protected attributes.
-    """
-    protected_attrs = [attr for attr, is_protected in data.attributes.items() if is_protected]
-
-    group_composition = data.dataframe.groupby('group_key')[protected_attrs].agg(
-        lambda x: x.value_counts().index[0])
-
-    composition_summary = group_composition.apply(pd.Series.value_counts).fillna(0)
-
-    plt.figure(figsize=(12, 6))
-    composition_summary.plot(kind='bar', stacked=True)
-    plt.title('Group Composition Based on Protected Attributes')
-    plt.xlabel('Protected Attributes')
-    plt.ylabel('Number of Groups')
-    plt.legend(title='Attribute Value', bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.tight_layout()
-    plt.show()
-
-    return composition_summary
-
-
-def evaluate_fairness(data):
-    """
-    Evaluate fairness metrics for the generated dataset.
-    """
-    from aif360.datasets import BinaryLabelDataset
-    from aif360.metrics import BinaryLabelDatasetMetric
-
-    protected_attribute = data.protected_attributes[0]
-
-    dataset = BinaryLabelDataset(
-        df=data.dataframe,
-        label_name=data.outcome_column,
-        protected_attribute_names=[protected_attribute],
-        favorable_label=1,
-        unfavorable_label=0
-    )
-
-    metric = BinaryLabelDatasetMetric(dataset,
-                                      unprivileged_groups=[{protected_attribute: 0}],
-                                      privileged_groups=[{protected_attribute: 1}])
-
-    fairness_metrics = {
-        "Statistical Parity Difference": metric.statistical_parity_difference(),
-        "Disparate Impact": metric.disparate_impact(),
-        "Equal Opportunity Difference": metric.equal_opportunity_difference(),
-        "Average Odds Difference": metric.average_odds_difference(),
-        "Theil Index": metric.theil_index()
+    return {
+        'rf_accuracy': rf_accuracy,
+        'rf_f1': rf_f1,
+        'rf_recall': rf_recall,
+        'rf_top_features': rf_top_features
     }
 
-    return fairness_metrics
 
-
-def analyze_data(data):
-    print(f"Generated {len(data.dataframe)} samples in {data.nb_groups} groups")
-    print(f"Collisions: {data.collisions}")
-
-    create_parallel_coordinates_plot(data.dataframe)
-    plot_metric_distributions(data.dataframe)
-    plot_correlation_heatmap(data.dataframe)
-    plot_pairplot(data.dataframe)
-
-    composition_summary = analyze_group_composition(data)
-    print("\nGroup Composition Summary:")
-    print(composition_summary)
-
-    fairness_metrics = evaluate_fairness(data)
-    print("\nFairness Metrics:")
-    for metric, value in fairness_metrics.items():
-        print(f"{metric}: {value:.4f}")
-
-    return data
+results = test_models_on_generated_data(data)
 
 
 # %%
+
+def plot_correlation_matrices(input_correlation_matrix, generated_data, figsize=(30, 10)):
+    attr_columns = [col for col in generated_data.dataframe.columns if col.startswith('Attr')]
+
+    generated_correlation_matrix = generated_data.dataframe[attr_columns].corr(method='spearman')
+
+    assert input_correlation_matrix.shape == generated_correlation_matrix.shape, "Correlation matrices have different shapes"
+
+    if isinstance(input_correlation_matrix, np.ndarray):
+        input_correlation_matrix = pd.DataFrame(input_correlation_matrix, columns=attr_columns, index=attr_columns)
+
+    # Calculate the absolute difference matrix
+    abs_diff_matrix = np.abs(input_correlation_matrix - generated_correlation_matrix)
+
+    # Create a custom colormap for the absolute difference (blue to white to red)
+    colors = ['#053061', '#2166AC', '#4393C3', '#92C5DE', '#D1E5F0', '#FDDBC7', '#F4A582', '#D6604D', '#B2182B']
+    n_bins = 256  # Increase for smoother gradient
+    custom_cmap = LinearSegmentedColormap.from_list('custom_blue_red', colors, N=n_bins)
+
+    # Create a figure with three subplots side by side
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=figsize)
+
+    # Function to plot heatmap with adjusted parameters
+    def plot_heatmap(data, ax, title, cmap='coolwarm', vmin=-1, vmax=1):
+        sns.heatmap(data, ax=ax, cmap=cmap, vmin=vmin, vmax=vmax, center=0,
+                    annot=True, fmt='.2f', square=True, cbar=False,
+                    annot_kws={'size': 11}, linewidths=0.5)
+        ax.set_title(title, fontsize=16, pad=20)
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right', fontsize=11)
+        ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=11)
+
+    # Plot input correlation matrix
+    plot_heatmap(input_correlation_matrix, ax1, 'Input Correlation Matrix')
+
+    # Plot generated correlation matrix
+    plot_heatmap(generated_correlation_matrix, ax2, 'Generated Data Correlation Matrix')
+
+    # Plot absolute difference matrix with custom colormap
+    plot_heatmap(abs_diff_matrix, ax3, 'Absolute Difference Matrix', cmap=custom_cmap, vmin=0, vmax=1)
+
+    # Add a color bar for the absolute difference matrix
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+    sm = plt.cm.ScalarMappable(cmap=custom_cmap, norm=plt.Normalize(0, 1))
+    sm.set_array([])
+    cbar = fig.colorbar(sm, cax=cbar_ax)
+    cbar.ax.tick_params(labelsize=10)
+
+    # Adjust layout and display the plot
+    plt.tight_layout(rect=[0, 0, 0.92, 1])
+    plt.show()
+
+    # Calculate and print summary statistics
+    mean_diff = np.mean(abs_diff_matrix)
+    max_diff = np.max(abs_diff_matrix)
+    print(f"Mean absolute difference between matrices: {mean_diff:.4f}")
+    print(f"Maximum absolute difference between matrices: {max_diff:.4f}")
+
+
+plot_correlation_matrices(correlation_matrix, data)
+
+# %%
+
+input_correlation_matrices, generated_data_list = [], []
+nb_attributes = 20
+for da in range(2):
+    correlation_matrix = generate_valid_correlation_matrix(nb_attributes)
+
+    data = generate_data(
+        nb_attributes=nb_attributes,
+        correlation_matrix=correlation_matrix,
+        min_number_of_classes=8,
+        max_number_of_classes=10,
+        prop_protected_attr=0.4,
+        nb_groups=200,
+        max_group_size=100,
+        categorical_outcome=True,
+        nb_categories_outcome=4)
+
+    input_correlation_matrices.append(correlation_matrix)
+    generated_data_list.append(data)
+
+# %%
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
 import seaborn as sns
+from matplotlib.colors import LinearSegmentedColormap
 
-np.random.seed(42)
-random.seed(42)
 
-# Generate and analyze data
-generated_data = analyze_data(data)
+def plot_aggregate_correlation_matrices(input_correlation_matrices, generated_data_list, figsize=(30, 10)):
+    # Get all unique column names across all datasets
+    all_columns = set()
+    for data in generated_data_list:
+        all_columns.update(data.feature_names)
+    all_columns = sorted(list(all_columns))
+
+    # Initialize a dictionary to store difference matrices
+    diff_matrices = {col1: {col2: [] for col2 in all_columns} for col1 in all_columns}
+
+    # Calculate the difference matrices and store them
+    for input_corr, generated_data in zip(input_correlation_matrices, generated_data_list):
+        feature_names = generated_data.feature_names
+        generated_corr = generated_data.dataframe[feature_names].corr(method='spearman')
+
+        if isinstance(input_corr, np.ndarray):
+            input_corr = pd.DataFrame(input_corr, columns=feature_names, index=feature_names)
+
+        for col1 in feature_names:
+            for col2 in feature_names:
+                diff = abs(input_corr.loc[col1, col2] - generated_corr.loc[col1, col2])
+                diff_matrices[col1][col2].append(diff)
+
+    # Calculate aggregate statistics
+    aggregate_diff_matrix = pd.DataFrame({col1: {col2: np.mean(values) if values else np.nan
+                                                 for col2, values in col_dict.items()}
+                                          for col1, col_dict in diff_matrices.items()})
+
+    variance_matrix = pd.DataFrame({col1: {col2: np.var(values) if len(values) > 1 else np.nan
+                                           for col2, values in col_dict.items()}
+                                    for col1, col_dict in diff_matrices.items()})
+
+    # Calculate summary statistics
+    mean_diff = np.nanmean(aggregate_diff_matrix.values)
+    max_diff = np.nanmax(aggregate_diff_matrix.values)
+    median_diff = np.nanmedian(aggregate_diff_matrix.values)
+    mean_variance = np.nanmean(variance_matrix.values)
+    max_variance = np.nanmax(variance_matrix.values)
+
+    # Create a custom colormap for the absolute difference (blue to white to red)
+    colors = ['#053061', '#2166AC', '#4393C3', '#92C5DE', '#D1E5F0', '#FDDBC7', '#F4A582', '#D6604D', '#B2182B']
+    n_bins = 256
+    custom_cmap = LinearSegmentedColormap.from_list('custom_blue_red', colors, N=n_bins)
+
+    # Create a figure with two subplots side by side
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+
+    # Plot aggregate difference matrix
+    sns.heatmap(aggregate_diff_matrix, ax=ax1, cmap=custom_cmap, vmin=0, vmax=1, center=0,
+                annot=True, fmt='.2f', square=True, cbar=True,
+                annot_kws={'size': 8}, linewidths=0.5)
+    ax1.set_title('Aggregate Absolute Difference Matrix', fontsize=16, pad=20)
+    ax1.set_xticklabels(ax1.get_xticklabels(), rotation=90, ha='right', fontsize=8)
+    ax1.set_yticklabels(ax1.get_yticklabels(), rotation=0, fontsize=8)
+
+    # Plot variance matrix
+    sns.heatmap(variance_matrix, ax=ax2, cmap='viridis', vmin=0, center=0,
+                annot=True, fmt='.2f', square=True, cbar=True,
+                annot_kws={'size': 8}, linewidths=0.5)
+    ax2.set_title('Variance of Absolute Differences', fontsize=16, pad=20)
+    ax2.set_xticklabels(ax2.get_xticklabels(), rotation=90, ha='right', fontsize=8)
+    ax2.set_yticklabels(ax2.get_yticklabels(), rotation=0, fontsize=8)
+
+    # Adjust layout and display the plot
+    plt.tight_layout()
+    plt.show()
+
+    # Print summary statistics
+    print(f"Mean absolute difference across all matrices: {mean_diff:.4f}")
+    print(f"Maximum absolute difference across all matrices: {max_diff:.4f}")
+    print(f"Median absolute difference across all matrices: {median_diff:.4f}")
+    print(f"Mean variance of differences: {mean_variance:.4f}")
+    print(f"Maximum variance of differences: {max_variance:.4f}")
+
+
+# Example usage:
+plot_aggregate_correlation_matrices(input_correlation_matrices, generated_data_list, figsize=(30, 10))
+
+# %%
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import stats
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def plot_metric_distributions(data_list, num_bins=10):
+    metrics = [
+        'granularity', 'intersectionality', 'diff_subgroup_size', 'actual_similarity',
+        'actual_alea_uncertainty', 'actual_epis_uncertainty', 'actual_mean_diff_outcome_subgroups', 'relevance'
+    ]
+
+    fig, axes = plt.subplots(4, 2, figsize=(15, 20), tight_layout=True)
+    axes = axes.flatten()  # Flatten the 2D array of axes for easier iteration
+
+    for i, (metric, ax) in enumerate(zip(metrics, axes)):
+        all_data = []
+        for data in data_list:
+            group_properties = data.dataframe.groupby('group_key').agg({metric: 'mean'}).reset_index()
+            all_data.extend(group_properties[metric].dropna())
+
+        if not all_data:
+            print(f"\nWarning: All values for {metric} are NaN. Skipping this metric.")
+            ax.text(0.5, 0.5, f"No valid data for {metric}", ha='center', va='center')
+            continue
+
+        try:
+            # Create histogram
+            counts, bin_edges = np.histogram(all_data, bins=num_bins)
+            bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+
+            # Calculate error (assuming Poisson distribution for bin counts)
+            errors = np.sqrt(counts)
+
+            # Plot histogram without error bars
+            ax.bar(bin_centers, counts, width=np.diff(bin_edges), alpha=0.7)
+
+            # Add error bars separately
+            ax.errorbar(bin_centers, counts, yerr=errors, fmt='none', ecolor='black', capsize=3)
+
+            # Add labels and title
+            ax.set_xlabel(metric)
+            ax.set_ylabel('Frequency')
+            ax.set_title(f'Distribution of {metric}')
+
+            # Print statistics
+            print(f"\nDistribution of {metric}:")
+            print(f"Total data points: {len(all_data)}")
+            print(f"Number of bins: {num_bins}")
+            print("\nBin ranges, counts, and errors:")
+            for j in range(len(counts)):
+                print(f"Bin {j + 1}: {bin_edges[j]:.2f} to {bin_edges[j + 1]:.2f}")
+                print(f"  Count: {counts[j]}")
+                print(f"  Error: ±{errors[j]:.2f}")
+
+        except Exception as e:
+            print(f"\nError processing {metric}: {str(e)}")
+            ax.text(0.5, 0.5, f"Error processing {metric}", ha='center', va='center')
+
+    plt.show()
+
+
+plot_metric_distributions(generated_data_list)
+
+# %%
+from collections import Counter
+
+
+def test_models_on_multiple_datasets(data_list):
+    all_results = []
+    all_top_features = []
+
+    for data in data_list:
+        # Extract features and target
+        X = data.dataframe[data.feature_names]
+        y = data.dataframe[data.outcome_column]
+
+        # Encode categorical variables
+        label_encoders = {}
+        for column in X.columns:
+            if X[column].dtype == 'object':
+                le = LabelEncoder()
+                X[column] = le.fit_transform(X[column])
+                label_encoders[column] = le
+
+        # Encode target variable if it's categorical
+        if y.dtype == 'object':
+            le = LabelEncoder()
+            y = le.fit_transform(y)
+
+        # Split the data
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        # Initialize and train Random Forest
+        rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+        rf_model.fit(X_train, y_train)
+
+        # Evaluate Random Forest
+        rf_predictions = rf_model.predict(X_test)
+        rf_accuracy = accuracy_score(y_test, rf_predictions)
+        rf_f1 = f1_score(y_test, rf_predictions, average='weighted')
+        rf_recall = recall_score(y_test, rf_predictions, average='weighted')
+
+        # Feature importance
+        rf_feature_importance = rf_model.feature_importances_
+        rf_sorted_idx = np.argsort(rf_feature_importance)
+        rf_top_features = X.columns[rf_sorted_idx][-5:][::-1]
+
+        # Store results
+        all_results.append({
+            'rf_accuracy': rf_accuracy,
+            'rf_f1': rf_f1,
+            'rf_recall': rf_recall
+        })
+        all_top_features.extend(rf_top_features)
+
+    # Calculate mean, variance, and standard deviation of performance metrics
+    metrics = ['rf_accuracy', 'rf_f1', 'rf_recall']
+    stats = {}
+    for metric in metrics:
+        values = [r[metric] for r in all_results]
+        stats[metric] = {
+            'mean': np.mean(values),
+            'variance': np.var(values),
+            'std_dev': np.std(values)
+        }
+
+    # Summarize top features
+    feature_counts = Counter(all_top_features)
+    top_overall_features = [feature for feature, _ in feature_counts.most_common(5)]
+
+    # Print results
+    print("Random Forest Results (across all datasets):")
+    for metric in metrics:
+        print(f"{metric.capitalize()}:")
+        print(f"  Mean: {stats[metric]['mean']:.4f}")
+        print(f"  Variance: {stats[metric]['variance']:.4f}")
+        print(f"  Standard Deviation: {stats[metric]['std_dev']:.4f}")
+
+    return {
+        'stats': stats,
+        'top_overall_features': top_overall_features
+    }
+
+
+test_models_on_multiple_datasets(generated_data_list)
