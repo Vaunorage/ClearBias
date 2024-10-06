@@ -1,7 +1,7 @@
 import signal
 
 import pandas as pd
-from typing import Set, Dict, List, Tuple, Any, Union
+from typing import Set, Dict, Tuple, Any, Union
 from scipy.stats import qmc
 import numpy as np
 import matplotlib.pyplot as plt
