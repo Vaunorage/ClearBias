@@ -474,23 +474,92 @@ def calculate_actual_mean_diff_outcome(data):
 
 def calculate_actual_metrics_and_relevance(data):
     """
-    Calculate the relevance metric for each group.
+    Calculate the actual metrics and relevance for each group.
     """
     actual_similarity = calculate_actual_similarity(data)
     actual_uncertainties = calculate_actual_uncertainties(data)
     actual_mean_diff_outcome = calculate_actual_mean_diff_outcome(data)
 
-    relevance = pd.DataFrame({
-        'actual_similarity': actual_similarity,
-        'actual_epis_uncertainty': actual_uncertainties['calculated_epistemic'],
-        'actual_alea_uncertainty': actual_uncertainties['calculated_aleatoric'],
-        'actual_mean_diff_outcome_subgroups': actual_mean_diff_outcome
-    })
+    # Merge these metrics into the main dataframe
+    data.dataframe['actual_similarity'] = data.dataframe['group_key'].map(actual_similarity)
+    data.dataframe['actual_epis_uncertainty'] = data.dataframe['group_key'].map(actual_uncertainties['calculated_epistemic'])
+    data.dataframe['actual_alea_uncertainty'] = data.dataframe['group_key'].map(actual_uncertainties['calculated_aleatoric'])
+    data.dataframe['actual_mean_diff_outcome'] = data.dataframe['group_key'].map(actual_mean_diff_outcome)
 
-    relevance['relevance'] = relevance.sum(axis=1)
+    # Calculate the new relevance metric
+    relevance = calculate_relevance(data)
 
-    return relevance
+    # Merge the relevance metrics back into the dataframe, avoiding duplicates
+    existing_columns = set(data.dataframe.columns)
+    new_columns = [col for col in relevance.columns if col not in existing_columns]
+    data.dataframe = data.dataframe.merge(relevance[new_columns], left_on='group_key', right_index=True, how='left')
 
+    # Store the relevance metrics in the DiscriminationData object
+    data.relevance_metrics = relevance
+
+    # Clean up any remaining duplicate columns
+    data.dataframe = data.dataframe.loc[:, ~data.dataframe.columns.duplicated()]
+
+    return data
+
+def calculate_relevance(data):
+    """
+    Calculate the relevance metric for each group based on the updated formula.
+    """
+    def calculate_group_relevance(group_data):
+        subgroup_keys = group_data['subgroup_key'].unique()
+        if len(subgroup_keys) != 2:
+            return pd.Series({
+                'relevance': np.nan,
+                'calculated_magnitude': np.nan,
+                'calculated_group_size': np.nan,
+                'calculated_granularity': np.nan,
+                'calculated_intersectionality': np.nan,
+                'calculated_uncertainty': np.nan,
+                'calculated_similarity': np.nan,
+                'calculated_subgroup_ratio': np.nan
+            })
+
+        S1 = group_data[group_data['subgroup_key'] == subgroup_keys[0]]
+        S2 = group_data[group_data['subgroup_key'] == subgroup_keys[1]]
+
+        # Calculate magnitude
+        mu1 = S1[data.outcome_column].mean()
+        mu2 = S2[data.outcome_column].mean()
+        magnitude = abs(mu1 - mu2) / max(mu1, mu2) if max(mu1, mu2) != 0 else 0
+
+        # Calculate other factors
+        group_size = len(group_data) / len(data.dataframe)
+        granularity = group_data['granularity'].iloc[0] / len(data.attributes)
+        intersectionality = group_data['intersectionality'].iloc[0] / len(data.protected_attributes)
+        uncertainty = 1 - (group_data['actual_epis_uncertainty'].mean() + group_data['actual_alea_uncertainty'].mean()) / 2
+        similarity = group_data['actual_similarity'].iloc[0]
+        subgroup_ratio = max(len(S1), len(S2)) / min(len(S1), len(S2))
+
+        # Define weights (you may want to adjust these)
+        w_f, w_g, w_i, w_u, w_s, w_r = 1, 1, 1, 1, 1, 1
+        Z = w_f + w_g + w_i + w_u + w_s + w_r
+
+        # Calculate OtherFactors
+        other_factors = (w_f * group_size + w_g * granularity + w_i * intersectionality +
+                         w_u * uncertainty + w_s * similarity + w_r * (1 / subgroup_ratio)) / Z
+
+        # Calculate relevance (you may want to adjust alpha)
+        alpha = 1
+        relevance = magnitude * (1 + alpha * other_factors)
+
+        return pd.Series({
+            'relevance': relevance,
+            'calculated_magnitude': magnitude,
+            'calculated_group_size': group_size,
+            'calculated_granularity': granularity,
+            'calculated_intersectionality': intersectionality,
+            'calculated_uncertainty': uncertainty,
+            'calculated_similarity': similarity,
+            'calculated_subgroup_ratio': subgroup_ratio
+        })
+
+    return data.dataframe.groupby('group_key').apply(calculate_group_relevance)
 
 def calculate_weights(n):
     return [1 / (i + 1) for i in range(n)]
@@ -755,12 +824,7 @@ def generate_data(
         outcome_column=outcome_column
     )
 
-    # Calculate and add relevance metrics
-    relevance_metrics = calculate_actual_metrics_and_relevance(data)
-    data.relevance_metrics = relevance_metrics
-
-    # Merge relevance metrics with the main dataframe
-    data.dataframe = data.dataframe.merge(relevance_metrics, left_on='group_key', right_index=True, how='left')
+    data = calculate_actual_metrics_and_relevance(data)
 
     return data
 
@@ -775,7 +839,7 @@ data = generate_data(
     min_number_of_classes=8,
     max_number_of_classes=10,
     prop_protected_attr=0.4,
-    nb_groups=200,
+    nb_groups=20,
     max_group_size=100,
     categorical_outcome=True,
     nb_categories_outcome=4)
@@ -794,14 +858,14 @@ def create_parallel_coordinates_plot(data):
         'actual_similarity': 'mean',
         'actual_alea_uncertainty': 'mean',
         'actual_epis_uncertainty': 'mean',
-        'actual_mean_diff_outcome_subgroups': 'mean',
+        'actual_mean_diff_outcome': 'mean',
         'relevance': 'mean'
     }).reset_index().copy()
 
     group_properties.rename(columns={'actual_similarity': 'similarity',
                                      'actual_alea_uncertainty': 'alea_uncertainty',
                                      'actual_epis_uncertainty': 'epis_uncertainty',
-                                     'actual_mean_diff_outcome_subgroups': 'diff_outcome'}, inplace=True)
+                                     'actual_mean_diff_outcome': 'diff_outcome'}, inplace=True)
 
     for column in group_properties.columns:
         if column != 'group_key':
@@ -866,7 +930,7 @@ create_parallel_coordinates_plot(data.dataframe)
 def plot_and_print_metric_distributions(data, num_bins=10):
     metrics = [
         'granularity', 'intersectionality', 'diff_subgroup_size', 'actual_similarity',
-        'actual_alea_uncertainty', 'actual_epis_uncertainty', 'actual_mean_diff_outcome_subgroups', 'relevance'
+        'actual_alea_uncertainty', 'actual_epis_uncertainty', 'actual_mean_diff_outcome', 'relevance'
     ]
 
     group_properties = data.groupby('group_key').agg({metric: 'mean' for metric in metrics}).reset_index()
@@ -1061,7 +1125,7 @@ plot_correlation_matrices(correlation_matrix, data)
 
 input_correlation_matrices, generated_data_list = [], []
 nb_attributes = 20
-for da in range(2):
+for da in range(3):
     correlation_matrix = generate_valid_correlation_matrix(nb_attributes)
 
     data = generate_data(
@@ -1165,20 +1229,13 @@ def plot_aggregate_correlation_matrices(input_correlation_matrices, generated_da
 # Example usage:
 plot_aggregate_correlation_matrices(input_correlation_matrices, generated_data_list, figsize=(30, 10))
 
+
 # %%
-
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy import stats
-
-import numpy as np
-import matplotlib.pyplot as plt
-
 
 def plot_metric_distributions(data_list, num_bins=10):
     metrics = [
         'granularity', 'intersectionality', 'diff_subgroup_size', 'actual_similarity',
-        'actual_alea_uncertainty', 'actual_epis_uncertainty', 'actual_mean_diff_outcome_subgroups', 'relevance'
+        'actual_alea_uncertainty', 'actual_epis_uncertainty', 'actual_mean_diff_outcome', 'relevance'
     ]
 
     fig, axes = plt.subplots(4, 2, figsize=(15, 20), tight_layout=True)
@@ -1234,14 +1291,18 @@ def plot_metric_distributions(data_list, num_bins=10):
 plot_metric_distributions(generated_data_list)
 
 # %%
-from collections import Counter
+
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import accuracy_score, f1_score, recall_score
 
 
-def test_models_on_multiple_datasets(data_list):
+def test_models_on_multiple_datasets(datasets):
     all_results = []
-    all_top_features = []
 
-    for data in data_list:
+    for data in datasets:
         # Extract features and target
         X = data.dataframe[data.feature_names]
         y = data.dataframe[data.outcome_column]
@@ -1262,11 +1323,11 @@ def test_models_on_multiple_datasets(data_list):
         # Split the data
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-        # Initialize and train Random Forest
+        # Initialize models
         rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
-        rf_model.fit(X_train, y_train)
 
-        # Evaluate Random Forest
+        # Train and evaluate Random Forest
+        rf_model.fit(X_train, y_train)
         rf_predictions = rf_model.predict(X_test)
         rf_accuracy = accuracy_score(y_test, rf_predictions)
         rf_f1 = f1_score(y_test, rf_predictions, average='weighted')
@@ -1274,6 +1335,8 @@ def test_models_on_multiple_datasets(data_list):
 
         # Feature importance
         rf_feature_importance = rf_model.feature_importances_
+
+        # Sort feature importances
         rf_sorted_idx = np.argsort(rf_feature_importance)
         rf_top_features = X.columns[rf_sorted_idx][-5:][::-1]
 
@@ -1281,37 +1344,39 @@ def test_models_on_multiple_datasets(data_list):
         all_results.append({
             'rf_accuracy': rf_accuracy,
             'rf_f1': rf_f1,
-            'rf_recall': rf_recall
+            'rf_recall': rf_recall,
+            'rf_top_features': rf_top_features
         })
-        all_top_features.extend(rf_top_features)
 
-    # Calculate mean, variance, and standard deviation of performance metrics
+    # Calculate mean and variance for each metric
     metrics = ['rf_accuracy', 'rf_f1', 'rf_recall']
-    stats = {}
+    summary = {}
+
     for metric in metrics:
-        values = [r[metric] for r in all_results]
-        stats[metric] = {
-            'mean': np.mean(values),
-            'variance': np.var(values),
-            'std_dev': np.std(values)
-        }
+        values = [result[metric] for result in all_results]
+        summary[f'{metric}_mean'] = np.mean(values)
+        summary[f'{metric}_variance'] = np.var(values)
 
     # Summarize top features
-    feature_counts = Counter(all_top_features)
-    top_overall_features = [feature for feature, _ in feature_counts.most_common(5)]
+    all_top_features = [result['rf_top_features'] for result in all_results]
+    feature_counts = {}
+    for top_features in all_top_features:
+        for feature in top_features:
+            if feature in feature_counts:
+                feature_counts[feature] += 1
+            else:
+                feature_counts[feature] = 1
+
+    most_common_features = sorted(feature_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    summary['most_common_top_features'] = [feature for feature, count in most_common_features]
 
     # Print results
-    print("Random Forest Results (across all datasets):")
+    print("Summary of Results:")
     for metric in metrics:
-        print(f"{metric.capitalize()}:")
-        print(f"  Mean: {stats[metric]['mean']:.4f}")
-        print(f"  Variance: {stats[metric]['variance']:.4f}")
-        print(f"  Standard Deviation: {stats[metric]['std_dev']:.4f}")
+        print(f"{metric} - Mean: {summary[f'{metric}_mean']:.4f}, Variance: {summary[f'{metric}_variance']:.4f}")
+    print("Most common top features:", ", ".join(summary['most_common_top_features']))
 
-    return {
-        'stats': stats,
-        'top_overall_features': top_overall_features
-    }
+    return summary, all_results
 
-
-test_models_on_multiple_datasets(generated_data_list)
+# Example usage:
+results_summary, individual_results = test_models_on_multiple_datasets(generated_data_list)
