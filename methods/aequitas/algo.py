@@ -5,9 +5,6 @@ import pandas as pd
 from typing import TypedDict, List, Tuple, Dict, Union
 from pandas import DataFrame
 from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import f1_score
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neural_network import MLPClassifier
@@ -15,6 +12,122 @@ from scipy.optimize import basinhopping
 import errno
 
 from tqdm import tqdm
+from scipy.optimize import minimize_scalar
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import f1_score
+from typing import List, Dict, Union, Tuple
+
+
+class UncertaintyRandomForest(RandomForestClassifier):
+    def __init__(self, n_estimators=100, max_depth=10, **kwargs):
+        super().__init__(n_estimators=n_estimators, max_depth=max_depth, **kwargs)
+
+    def _compute_support_degrees(self, n, p):
+        if n + p == 0:
+            return 0, 0
+
+        def objective_positive(theta):
+            if theta == 0 or n + p == 0:
+                return 0
+            return -min(
+                (theta ** p * (1 - theta) ** n) / ((p / (n + p)) ** p * (n / (n + p)) ** n),
+                2 * theta - 1
+            )
+
+        def objective_negative(theta):
+            if theta == 1 or n + p == 0:
+                return 0
+            return -min(
+                (theta ** p * (1 - theta) ** n) / ((p / (n + p)) ** p * (n / (n + p)) ** n),
+                1 - 2 * theta
+            )
+
+        res_pos = minimize_scalar(objective_positive, bounds=(0, 1), method='bounded')
+        res_neg = minimize_scalar(objective_negative, bounds=(0, 1), method='bounded')
+
+        return -res_pos.fun, -res_neg.fun
+
+    def predict_with_uncertainty(self, X):
+        X_array = X.values if hasattr(X, 'values') else X
+
+        predictions = []
+        for tree in self.estimators_:
+            leaf_id = tree.apply(X_array)
+            predictions.append(tree.tree_.value[leaf_id].reshape(-1, self.n_classes_))
+
+        predictions = np.array(predictions)
+        mean_pred = np.mean(predictions, axis=0)
+
+        epistemic = np.zeros(X_array.shape[0])
+        aleatoric = np.zeros(X_array.shape[0])
+
+        for i in range(X_array.shape[0]):
+            n = np.sum(predictions[:, i, 0])
+            p = np.sum(predictions[:, i, 1])
+            pi_1, pi_0 = self._compute_support_degrees(n, p)
+
+            epistemic[i] = min(pi_1, pi_0)
+            aleatoric[i] = 1 - max(pi_1, pi_0)
+
+        return mean_pred, epistemic, aleatoric
+
+
+def train_uncertainty_forest(synthetic_data, feature_names, outcome_column):
+    X = synthetic_data[feature_names]
+    y = synthetic_data[outcome_column]
+
+    urf = UncertaintyRandomForest(n_estimators=50, random_state=42)
+    urf.fit(X, y)
+
+    return urf
+
+
+def calculate_actual_uncertainties(data, feature_names, urf):
+    X = data[feature_names]
+
+    _, epistemic, aleatoric = urf.predict_with_uncertainty(X)
+
+    data['calculated_epistemic'] = epistemic
+    data['calculated_aleatoric'] = aleatoric
+
+    return data
+
+
+def calculate_relevance(data, feature_names, protected_attributes, outcome_column):
+    # Calculate magnitude
+    magnitude = abs(data['diff_outcome']) / max(data[outcome_column].max(), 1)
+
+    # Calculate other factors
+    group_size = 0  # Assuming each row is a unique instance
+    granularity = 0
+    intersectionality = 0
+    uncertainty = 1 - (data['calculated_epistemic'] + data['calculated_aleatoric']) / 2
+    similarity = 0  # As per your instruction
+    subgroup_ratio = 1  # Assuming no subgroups in Aequitas output
+
+    # Define weights (you may want to adjust these)
+    w_f, w_g, w_i, w_u, w_s, w_r = 1, 1, 1, 1, 1, 1
+    Z = w_f + w_g + w_i + w_u + w_s + w_r
+
+    # Calculate OtherFactors
+    other_factors = (w_f * group_size + w_g * granularity + w_i * intersectionality +
+                     w_u * uncertainty + w_s * similarity + w_r * (1 / subgroup_ratio)) / Z
+
+    # Calculate relevance (you may want to adjust alpha)
+    alpha = 1
+    relevance = magnitude * (1 + alpha * other_factors)
+
+    return pd.DataFrame({
+        'relevance': relevance,
+        'calculated_magnitude': magnitude,
+        'calculated_group_size': group_size,
+        'calculated_granularity': granularity,
+        'calculated_intersectionality': intersectionality,
+        'calculated_uncertainty': uncertainty,
+        'calculated_similarity': similarity,
+        'calculated_subgroup_ratio': subgroup_ratio
+    })
 
 
 def chunks(lst, n):
@@ -75,13 +188,16 @@ def mp_basinhopping(fully_direct, minimizer, local_iteration_limit):
 
 class Dataset:
     def __init__(self, df: pd.DataFrame, col_to_be_predicted, sensitive_param_name_list=None):
+        self.df = df
+        self.col_to_be_predicted = col_to_be_predicted
         self.sensitive_param_name_list = sensitive_param_name_list
+        self.feature_names = [col for col in df.columns if col != col_to_be_predicted]
+        self.protected_attributes = sensitive_param_name_list
+        self.sensitive_param_idx_list = [self.feature_names.index(name) for name in sensitive_param_name_list]
+        self.column_names = list(df.columns)
 
         self.num_params = df.shape[1] - 1
 
-        self.col_to_be_predicted = col_to_be_predicted
-
-        self.df = df
         self.column_names = self.get_column_names()
         self.input_bounds = self.get_input_bounds()
         self.col_to_be_predicted_idx = self.get_idx_of_col_to_be_predicted(col_to_be_predicted)
@@ -438,6 +554,8 @@ def run_aequitas(df: DataFrame,
     dataset = Dataset(df, col_to_be_predicted=col_to_be_predicted, sensitive_param_name_list=sensitive_param_name_list)
     model, model_scores = generate_sklearn_classifier(dataset, model_type)
 
+    urf = train_uncertainty_forest(dataset.df, dataset.feature_names, dataset.col_to_be_predicted)
+
     for sensitive_param_id, sensitive_attribute in zip(dataset.sensitive_param_idx_list, sensitive_param_name_list):
         result = aequitas_fully_directed_sklearn(dataset, perturbation_unit, threshold, global_iteration_limit,
                                                  local_iteration_limit, sensitive_param_id, model, sensitive_attribute)
@@ -478,6 +596,11 @@ def run_aequitas(df: DataFrame,
             res2['couple_key'] = ress.reset_index(level=0, drop=True)
         else:
             res2['couple_key'] = None
+
+        res2 = calculate_actual_uncertainties(res2, dataset.feature_names, urf)
+        relevance_metrics = calculate_relevance(res2, dataset.feature_names, dataset.protected_attributes,
+                                                dataset.col_to_be_predicted)
+        res2 = pd.concat([res2, relevance_metrics], axis=1)
 
         return res2, model_scores[0]
 
