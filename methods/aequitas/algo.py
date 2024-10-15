@@ -2,7 +2,7 @@ import time
 import random
 import numpy as np
 import pandas as pd
-from typing import TypedDict, List, Tuple, Dict, Union
+from typing import TypedDict
 from pandas import DataFrame
 from sklearn.preprocessing import LabelEncoder
 from sklearn.svm import SVC
@@ -588,7 +588,7 @@ def run_aequitas(df: DataFrame,
 
         def transform_subgroup(x):
             res = x['indv_key'].tolist()
-            res = ["*".join(res), "*".join(res[::-1])]
+            res = ["-".join(res), "-".join(res[::-1])]
             return pd.Series(res, index=x.index)
 
         ress = res2.groupby(['case_id']).apply(lambda x: transform_subgroup(x))
