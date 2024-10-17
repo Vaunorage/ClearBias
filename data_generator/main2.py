@@ -646,7 +646,8 @@ def create_group(
     subgroup1_vals = [subgroup_sets[i][e] for i, e in enumerate(subgroup1_sample[0])]
 
     subgroup2_p_vals = generate_subgroup2_probabilities(subgroup1_vals, subgroup_sets, similarity, ordered_sets_attr)
-    subgroup2_sample = GaussianCopulaCategorical(subgroup2_p_vals, correlation_matrix, list(subgroup1_sample)).generate_samples(1)
+    subgroup2_sample = GaussianCopulaCategorical(subgroup2_p_vals, correlation_matrix,
+                                                 list(subgroup1_sample)).generate_samples(1)
     subgroup2_vals = [subgroup_sets[i][e] for i, e in enumerate(subgroup2_sample[0])]
 
     total_group_size = math.ceil(max_group_size * frequency)
@@ -806,26 +807,26 @@ def generate_data(
 
             subgroup_bias = random.uniform(0.1, 0.5)
 
-            possible_gran = itertools.combinations(unprotected_indexes, min(granularity, len(unprotected_indexes)))
-            possible_intersec = itertools.combinations(protected_indexes,
-                                                       min(intersectionality, len(protected_indexes)))
+            # Randomly sample from unprotected and protected indexes without generating all combinations
+            possible_gran = random.sample(unprotected_indexes, granularity)
+            possible_intersec = random.sample(protected_indexes, intersectionality)
 
-            for possibility in itertools.chain.from_iterable(
-                    itertools.product(gran, intersec) for gran, intersec in zip(possible_gran, possible_intersec)):
-                if not collision_tracker.is_collision(possibility):
-                    collision_tracker.add_combination(possibility)
-                    group = create_group(
-                        possibility, attr_categories, sets_attr, correlation_matrix, gen_order, W,
-                        subgroup_bias,
-                        min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
-                        min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
-                        min_diff_subgroup_size, max_diff_subgroup_size, max_group_size, attr_names
-                    )
-                    results.append(group)
-                    pbar.update(1)
-                    break
+            possibility = tuple(possible_gran + possible_intersec)  # Combine the gran and intersec lists into a tuple
 
-            collisions += 1
+            if not collision_tracker.is_collision(possibility):
+                collision_tracker.add_combination(possibility)
+                group = create_group(
+                    possibility, attr_categories, sets_attr, correlation_matrix, gen_order, W,
+                    subgroup_bias,
+                    min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
+                    min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
+                    min_diff_subgroup_size, max_diff_subgroup_size, max_group_size, attr_names
+                )
+                results.append(group)
+                pbar.update(1)
+            else:
+                collisions += 1
+
             if collisions > nb_groups * 2:
                 print(f"\nWarning: Unable to generate {nb_groups} groups. Generated {len(results)} groups.")
                 pbar.total = len(results)
@@ -870,7 +871,6 @@ def generate_data(
     data = calculate_actual_metrics_and_relevance(data)
 
     return data
-
 
 # # %%
 # nb_attributes = 20
