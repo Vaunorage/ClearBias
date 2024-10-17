@@ -1,5 +1,4 @@
 pandas
-dash
 matplotlib
 pygad
 numpy
@@ -11,3 +10,4 @@ parsimonious
 z3-solver
 aif360
 ucimlrepo
+boto

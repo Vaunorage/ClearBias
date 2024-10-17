@@ -123,8 +123,9 @@ def local_load(var_name):
 
 
 def run_z3_solver(input_file, output_file):
+    z3_path = HERE.joinpath('methods/ml_check/z3_windows/bin/z3.exe')
     os.system(
-        f"z3 {files_folder.joinpath(input_file).as_posix()}.txt > {files_folder.joinpath(output_file).as_posix()}.txt")
+        f"{z3_path} {files_folder.joinpath(input_file).as_posix()}.txt > {files_folder.joinpath(output_file).as_posix()}.txt")
 
 
 def update_dataframe_types(df: pd.DataFrame, categorical_cols=None) -> pd.DataFrame:
