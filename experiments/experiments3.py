@@ -1,17 +1,69 @@
-import ast
 import json
 import re
-from datetime import datetime
-
-from paths import HERE
+from typing import List, Tuple
+from methods.exp_ga.algo import run_expga
+from methods.biasscan.algo import run_bias_scan
+from methods.ml_check.algo import run_mlcheck
+from methods.aequitas.algo import run_aequitas
 from scipy.stats import stats
 from sqlalchemy import create_engine
-
 from data_generator.main2 import generate_data
-from methods.aequitas.algo import run_aequitas
+import sqlite3
+from datetime import datetime
 import pandas as pd
+from scipy import stats
+
+from paths import HERE
 
 # %%
+
+DB_PATH = HERE.joinpath("experiments/discrimination_detection_results2.db")
+
+
+def init_database(conn):
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS discrimination_detection_results2 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            Algorithm TEXT,
+            Num_Attributes INTEGER,
+            Prop_Protected_Attr REAL,
+            Num_Groups INTEGER,
+            Max_Group_Size INTEGER,
+            Correct_Couple_Detection_Rate REAL,
+            Total_Couples_Detected INTEGER,
+            True_Positives INTEGER,
+            False_Positives INTEGER,
+            Prop_Original_Individuals REAL,
+            Prop_New_Individuals REAL,
+            Prop_Original_in_Group REAL,
+            Prop_New_in_Group REAL,
+            Prop_Groups_Detected REAL,
+            date TEXT
+        )
+    ''')
+    conn.commit()
+
+
+def get_completed_experiments(conn: sqlite3.Connection) -> List[Tuple[str, str, str]]:
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT DISTINCT algorithm, dataset, protected_attribute 
+        FROM discrimination_detection_results2
+    """)
+    return cursor.fetchall()
+
+
+def experiment_completed(conn, algorithm, nb_attributes, prop_protected_attr, nb_groups, max_group_size):
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT 1 FROM discrimination_detection_results2
+        WHERE Algorithm = ? AND Num_Attributes = ? AND Prop_Protected_Attr = ? 
+        AND Num_Groups = ? AND Max_Group_Size = ?
+        LIMIT 1
+    """, (algorithm, nb_attributes, prop_protected_attr, nb_groups, max_group_size))
+    return cursor.fetchone() is not None
+
 
 def save_results_to_sqlite(group_details, results_table, attribute_trends_table):
     def stringify_lists(value):
@@ -19,10 +71,35 @@ def save_results_to_sqlite(group_details, results_table, attribute_trends_table)
             return json.dumps(value)
         return value
 
-    engine = create_engine(f'sqlite:///discrimination_detection_results.db')
-    group_details.applymap(stringify_lists).to_sql('group_details', engine, if_exists='append', index=False)
-    results_table.applymap(stringify_lists).to_sql('overall_results', engine, if_exists='append', index=False)
-    attribute_trends_table.applymap(stringify_lists).to_sql('attribute_trends', engine, if_exists='append', index=False)
+    conn = sqlite3.connect(DB_PATH)
+
+    def save_table(df, table_name):
+        if not df.empty:
+            # Get existing columns from the database table
+            try:
+                existing_df = pd.read_sql(f"SELECT * FROM {table_name} LIMIT 0", conn)
+                existing_columns = existing_df.columns.tolist()
+
+                # Filter the DataFrame to include only existing columns
+                df_filtered = df[df.columns.intersection(existing_columns)]
+
+                if not df_filtered.empty:
+                    df_filtered.applymap(stringify_lists).to_sql(table_name, conn, if_exists='append', index=False)
+                    print(f"Data saved successfully to {table_name}.")
+                else:
+                    print(f"Warning: No matching columns found for {table_name}. Skipping this table.")
+                    print(f"DataFrame columns: {df.columns.tolist()}")
+                    print(f"Existing table columns: {existing_columns}")
+            except Exception as e:
+                print(f"Error reading existing table {table_name}: {str(e)}")
+                print("Creating new table with all columns.")
+                df.applymap(stringify_lists).to_sql(table_name, conn, if_exists='append', index=False)
+
+    save_table(group_details, 'group_details')
+    save_table(results_table, 'overall_results')
+    save_table(attribute_trends_table, 'attribute_trends')
+
+    print("Data saving process completed.")
 
 
 def matches_pattern(pattern_string: str, test_string: str) -> bool:
@@ -37,15 +114,10 @@ def is_individual_part_of_the_original_indv(indv_key, indv_key_list):
 
 def is_individual_part_of_a_group(indv_key, group_key_list):
     res = []
-    options = {}
     for grp in group_key_list:
         opt1, opt2 = grp.split('-')
-        options[grp] = [opt1, opt1]
-
-    for k, v in options.items():
-        if matches_pattern(v[0], indv_key) or matches_pattern(v[1], indv_key):
-            res.append(k)
-
+        if matches_pattern(opt1, indv_key) or matches_pattern(opt2, indv_key):
+            res.append(grp)
     return res
 
 
@@ -53,6 +125,10 @@ def is_couple_part_of_a_group(couple_key, group_key_list):
     res = []
 
     couple_key_elems = couple_key.split('-')
+    if len(couple_key_elems) != 2:
+        print(f"Warning: Unexpected couple key format: {couple_key}")
+        return res
+
     opt1 = f"{couple_key_elems[0]}-{couple_key_elems[1]}"
     opt2 = f"{couple_key_elems[1]}-{couple_key_elems[0]}"
 
@@ -127,49 +203,54 @@ def create_group_individual_table(aequitas_results: pd.DataFrame, synthetic_data
     return pd.DataFrame(result_data)
 
 
-def evaluate_discrimination_detection(synthetic_data: pd.DataFrame, aequitas_results: pd.DataFrame) -> tuple:
+def evaluate_discrimination_detection(synthetic_data: pd.DataFrame, results_df: pd.DataFrame) -> tuple:
+    if results_df.empty:
+        return pd.DataFrame(), pd.DataFrame()  # Return empty DataFrames
+
     synthetic_data['indv_key'] = synthetic_data['indv_key'].astype(str)
     synthetic_data['group_key'] = synthetic_data['group_key'].astype(str)
     synthetic_data['subgroup_key'] = synthetic_data['subgroup_key'].astype(str)
 
-    aequitas_results['indv_key'] = aequitas_results['indv_key'].astype(str)
-    aequitas_results['couple_key'] = aequitas_results['couple_key'].astype(str)
+    results_df['indv_key'] = results_df['indv_key'].astype(str)
+    results_df['couple_key'] = results_df['couple_key'].astype(str)
 
     all_indv_keys = set(synthetic_data['indv_key'])
     all_group_keys = set(synthetic_data['group_key'])
 
-    aequitas_results['indv_in_original_indv'] = aequitas_results['indv_key'].apply(
+    results_df['indv_in_original_indv'] = results_df['indv_key'].apply(
         lambda x: is_individual_part_of_the_original_indv(x, all_indv_keys))
-    aequitas_results['indv_part_of_group'] = aequitas_results['indv_key'].apply(
-        lambda x: is_individual_part_of_a_group(x, all_group_keys))
 
-    aequitas_results['couple_part_of_a_group'] = aequitas_results['couple_key'].apply(
+    # Check if 'indv_part_of_group' column exists, if not, create it
+    if 'indv_part_of_group' not in results_df.columns:
+        results_df['indv_part_of_group'] = results_df['indv_key'].apply(
+            lambda x: is_individual_part_of_a_group(x, all_group_keys))
+
+    results_df['couple_part_of_a_group'] = results_df['couple_key'].apply(
         lambda x: is_couple_part_of_a_group(x, all_group_keys))
 
-    aequitas_results['correct_detection'] = aequitas_results['couple_part_of_a_group'].apply(lambda x: len(x) > 0)
+    results_df['correct_detection'] = results_df['couple_part_of_a_group'].apply(lambda x: len(x) > 0)
 
     # Calculate evaluation metrics
-    total_couples = len(aequitas_results)
-    true_positives = aequitas_results['correct_detection'].sum()
+    total_couples = len(results_df)
+    true_positives = results_df['correct_detection'].sum()
     false_positives = total_couples - true_positives
 
     # Proportion of Original Individuals
-    total_individuals = len(set(aequitas_results['indv_key']))
-    original_individuals = sum(aequitas_results['indv_in_original_indv'])
+    total_individuals = len(set(results_df['indv_key']))
+    original_individuals = sum(results_df['indv_in_original_indv'])
     p_original = original_individuals / total_individuals if total_individuals > 0 else 0
 
     # Proportion of New Individuals
     p_new = 1 - p_original
 
     # Proportion of original individuals that belong to a group
-    original_in_group = sum(
-        aequitas_results[aequitas_results['indv_in_original_indv']]['indv_part_of_group'].apply(len) > 0)
+    original_in_group = sum(results_df[results_df['indv_in_original_indv']]['indv_part_of_group'].apply(len) > 0)
     p_group_original = original_in_group / original_individuals if original_individuals > 0 else 0
 
     # Proportion of new individuals that belong to a group
     new_individuals = total_individuals - original_individuals
     new_in_group = sum(
-        aequitas_results[~aequitas_results['indv_in_original_indv']]['indv_part_of_group'].apply(len) > 0)
+        results_df[~results_df['indv_in_original_indv']]['indv_part_of_group'].apply(len) > 0)
     p_group_new = new_in_group / new_individuals if new_individuals > 0 else 0
 
     # Correct Couple Detection Rate (Precision)
@@ -177,7 +258,7 @@ def evaluate_discrimination_detection(synthetic_data: pd.DataFrame, aequitas_res
 
     # Proportion of Groups Detected
     detected_groups = set()
-    for groups in aequitas_results['couple_part_of_a_group']:
+    for groups in results_df['couple_part_of_a_group']:
         detected_groups.update(groups)
     p_groups = len(detected_groups) / len(all_group_keys) if len(all_group_keys) > 0 else 0
 
@@ -205,14 +286,14 @@ def evaluate_discrimination_detection(synthetic_data: pd.DataFrame, aequitas_res
         **avg_metrics
     }
 
-    # Add metrics to aequitas_results
+    # Add metrics to results_df
     for key, value in metrics.items():
-        aequitas_results[key] = value
+        results_df[key] = value
 
     # Create group-individual table
-    group_individual_table = create_group_individual_table(aequitas_results, synthetic_data, all_group_keys)
+    group_individual_table = create_group_individual_table(results_df, synthetic_data, all_group_keys)
 
-    return aequitas_results, group_individual_table
+    return results_df, group_individual_table
 
 
 # %%
@@ -223,6 +304,8 @@ def evaluate_discrimination_detection(synthetic_data: pd.DataFrame, aequitas_res
 
 
 def run_test_suite():
+    conn = sqlite3.connect(DB_PATH)  # Replace with your actual database file path
+    init_database(conn)
     test_configurations = [
         # Varying number of attributes
         {"nb_attributes": 3, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 100},
@@ -251,12 +334,6 @@ def run_test_suite():
         {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 200},
         {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 500},
         {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 1000},
-
-        # # Edge cases and combinations
-        # {"nb_attributes": 2, "prop_protected_attr": 1.0, "nb_groups": 5, "max_group_size": 10},
-        # {"nb_attributes": 100, "prop_protected_attr": 0.01, "nb_groups": 1000, "max_group_size": 10},
-        # {"nb_attributes": 30, "prop_protected_attr": 0.4, "nb_groups": 150, "max_group_size": 300},
-        # {"nb_attributes": 15, "prop_protected_attr": 0.6, "nb_groups": 75, "max_group_size": 150},
     ]
 
     current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -270,16 +347,32 @@ def run_test_suite():
         "local_iteration_limit": 10
     }
 
-    # Placeholder parameters for other algorithms (adjust as needed)
-    mlcheck_params = {}
-    biasscan_params = {}
-    expga_params = {}
+    bias_scan_params = {
+        "test_size": 0.3,
+        "random_state": 42,
+        "n_estimators": 200,
+        "bias_scan_num_iters": 100,
+        "bias_scan_scoring": 'Poisson',
+        "bias_scan_favorable_value": 'high',
+        "bias_scan_mode": 'ordinal'
+    }
+
+    expga_params = {
+        "threshold": 0.5,
+        "threshold_rank": 0.5,
+        "max_global": 50,
+        "max_local": 50
+    }
+
+    mlcheck_params = {
+        "iteration_no": 1
+    }
 
     algorithms = [
         ("Aequitas", run_aequitas, aequitas_params),
-        # ("MLCheck", run_mlcheck, mlcheck_params),
-        # ("BiasScan", run_biasscan, biasscan_params),
-        # ("ExpGA", run_expga, expga_params)
+        # ("BiasScan", run_bias_scan, bias_scan_params),
+        ("ExpGA", run_expga, expga_params),
+        ("MLCheck", run_mlcheck, mlcheck_params)
     ]
 
     results = []
@@ -294,18 +387,23 @@ def run_test_suite():
     ]
 
     for config in test_configurations:
-        ge = generate_data(
-            nb_attributes=config["nb_attributes"],
-            min_number_of_classes=2,
-            max_number_of_classes=4,
-            prop_protected_attr=config["prop_protected_attr"],
-            nb_groups=config["nb_groups"],
-            max_group_size=config["max_group_size"],
-            categorical_outcome=True,
-            nb_categories_outcome=4
-        )
-
         for algo_name, algo_func, algo_params in algorithms:
+            if experiment_completed(conn, algo_name, config["nb_attributes"], config["prop_protected_attr"],
+                                    config["nb_groups"], config["max_group_size"]):
+                print(f"Skipping experiment: {algo_name} with {config} (already completed)")
+                continue
+
+            ge = generate_data(
+                nb_attributes=config["nb_attributes"],
+                min_number_of_classes=2,
+                max_number_of_classes=6,
+                prop_protected_attr=config["prop_protected_attr"],
+                nb_groups=config["nb_groups"],
+                max_group_size=config["max_group_size"],
+                categorical_outcome=True,
+                nb_categories_outcome=4
+            )
+
             if algo_name == "Aequitas":
                 algo_results, _ = algo_func(
                     ge.training_dataframe,
@@ -314,17 +412,18 @@ def run_test_suite():
                     **algo_params
                 )
             else:
-                # For other algorithms, use placeholder parameters
-                algo_results, _ = algo_func(
-                    ge.training_dataframe,
-                    col_to_be_predicted=ge.outcome_column,
-                    sensitive_param_name_list=ge.protected_attributes,
-                    **algo_params
-                )
+                algo_results, _ = algo_func(ge, **algo_params)
+
+            if algo_results.empty:
+                print(f"Warning: {algo_name} produced empty results for the current configuration.")
+                continue
 
             eval_results, group_details = evaluate_discrimination_detection(ge.dataframe, algo_results)
 
-            # Add algorithm name, configuration, and algorithm parameters to group_details
+            if eval_results.empty or group_details.empty:
+                print(f"Warning: Evaluation produced empty results for {algo_name} with the current configuration.")
+                continue
+
             group_details['Algorithm'] = algo_name
             for key, value in config.items():
                 group_details[key] = value
@@ -333,26 +432,24 @@ def run_test_suite():
 
             all_group_details.append(group_details)
 
-            # Existing results collection
             results.append({
                 "Algorithm": algo_name,
-                "Num Attributes": config["nb_attributes"],
-                "Prop Protected Attr": config["prop_protected_attr"],
-                "Num Groups": config["nb_groups"],
-                "Max Group Size": config["max_group_size"],
-                "Correct Couple Detection Rate": eval_results["Correct Couple Detection Rate"].iloc[0],
-                "Total Couples Detected": eval_results["Total Couples Detected"].iloc[0],
-                "True Positives": eval_results["True Positives"].iloc[0],
-                "False Positives": eval_results["False Positives"].iloc[0],
-                "Prop Original Individuals": eval_results["Proportion of Original Individuals"].iloc[0],
-                "Prop New Individuals": eval_results["Proportion of New Individuals"].iloc[0],
-                "Prop Original in Group":
+                "Num_Attributes": config["nb_attributes"],
+                "Prop_Protected_Attr": config["prop_protected_attr"],
+                "Num_Groups": config["nb_groups"],
+                "Max_Group_Size": config["max_group_size"],
+                "Correct_Couple_Detection_Rate": eval_results["Correct Couple Detection Rate"].iloc[0],
+                "Total_Couples_Detected": eval_results["Total Couples Detected"].iloc[0],
+                "True_Positives": eval_results["True Positives"].iloc[0],
+                "False_Positives": eval_results["False Positives"].iloc[0],
+                "Prop_Original_Individuals": eval_results["Proportion of Original Individuals"].iloc[0],
+                "Prop_New_Individuals": eval_results["Proportion of New Individuals"].iloc[0],
+                "Prop_Original_in_Group":
                     eval_results["Proportion of original individuals that belong to a group"].iloc[0],
-                "Prop New in Group": eval_results["Proportion of new individuals that belong to a group"].iloc[0],
-                "Prop Groups Detected": eval_results["Proportion of Groups Detected"].iloc[0]
+                "Prop_New_in_Group": eval_results["Proportion of new individuals that belong to a group"].iloc[0],
+                "Prop_Groups_Detected": eval_results["Proportion of Groups Detected"].iloc[0]
             })
 
-            # Analyze trends in calculated attributes
             for attr in calculated_properties:
                 detected_groups = group_details[group_details['detected'] == True]
                 undetected_groups = group_details[group_details['detected'] == False]
@@ -363,14 +460,14 @@ def run_test_suite():
                     attribute_trends.append({
                         "Algorithm": algo_name,
                         "Attribute": attr,
-                        "Num Attributes": config["nb_attributes"],
-                        "Prop Protected Attr": config["prop_protected_attr"],
-                        "Num Groups": config["nb_groups"],
-                        "Max Group Size": config["max_group_size"],
-                        "Detected Mean": detected_groups[attr].mean(),
-                        "Undetected Mean": undetected_groups[attr].mean(),
-                        "T-Statistic": t_stat,
-                        "P-Value": p_value
+                        "Num_Attributes": config["nb_attributes"],
+                        "Prop_Protected_Attr": config["prop_protected_attr"],
+                        "Num_Groups": config["nb_groups"],
+                        "Max_Group_Size": config["max_group_size"],
+                        "Detected_Mean": detected_groups[attr].mean(),
+                        "Undetected_Mean": undetected_groups[attr].mean(),
+                        "T_Statistic": t_stat,
+                        "P_Value": p_value
                     })
 
             results_df = pd.DataFrame(results[-1:])
@@ -382,6 +479,8 @@ def run_test_suite():
             all_group_details_df['date'] = current_datetime
 
             save_results_to_sqlite(all_group_details_df, results_df, attribute_trends_df)
+
+    conn.close()
 
     results_df = pd.DataFrame(results)
     attribute_trends_df = pd.DataFrame(attribute_trends)
@@ -396,6 +495,7 @@ def run_test_suite():
 
 # %% Run the test suite and display results
 results_df, attribute_trends_df, all_group_details_df = run_test_suite()
+
 # %%
 
 import pandas as pd
@@ -507,15 +607,3 @@ print(ttest_df.to_string())
 significant_differences = ttest_df[ttest_df['p-value'] < 0.05]
 print("\nSignificant Differences Between Detected and Undetected Groups:")
 print(significant_differences.to_string())
-
-# ------------------- Conclusion ------------------- #
-
-# The results can now be summarized in your results section with the following:
-# - Performance summary table (performance_summary)
-# - Group property statistics for detected vs undetected groups (group_stats)
-# - Visualizations:
-#   1. Bar plot of detection rates across algorithms
-#   2. Heatmap showing correlations between group properties and likelihood of detection
-#   3. Pair plot visualizing group properties by detection status
-# - Statistical significance results from t-tests (ttest_df)
-# - Interpretation of significant differences between detected and undetected groups (significant_differences)

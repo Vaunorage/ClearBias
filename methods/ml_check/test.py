@@ -11,8 +11,7 @@ ge = generate_data(
     categorical_outcome=True,
     nb_categories_outcome=4)
 
-result_df, report = run_mlcheck(ge, iteration_no=1)
-
 #%%
+result_df, report = run_mlcheck(ge, iteration_no=1)
 print(result_df)
 print(report)

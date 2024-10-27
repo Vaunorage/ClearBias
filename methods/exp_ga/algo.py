@@ -169,7 +169,7 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     df.sort_values(by=['group_id'], inplace=True)
 
     df['indv_key'] = df.apply(lambda row: '|'.join(str(int(row[col])) for col in list(dataset.attributes)), axis=1)
-    df['couple_key'] = df.groupby(df.index // 2)['indv_key'].transform('*'.join)
+    df['couple_key'] = df.groupby(df.index // 2)['indv_key'].transform('-'.join)
 
     return df
 

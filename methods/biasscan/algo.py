@@ -32,6 +32,7 @@ def run_bias_scan(ge,
                   bias_scan_scoring='Poisson',
                   bias_scan_favorable_value='high',
                   bias_scan_mode='ordinal') -> Tuple[pd.DataFrame, dict]:
+
     def format_mdss_results(subsets1, subsets2, all_attributes) -> pd.DataFrame:
         def make_products_df(subsets):
             product_dfs = []
@@ -109,7 +110,11 @@ def run_bias_scan(ge,
 
         result['indv_key'] = result.apply(lambda row: '|'.join(str(int(row[col])) for col in list(ge.attributes)),
                                           axis=1)
-        result['couple_key'] = result.groupby(result.index // 2)['indv_key'].transform('*'.join)
+        result['couple_key'] = result.groupby(result.index // 2)['indv_key'].transform('-'.join)
+
+        # Add a check to ensure we have pairs
+        if any(result.groupby('couple_key').size() != 2):
+            print("Warning: Not all couple_keys have exactly two individuals")
 
         result['diff_outcome'] = result.groupby('couple_key')['outcome'].transform(lambda x: abs(x.diff().iloc[-1]))
 

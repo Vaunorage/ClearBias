@@ -425,7 +425,7 @@ class RunChecker:
         if not testMatrix.empty:
             testMatrix['indv_key'] = testMatrix.apply(
                 lambda row: '|'.join(str(int(row[col])) for col in self.paramDict['attributes']), axis=1)
-            testMatrix['couple_key'] = testMatrix.groupby(testMatrix.index // 2)['indv_key'].transform('*'.join)
+            testMatrix['couple_key'] = testMatrix.groupby(testMatrix.index // 2)['indv_key'].transform('-'.join)
 
         else:
             testMatrix['indv_key'] = ''
