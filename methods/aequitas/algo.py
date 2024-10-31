@@ -597,10 +597,10 @@ def run_aequitas(df: DataFrame,
         else:
             res2['couple_key'] = None
 
-        res2 = calculate_actual_uncertainties(res2, dataset.feature_names, urf)
-        relevance_metrics = calculate_relevance(res2, dataset.feature_names, dataset.protected_attributes,
-                                                dataset.col_to_be_predicted)
-        res2 = pd.concat([res2, relevance_metrics], axis=1)
+        # res2 = calculate_actual_uncertainties(res2, dataset.feature_names, urf)
+        # relevance_metrics = calculate_relevance(res2, dataset.feature_names, dataset.protected_attributes,
+        #                                         dataset.col_to_be_predicted)
+        # res2 = pd.concat([res2, relevance_metrics], axis=1)
 
         return res2, model_scores[0]
 

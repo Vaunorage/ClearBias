@@ -1,201 +1,121 @@
 import copy
 import math
 import random
-import itertools
-
-import pandas as pd
 import numpy as np
+from numpy.linalg import norm
+from scipy.linalg import eigh
 from tqdm import tqdm
-from dataclasses import dataclass
-
+from dataclasses import dataclass, field
 from pandas import DataFrame
-from pandas._typing import Dtype
-from typing import Literal, TypeVar, Any, List, Dict
+from typing import Literal, TypeVar, Any, List, Dict, Tuple, Union
+from scipy.stats import norm, multivariate_normal, beta, stats, gaussian_kde
+import itertools
+import pandas as pd
+from scipy.optimize import minimize_scalar
+from scipy.stats import bernoulli
+from matplotlib.colors import Normalize
+from matplotlib.cm import ScalarMappable
+import warnings
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, f1_score, recall_score
+from sklearn.preprocessing import LabelEncoder
+import matplotlib.pyplot as plt
+import seaborn as sns
+from matplotlib.colors import LinearSegmentedColormap
+
+warnings.filterwarnings("ignore")
+# Ignore specific warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 
 
-def max_rank(sets):
-    total_combinations = 1
-    for s in sets:
-        total_combinations *= len(s)
-    return total_combinations
+class GaussianCopulaCategorical:
+    def __init__(self, marginals, correlation_matrix, excluded_combinations=None):
+        self.marginals = [np.array(m) for m in marginals]
+        self.correlation_matrix = np.array(correlation_matrix)
+        self.dim = len(marginals)
+        self.excluded_combinations = set(map(tuple, excluded_combinations or []))
+        self.cum_probabilities = [np.cumsum(m[:-1]) for m in self.marginals]
 
+    def is_excluded(self, sample):
+        return tuple(sample) in self.excluded_combinations
 
-def get_tuple_from_multi_set_rank(sets, rank):
-    total_combinations = max_rank(sets)
-    if rank >= total_combinations:
-        raise ValueError("Rank is out of the allowable range (0 to total_combinations - 1)")
-
-    indices = []
-    for i in range(len(sets) - 1, -1, -1):
-        size = len(sets[i])
-        index = rank % size
-        indices.insert(0, index)
-        rank //= size
-
-    result_tuple = tuple(sets[i][indices[i]] for i in range(len(sets)))
-    return result_tuple
-
-
-def rank_from_tuple(sets, tuple_value):
-    if len(sets) != len(tuple_value):
-        raise ValueError("The tuple must have the same number of elements as there are sets.")
-
-    rank = 0
-    product = 1
-
-    for i in reversed(range(len(sets))):
-        element = tuple_value[i]
-        set_size = len(sets[i])
-        index = sets[i].index(element)
-        rank += index * product
-        product *= set_size
-
-    return rank
-
-
-def list_possible_ranks_for_subsets(set, subsets):
-    import itertools
-
-    # Initialize a list to hold the ranks for each subset
-    all_ranks = []
-
-    # Process each subset
-    for subset in subsets:
-        # Generate all combinations from the current subset
-        all_combinations = list(itertools.product(*subset))
-
-        # Initialize the list of ranks for the current subset
-        ranks = []
-
-        # Compute the rank for each combination using the full set
-        for combination in all_combinations:
-            rank = rank_from_tuple(set, combination)
-            ranks.append(rank)
-
-        # Append the list of ranks for the current subset to the main list
-        all_ranks.append(ranks)
-
-    return all_ranks
-
-
-def generate_categorical_distribution(categories, skewness):
-    n = len(categories)
-    raw_probs = [skewness ** (i - 1) for i in range(1, n + 1)]
-    normalization_factor = sum(raw_probs)
-    normalized_probs = [p / normalization_factor for p in raw_probs]
-    return dict(zip(categories, normalized_probs))
-
-
-def generate_samples(categories, skewness, num_samples):
-    distribution = generate_categorical_distribution(categories, skewness)
-    categories, probabilities = zip(*distribution.items())
-    samples = random.choices(categories, weights=probabilities, k=num_samples)
-    return samples
-
-
-def generate_data_for_subgroup(sets, subgroup, skewness, num_samples_per_set):
-    all_samples = []
-    for k, s in enumerate(subgroup):
-        if s == -1:
-            n_set = copy.deepcopy(sets[k])
-            n_set.remove(-1)
-            samples = generate_samples(n_set, 1 - skewness, num_samples_per_set)
-            all_samples.append(samples)
-        else:
-            all_samples.append([s] * num_samples_per_set)
-    all_samples = np.array(all_samples).T
-    return all_samples
-
-
-def generate_outcome(subgroup2_individuals, Wt, Wx, sets_attr, magnitude, epis_uncertainty):
-    protected_attr = subgroup2_individuals[:, np.array(sets_attr)]
-    unprotected_attr = subgroup2_individuals[:, ~np.array(sets_attr)]
-
-    sigmoid = lambda z: 1 / (1 + np.exp(-z))
-
-    def normalize_data(X):
-        X_min = np.min(X, axis=0)
-        X_max = np.max(X, axis=0)
-        scale = X_max - X_min
-        scale[scale == 0] = 1
-        X_normalized = (X - X_min) / scale
-        return X_normalized
-
-    outcome = (normalize_data(protected_attr).dot(Wt.T) * (magnitude + 1) + \
-               normalize_data(unprotected_attr).dot(Wx.T)).sum(axis=1)
-    outcome = random.gauss(outcome, outcome * epis_uncertainty)
-    outcome = sigmoid(outcome).reshape(-1, 1)
-    return outcome
-
-
-def convert_to_float(df):
-    for column in df.columns:
-        df[column] = pd.to_numeric(df[column], errors='ignore')
-    return df
+    def generate_samples(self, n_samples):
+        samples = []
+        while len(samples) < n_samples:
+            gaussian_samples = multivariate_normal.rvs(mean=np.zeros(self.dim),
+                                                       cov=self.correlation_matrix,
+                                                       size=1).flatten()
+            uniform_samples = norm.cdf(gaussian_samples)
+            categorical_sample = np.zeros(self.dim, dtype=int)
+            for i in range(self.dim):
+                categorical_sample[i] = np.searchsorted(self.cum_probabilities[i], uniform_samples[i])
+            if not self.is_excluded(categorical_sample):
+                samples.append(categorical_sample)
+        return np.array(samples)
 
 
 def coefficient_of_variation(data):
     mean = np.mean(data)
     std_dev = np.std(data)
-    if mean == 0:
-        return float('inf')  # Return infinity if the mean is 0, as CV is not defined
+    if mean == 0 or np.isnan(mean) or np.isnan(std_dev):
+        return 0  # or another appropriate value
     cv = (std_dev / mean) * 100
     return cv
 
 
 def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attributes, prop_protected_attr):
-    sets = []
+    attr_categories = []
     attr_names = []
 
     if nb_attributes < 2:
-        raise ValueError("nb_attributes must be at least 2 to ensure both 0 and 1 can be included.")
+        raise ValueError("nb_attributes must be at least 2 to ensure both protected and unprotected attributes.")
 
-    protected_attr = [False] * (nb_attributes - 2) + [False, True]
+    # Ensure at least one protected and one unprotected attribute
+    protected_attr = [True, False]
 
-    for i in range(nb_attributes - 2):
-        protected_attr[i] = True if random.random() < prop_protected_attr else False
+    # Randomly assign additional attributes based on prop_protected_attr
+    for _ in range(nb_attributes - 2):
+        protected_attr.append(random.random() < prop_protected_attr)
 
+    # Shuffle to randomize the order
     random.shuffle(protected_attr)
 
+    i_t = 1
+    i_x = 1
+
     for i in range(nb_attributes):
-        base_name = 'Attr' + str(i + 1)
         num_classes = random.randint(min_number_of_classes, max_number_of_classes)
         attribute_set = [-1] + list(range(0, num_classes))
-        sets.append(attribute_set)
+        attr_categories.append(attribute_set)
 
         if protected_attr[i]:
-            attr_names.append(base_name + '_T')
+            attr_names.append(f"Attr{i_t}_T")
+            i_t += 1
         else:
-            attr_names.append(base_name + '_X')
+            attr_names.append(f"Attr{i_x}_X")
+            i_x += 1
 
-    if not any(protected_attr):
-        # Randomly select an attribute to make protected
-        random_index = random.randint(0, nb_attributes - 1)
-        protected_attr[random_index] = True
-        attr_names[random_index] = attr_names[random_index][:-2] + '_T'  # Change the suffix to '_T'
-
-    return sets, protected_attr, attr_names
+    return attr_categories, protected_attr, attr_names
 
 
 def bin_array_values(array, num_bins):
     min_val = np.min(array)
     max_val = np.max(array)
-
     bins = np.linspace(min_val, max_val, num_bins + 1)
-
     binned_indices = np.digitize(array, bins) - 1
-
     return binned_indices
 
 
-# Create a TypeVar for the attribute columns
 AttrCol = TypeVar('AttrCol', bound=str)
 
 
 class DiscriminationDataFrame(DataFrame):
     group_key: str
     subgroup_key: str
-    couple_key: str
     indv_key: str
     group_size: int
     min_number_of_classes: int
@@ -212,7 +132,7 @@ class DiscriminationDataFrame(DataFrame):
     epis_uncertainty: float
     magnitude: float
     frequency: float
-    outcome: float  # or int if categorical_outcome is True
+    outcome: float
     collisions: int
     diff_outcome: float
     diff_variation: float
@@ -223,11 +143,9 @@ class DiscriminationDataFrame(DataFrame):
     def __getitem__(self, key: AttrCol) -> Any:
         return super().__getitem__(key)
 
-    # Add a method to get all attribute columns
     def get_attr_columns(self) -> list[str]:
         return [col for col in self.columns if col.startswith('Attr')]
 
-    # Add a method to get a specific attribute column
     def get_attr_column(self, index: int, protected: bool) -> Any:
         suffix = '_T' if protected else '_X'
         col_name = f'Attr{index}{suffix}'
@@ -244,6 +162,8 @@ class DiscriminationData:
     max_group_size: int
     hiddenlayers_depth: int
     outcome_column: Literal['outcome']
+    relevance_metrics: pd.DataFrame = field(default_factory=pd.DataFrame)
+    attr_possible_values: Dict[str, List[int]] = field(default_factory=dict)  # Add possible values for each attribute
 
     @property
     def attr_columns(self) -> List[str]:
@@ -281,226 +201,650 @@ class DiscriminationData:
             self.input_bounds.append([min_val, max_val])
 
 
+def generate_subgroup2_probabilities(subgroup1_sample, subgroup_sets, similarity, sets_attr):
+    subgroup2_probabilities = []
+
+    for i, (sample_value, possible_values) in enumerate(zip(subgroup1_sample, subgroup_sets)):
+        n = len(possible_values)
+        probs = np.zeros(n)
+
+        if sets_attr[i]:  # If the attribute is protected
+            # Ensure that subgroup2 has a different value than subgroup1 for protected attributes
+            sample_index = possible_values.index(sample_value)
+            different_indices = [j for j in range(n) if j != sample_index]
+
+            # If the protected attribute has only one possible value, skip changing it
+            if len(possible_values) == 1:
+                probs[sample_index] = 1.0  # Only one value available, assign it
+            elif not different_indices:
+                # If no different values are available, use the same value as subgroup1
+                probs[sample_index] = 1.0
+            else:
+                chosen_index = random.choice(different_indices)
+                probs[chosen_index] = 1.0
+        else:
+            # Apply similarity for non-protected attributes
+            sample_index = possible_values.index(sample_value)
+            probs[sample_index] = similarity
+            remaining_prob = 1 - similarity
+            for j in range(n):
+                if j != sample_index:
+                    probs[j] = remaining_prob / (n - 1)
+
+            # Add noise to the probabilities to simulate realistic variation
+            noise = np.random.dirichlet(np.ones(n) * (1 - similarity) * 10)
+            probs = (1 - (1 - similarity) / 2) * probs + (1 - similarity) / 2 * noise
+            probs /= probs.sum()
+
+        subgroup2_probabilities.append(probs.tolist())
+
+    return subgroup2_probabilities
+
+
+class OutcomeGenerator:
+    def __init__(self, weights: np.ndarray, bias: float, subgroup_bias: float):
+        self.weights = weights
+        self.bias = bias
+        self.subgroup_bias = subgroup_bias
+
+    def generate_outcome(self, sample: List[int], is_subgroup1: bool) -> float:
+        x = np.array(sample, dtype=float)
+        x = (x - np.mean(x)) / (np.std(x) + 1e-8)
+        weighted_sum = np.dot(x, self.weights) + self.bias
+        if is_subgroup1:
+            weighted_sum += self.subgroup_bias
+        else:
+            weighted_sum -= self.subgroup_bias
+        sigmoid = 1 / (1 + np.exp(-weighted_sum))
+        return norm.cdf(norm.ppf(sigmoid) * 0.5)
+
+
+class IndividualsGenerator:
+    def __init__(self, schema, graph, gen_order, outcome_weights, outcome_bias, subgroup_bias,
+                 epis_uncertainty, alea_uncertainty, n_estimators=50):
+        self.schema = schema
+        self.graph = np.array(graph)
+        self.gen_order = [i - 1 for i in gen_order]
+        self.n_attributes = len(schema)
+        self.outcome_weights = outcome_weights
+        self.outcome_bias = outcome_bias
+        self.subgroup_bias = subgroup_bias
+        self.epis_uncertainty = epis_uncertainty  # Will be used differently
+        self.alea_uncertainty = alea_uncertainty  # Will be used differently
+        self.n_estimators = n_estimators
+
+    def _compute_support_degrees_vectorized(self, ns, ps):
+        """Vectorized version of support degrees computation"""
+
+        def objective_batch(thetas, ns, ps):
+            ratio = (thetas ** ps[:, None] * (1 - thetas) ** ns[:, None]) / \
+                    ((ps[:, None] / (ns[:, None] + ps[:, None])) ** ps[:, None] * \
+                     (ns[:, None] / (ns[:, None] + ps[:, None])) ** ns[:, None])
+
+            positive_case = np.minimum(ratio, 2 * thetas - 1)
+            negative_case = np.minimum(ratio, 1 - 2 * thetas)
+            return np.column_stack((-np.max(positive_case, axis=1), -np.max(negative_case, axis=1)))
+
+        theta_grid = np.linspace(0.001, 0.999, 1000)
+        results = objective_batch(theta_grid, ns, ps)
+        return -results
+
+    def generate_dataset_with_outcome(self, n_samples: int,
+                                      predetermined_values: List[int],
+                                      is_subgroup1: bool) -> List[Tuple[List[int], float, float, float]]:
+        # Step 1: Generate attribute samples
+        samples = np.zeros((n_samples, self.n_attributes), dtype=int)
+
+        # Fill in predetermined values
+        if predetermined_values:
+            mask = np.array(predetermined_values) != -1
+            samples[:, mask] = np.array(predetermined_values)[mask][None, :]
+
+        # Generate remaining values based on correlation matrix
+        for attr in self.gen_order:
+            mask = samples[:, attr] == 0
+            if not np.any(mask):
+                continue
+
+            n_to_generate = np.sum(mask)
+            n_values = len(self.schema[attr])
+            probabilities = np.ones((n_to_generate, n_values))
+
+            # Calculate probabilities based on correlations
+            other_attrs = np.arange(self.n_attributes) != attr
+            other_attrs_indices = np.where(other_attrs)[0]
+            other_values = samples[mask][:, other_attrs]
+            correlations = self.graph[attr][other_attrs]
+
+            for value in range(n_values):
+                prob_multipliers = np.ones(n_to_generate)
+                for i, other_attr_idx in enumerate(other_attrs_indices):
+                    corr = correlations[i]
+                    attr_values = other_values[:, i]
+                    matches = (attr_values == value)
+                    prob_multipliers *= np.where(matches, corr, (1 - corr) / (n_values - 1))
+                probabilities[:, value] = prob_multipliers
+
+            # Normalize and generate values
+            probabilities /= probabilities.sum(axis=1, keepdims=True)
+            samples[mask, attr] = np.array([np.random.choice(n_values, p=p) for p in probabilities])
+
+        # Step 2: Prepare features
+        X = (samples - np.mean(samples, axis=0)) / (np.std(samples, axis=0) + 1e-8)
+
+        # Step 3: Generate ensemble predictions with uncertainties
+        ensemble_preds = []
+
+        for i in range(self.n_estimators):
+            # 3a: Add epistemic uncertainty through weight perturbation
+            weight_noise = np.random.normal(0, self.epis_uncertainty, size=self.outcome_weights.shape)
+            perturbed_weights = self.outcome_weights * (1 + weight_noise)
+
+            # 3b: Calculate base predictions
+            base_pred = np.dot(X, perturbed_weights) + self.outcome_bias
+
+            # 3c: Add subgroup bias
+            base_pred += self.subgroup_bias if is_subgroup1 else -self.subgroup_bias
+
+            # 3d: Add aleatoric uncertainty
+            noisy_pred = base_pred + np.random.normal(0, self.alea_uncertainty, size=n_samples)
+
+            # 3e: Convert to probabilities
+            probs = 1 / (1 + np.exp(-noisy_pred))
+            ensemble_preds.append(probs)
+
+        # Step 4: Convert to array for calculations
+        ensemble_preds = np.array(ensemble_preds).T  # Shape: (n_samples, n_estimators)
+
+        # Step 5: Calculate final predictions and uncertainties
+        final_predictions = np.mean(ensemble_preds, axis=1)
+
+        # Epistemic uncertainty: variance between models
+        epistemic_uncertainty = np.var(ensemble_preds, axis=1)
+
+        # Aleatoric uncertainty: average prediction variance
+        aleatoric_uncertainty = np.mean(ensemble_preds * (1 - ensemble_preds), axis=1)
+
+        # Step 6: Return results
+        return [(samples[i].tolist(),
+                 final_predictions[i],
+                 epistemic_uncertainty[i],
+                 aleatoric_uncertainty[i])
+                for i in range(n_samples)]
+
+
+class CollisionTracker:
+    def __init__(self, nb_attributes):
+        self.used_combinations = set()
+        self.nb_attributes = nb_attributes
+
+    def is_collision(self, possibility):
+        return tuple(possibility) in self.used_combinations
+
+    def add_combination(self, possibility):
+        self.used_combinations.add(tuple(possibility))
+
+
+def calculate_actual_similarity(data):
+    def calculate_group_similarity(group_data):
+        subgroup_keys = group_data['subgroup_key'].unique()
+        if len(subgroup_keys) != 2:
+            return np.nan
+
+        subgroup1 = subgroup_keys[0].split('|')
+        subgroup2 = subgroup_keys[1].split('|')
+
+        matching_attrs = sum(a == b for a, b in zip(subgroup1, subgroup2) if a != '*' and b != '*')
+        total_fixed_attrs = sum(a != '*' and b != '*' for a, b in zip(subgroup1, subgroup2))
+
+        return matching_attrs / total_fixed_attrs if total_fixed_attrs > 0 else 1.0
+
+    return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_similarity)
+
+
+class UncertaintyRandomForest(RandomForestClassifier):
+    def __init__(self, n_estimators=100, max_depth=10, **kwargs):
+        super().__init__(n_estimators=n_estimators, max_depth=max_depth, **kwargs)
+
+    def predict_with_uncertainty(self, X):
+        # Remove feature names before prediction
+        X_array = X.values if hasattr(X, 'values') else X
+
+        # Get predictions from all trees
+        predictions = []
+        for tree in self.estimators_:
+            # Get probabilistic predictions
+            leaf_id = tree.apply(X_array)
+            tree_pred = tree.tree_.value[leaf_id].reshape(-1, self.n_classes_)
+            # Normalize predictions
+            tree_pred = tree_pred / np.sum(tree_pred, axis=1, keepdims=True)
+            predictions.append(tree_pred[:, 1])  # Get probability of positive class
+
+        predictions = np.array(predictions).T  # Shape: (n_samples, n_estimators)
+
+        # Calculate mean predictions
+        mean_pred = np.mean(predictions, axis=1)
+
+        # Calculate uncertainties
+        epistemic = np.var(predictions, axis=1)  # Between-model variance
+        aleatoric = np.mean(predictions * (1 - predictions), axis=1)  # Within-model variance
+
+        return mean_pred.reshape(-1, 1), epistemic, aleatoric
+
+
+def calculate_actual_uncertainties(data):
+    """
+    Calculate the actual epistemic and aleatoric uncertainties for each group.
+    """
+    X = data.dataframe[data.feature_names]
+    y = data.dataframe[data.outcome_column]
+
+    urf = UncertaintyRandomForest(n_estimators=50, random_state=42)
+    urf.fit(X, y)
+
+    mean_pred, epistemic, aleatoric = urf.predict_with_uncertainty(X)
+
+    data.dataframe['calculated_epistemic'] = epistemic
+    data.dataframe['calculated_aleatoric'] = aleatoric
+
+    return data.dataframe.groupby('group_key').agg({
+        'calculated_epistemic': 'mean',
+        'calculated_aleatoric': 'mean'
+    })
+
+
+def calculate_actual_mean_diff_outcome(data):
+    def calculate_group_diff(group_data):
+        subgroup_keys = group_data['subgroup_key'].unique()
+        if len(subgroup_keys) != 2:
+            return np.nan
+
+        subgroup1_outcome = group_data[group_data['subgroup_key'] == subgroup_keys[0]][data.outcome_column].mean()
+        subgroup2_outcome = group_data[group_data['subgroup_key'] == subgroup_keys[1]][data.outcome_column].mean()
+
+        return abs(subgroup1_outcome - subgroup2_outcome) / max(subgroup1_outcome, subgroup2_outcome)
+
+    return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_diff)
+
+
+def calculate_actual_metrics_and_relevance(data):
+    """
+    Calculate the actual metrics and relevance for each group.
+    """
+    actual_similarity = calculate_actual_similarity(data)
+    actual_uncertainties = calculate_actual_uncertainties(data)
+    actual_mean_diff_outcome = calculate_actual_mean_diff_outcome(data)
+
+    # Merge these metrics into the main dataframe
+    data.dataframe['actual_similarity'] = data.dataframe['group_key'].map(actual_similarity)
+    data.dataframe['actual_epis_uncertainty'] = data.dataframe['group_key'].map(
+        actual_uncertainties['calculated_epistemic'])
+    data.dataframe['actual_alea_uncertainty'] = data.dataframe['group_key'].map(
+        actual_uncertainties['calculated_aleatoric'])
+    data.dataframe['actual_mean_diff_outcome'] = data.dataframe['group_key'].map(actual_mean_diff_outcome)
+
+    # Calculate the new relevance metric
+    relevance = calculate_relevance(data)
+
+    # Merge the relevance metrics back into the dataframe, avoiding duplicates
+    existing_columns = set(data.dataframe.columns)
+    new_columns = [col for col in relevance.columns if col not in existing_columns]
+    data.dataframe = data.dataframe.merge(relevance[new_columns], left_on='group_key', right_index=True, how='left')
+
+    # Store the relevance metrics in the DiscriminationData object
+    data.relevance_metrics = relevance
+
+    # Clean up any remaining duplicate columns
+    data.dataframe = data.dataframe.loc[:, ~data.dataframe.columns.duplicated()]
+
+    return data
+
+
+def calculate_relevance(data):
+    """
+    Calculate the relevance metric for each group based on the updated formula.
+    """
+
+    def calculate_group_relevance(group_data):
+        subgroup_keys = group_data['subgroup_key'].unique()
+        if len(subgroup_keys) != 2:
+            return pd.Series({
+                'relevance': np.nan,
+                'calculated_magnitude': np.nan,
+                'calculated_group_size': np.nan,
+                'calculated_granularity': np.nan,
+                'calculated_intersectionality': np.nan,
+                'calculated_uncertainty': np.nan,
+                'calculated_similarity': np.nan,
+                'calculated_subgroup_ratio': np.nan
+            })
+
+        S1 = group_data[group_data['subgroup_key'] == subgroup_keys[0]]
+        S2 = group_data[group_data['subgroup_key'] == subgroup_keys[1]]
+
+        # Calculate magnitude
+        mu1 = S1[data.outcome_column].mean()
+        mu2 = S2[data.outcome_column].mean()
+        magnitude = abs(mu1 - mu2) / max(mu1, mu2) if max(mu1, mu2) != 0 else 0
+
+        # Calculate other factors
+        group_size = len(group_data) / len(data.dataframe)
+        granularity = group_data['granularity'].iloc[0] / (len(data.attributes) - len(data.protected_attributes))
+        intersectionality = group_data['intersectionality'].iloc[0] / len(data.protected_attributes)
+        uncertainty = (group_data['actual_epis_uncertainty'].mean() + group_data['actual_alea_uncertainty'].mean()) / 2
+        similarity = group_data['actual_similarity'].iloc[0]
+        subgroup_ratio = max(len(S1), len(S2)) / min(len(S1), len(S2))
+
+        if intersectionality == 0 or granularity == 0:
+            print('sss')
+
+        # Define weights (you may want to adjust these)
+        w_f, w_g, w_i, w_u, w_s, w_r = 1, 1, 1, 1, 1, 1
+        Z = w_f + w_g + w_i + w_u + w_s + w_r
+
+        # Calculate OtherFactors
+        other_factors = (w_f * group_size + w_g * granularity + w_i * intersectionality +
+                         w_u * uncertainty + w_s * similarity + w_r * (1 / subgroup_ratio)) / Z
+
+        # Calculate relevance (you may want to adjust alpha)
+        alpha = 1
+        relevance = magnitude * (1 + alpha * other_factors)
+
+        if group_size == 0 or intersectionality == 0 or granularity == 0:
+            print('ddd')
+
+        return pd.Series({
+            'relevance': relevance,
+            'calculated_magnitude': magnitude,
+            'calculated_group_size': group_size,
+            'calculated_granularity': granularity,
+            'calculated_intersectionality': intersectionality,
+            'calculated_uncertainty': uncertainty,
+            'calculated_similarity': similarity,
+            'calculated_subgroup_ratio': subgroup_ratio
+        })
+
+    return data.dataframe.groupby('group_key').apply(calculate_group_relevance)
+
+
+def calculate_weights(n):
+    return [1 / (i + 1) for i in range(n)]
+
+
+def safe_normalize(p):
+    """Safely normalize an array, handling the case where sum is zero."""
+    sum_p = np.sum(p)
+    if sum_p == 0:
+        # If all probabilities are zero, return a uniform distribution
+        return np.ones_like(p) / len(p)
+    return np.array(p) / sum_p
+
+
+def create_group(granularity, intersectionality,
+                 possibility, attr_categories, sets_attr, correlation_matrix, gen_order, W,
+                 subgroup_bias,
+                 min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
+                 min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
+                 min_diff_subgroup_size, max_diff_subgroup_size, max_group_size, attr_names
+                 ):
+    # Separate non-protected and protected attributes and reorder them
+    non_protected_columns = [attr for attr, protected in zip(attr_names, sets_attr) if not protected]
+    protected_columns = [attr for attr, protected in zip(attr_names, sets_attr) if protected]
+
+    # Reorder attr_names so that non-protected attributes come first
+    attr_names = non_protected_columns + protected_columns
+
+    # Adjust attr_categories and sets_attr in the same order
+    attr_categories = [attr_categories[attr_names.index(attr)] for attr in attr_names]
+    sets_attr = [sets_attr[attr_names.index(attr)] for attr in attr_names]
+
+    # Function to create sets based on the new ordering
+    def make_sets(possibility):
+        ress_set = []
+        for ind in range(len(attr_categories)):
+            if ind in possibility:
+                ss = copy.deepcopy(attr_categories[ind])
+                ss.remove(-1)
+                ress_set.append(ss)
+            else:
+                ress_set.append([-1])
+        return ress_set
+
+    subgroup_sets = make_sets(possibility)
+
+    similarity = random.uniform(min_similarity, max_similarity)
+    alea_uncertainty = random.uniform(min_alea_uncertainty, max_alea_uncertainty)
+    epis_uncertainty = random.uniform(min_epis_uncertainty, max_epis_uncertainty)
+    frequency = random.uniform(min_frequency, max_frequency)
+
+    # Generate samples based on the new ordered attributes
+    subgroup1_p_vals = [random.choices(list(range(len(e))), k=len(e)) for e in subgroup_sets]
+    subgroup1_p_vals = [safe_normalize(p) for p in subgroup1_p_vals]
+    subgroup1_sample = GaussianCopulaCategorical(subgroup1_p_vals, correlation_matrix).generate_samples(1)
+    subgroup1_vals = [subgroup_sets[i][e] for i, e in enumerate(subgroup1_sample[0])]
+
+    subgroup2_p_vals = generate_subgroup2_probabilities(subgroup1_vals, subgroup_sets, similarity, sets_attr)
+    subgroup2_sample = GaussianCopulaCategorical(subgroup2_p_vals, correlation_matrix,
+                                                 list(subgroup1_sample)).generate_samples(1)
+    subgroup2_vals = [subgroup_sets[i][e] for i, e in enumerate(subgroup2_sample[0])]
+
+    total_group_size = math.ceil(max_group_size * frequency)
+
+    diff_percentage = random.uniform(min_diff_subgroup_size, max_diff_subgroup_size)
+    diff_size = int(total_group_size * diff_percentage)
+
+    subgroup1_size = max(1, (total_group_size + diff_size) // 2)
+    subgroup2_size = max(1, total_group_size - subgroup1_size)
+
+    generator = IndividualsGenerator(
+        schema=attr_categories,
+        graph=correlation_matrix,
+        gen_order=gen_order,
+        outcome_weights=W[-1],
+        outcome_bias=0,
+        subgroup_bias=subgroup_bias,
+        epis_uncertainty=epis_uncertainty,
+        alea_uncertainty=alea_uncertainty
+    )
+
+    # Generate dataset for subgroup 1 and subgroup 2
+    subgroup1_data = generator.generate_dataset_with_outcome(subgroup1_size, subgroup1_vals, is_subgroup1=True)
+    subgroup1_individuals = [sample for sample, _, _, _ in subgroup1_data]
+    subgroup1_individuals_df = pd.DataFrame(subgroup1_individuals, columns=attr_names)
+    subgroup1_individuals_df['outcome'] = [outcome for _, outcome, _, _ in subgroup1_data]
+    subgroup1_individuals_df['epis_uncertainty'] = [epis for _, _, epis, _ in subgroup1_data]
+    subgroup1_individuals_df['alea_uncertainty'] = [alea for _, _, _, alea in subgroup1_data]
+
+    subgroup2_data = generator.generate_dataset_with_outcome(subgroup2_size, subgroup2_vals, is_subgroup1=False)
+    subgroup2_individuals = [sample for sample, _, _, _ in subgroup2_data]
+    subgroup2_individuals_df = pd.DataFrame(subgroup2_individuals, columns=attr_names)
+    subgroup2_individuals_df['outcome'] = [outcome for _, outcome, _, _ in subgroup2_data]
+    subgroup2_individuals_df['epis_uncertainty'] = [epis for _, _, epis, _ in subgroup2_data]
+    subgroup2_individuals_df['alea_uncertainty'] = [alea for _, _, _, alea in subgroup2_data]
+
+    # Create keys based on the ordered attribute values
+    subgroup1_key = '|'.join(list(map(lambda x: '*' if x == -1 else str(x), subgroup1_vals)))
+    subgroup2_key = '|'.join(list(map(lambda x: '*' if x == -1 else str(x), subgroup2_vals)))
+    group_key = subgroup1_key + '-' + subgroup2_key
+
+    # Assign the new keys to the dataframe
+    subgroup1_individuals_df['subgroup_key'] = subgroup1_key
+    subgroup2_individuals_df['subgroup_key'] = subgroup2_key
+
+    subgroup1_individuals_df['indv_key'] = subgroup1_individuals_df[attr_names].apply(
+        lambda x: '|'.join(list(x.astype(str))), axis=1)
+    subgroup2_individuals_df['indv_key'] = subgroup2_individuals_df[attr_names].apply(
+        lambda x: '|'.join(list(x.astype(str))), axis=1)
+
+    result_df = pd.concat([subgroup1_individuals_df, subgroup2_individuals_df])
+
+    result_df['group_key'] = group_key
+    result_df['granularity'] = granularity
+    result_df['intersectionality'] = intersectionality
+    result_df['similarity'] = similarity
+    result_df['epis_uncertainty'] = epis_uncertainty
+    result_df['alea_uncertainty'] = alea_uncertainty
+    result_df['frequency'] = frequency
+    result_df['group_size'] = len(subgroup1_individuals + subgroup2_individuals)
+    result_df['diff_subgroup_size'] = diff_percentage
+
+    return result_df
+
+
+def generate_valid_correlation_matrix(n):
+    A = np.random.rand(n, n)
+    A = (A + A.T) / 2
+    eigenvalues, eigenvectors = eigh(A)
+    eigenvalues = np.maximum(eigenvalues, 1e-8)
+    A = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+    D = np.diag(1 / np.sqrt(np.diag(A)))
+    correlation_matrix = D @ A @ D
+
+    return correlation_matrix
+
+
+def estimate_min_attributes_and_classes(num_groups, max_iterations=1000):
+    def calculate_combinations(num_attributes, num_classes):
+        return sum(math.comb(num_attributes, i) * (num_classes - 1) ** i for i in range(1, num_attributes + 1))
+
+    min_attributes = 2
+    min_classes = 2
+
+    for _ in range(max_iterations):
+        combinations = calculate_combinations(min_attributes, min_classes)
+
+        if combinations >= num_groups:
+            return min_attributes, min_classes
+
+        if min_attributes <= min_classes:
+            min_attributes += 1
+        else:
+            min_classes += 1
+
+    return min_attributes, min_classes
+
+
 def generate_data(
-        min_number_of_classes=2,
-        max_number_of_classes=6,
-        nb_attributes=6,
-        prop_protected_attr=0.1,
+        gen_order: List[int] = None,
+        correlation_matrix=None,
+        W: np.ndarray = None,
         nb_groups=100,
+        nb_attributes=20,
+        min_number_of_classes=None,
+        max_number_of_classes=None,
+        prop_protected_attr=0.2,
         max_group_size=100,
-        hiddenlayers_depth=3,
         min_similarity=0.0,
         max_similarity=1.0,
         min_alea_uncertainty=0.0,
         max_alea_uncertainty=1.0,
         min_epis_uncertainty=0.0,
         max_epis_uncertainty=1.0,
-        min_magnitude=0.0,
-        max_magnitude=1.0,
         min_frequency=0.0,
         max_frequency=1.0,
-        categorical_outcome: bool = False,
+        min_diff_subgroup_size=0.0,
+        max_diff_subgroup_size=0.5,
+        categorical_outcome: bool = True,
         nb_categories_outcome: int = 6
-) -> DiscriminationData:
-    """
-    Generates synthetic data with configurable parameters for protected and unprotected attributes,
-    group sizes, and different types of uncertainties.
-
-    Returns:
-    - GeneratedData: A dataclass containing the generated dataframe, metadata, and additional information.
-    """
-
+):
     outcome_column = 'outcome'
 
-    # Generate the data schema based on the input parameters
-    sets, sets_attr, attr_names = generate_data_schema(
+    if correlation_matrix is None:
+        correlation_matrix = generate_valid_correlation_matrix(nb_attributes)
+
+    if min_number_of_classes is None or max_number_of_classes is None:
+        min_number_of_classes, max_number_of_classes = estimate_min_attributes_and_classes(nb_groups)
+        max_number_of_classes = int(min_number_of_classes * 1.5)
+
+    if gen_order is None:
+        gen_order = list(range(1, nb_attributes + 1))
+        random.shuffle(gen_order)
+
+    if W is None:
+        hiddenlayers_depth = 3
+        W = np.random.uniform(low=0.0, high=1.0, size=(hiddenlayers_depth, nb_attributes))
+
+    attr_categories, sets_attr, attr_names = generate_data_schema(
         min_number_of_classes, max_number_of_classes, nb_attributes, prop_protected_attr
     )
 
-    nb_protected = sum(sets_attr)  # Number of protected attributes
-    nb_unprotected = len(sets_attr) - nb_protected  # Number of unprotected attributes
-
-    # Separate indexes for protected and unprotected attributes
     protected_indexes = [index for index, value in enumerate(sets_attr) if value]
     unprotected_indexes = [index for index, value in enumerate(sets_attr) if not value]
 
-    # Randomly initialize weights for protected and unprotected attributes
-    Wt = np.random.uniform(low=0.0, high=1.0, size=(hiddenlayers_depth, nb_protected))
-    Wx = np.random.uniform(low=0.0, high=1.0, size=(hiddenlayers_depth, nb_unprotected))
+    collision_tracker = CollisionTracker(nb_attributes)
 
-    history = set()  # Keep track of generated combinations to avoid duplicates
-    results = []  # List to store generated data
-    collisions = 0  # Counter for tracking overlapping data points
+    results = []
+    collisions = 0
 
-    for group_num in tqdm(range(nb_groups), desc="Generating data"):
-        # Randomly generate hyperparameters for each group
-        granularity = random.randint(1, nb_unprotected)
-        intersectionality = random.randint(1, nb_protected)
-        similarity = random.uniform(min_similarity, max_similarity)
-        alea_uncertainty = random.uniform(min_alea_uncertainty, max_alea_uncertainty)
-        epis_uncertainty = random.uniform(min_epis_uncertainty, max_epis_uncertainty)
-        magnitude = random.uniform(min_magnitude, max_magnitude)
-        frequency = random.uniform(min_frequency, max_frequency)
+    with tqdm(total=nb_groups, desc="Generating data") as pbar:
+        while len(results) < nb_groups:
+            granularity = random.randint(1, max(1, len(unprotected_indexes)))
+            intersectionality = random.randint(1, max(1, len(protected_indexes)))
 
-        # Generate all possible combinations of unprotected and protected attributes
-        possible_gran = list(itertools.combinations(unprotected_indexes, granularity))
-        possible_intersec = list(itertools.combinations(protected_indexes, intersectionality))
-        possiblities = list(itertools.product(possible_gran, possible_intersec))
+            subgroup_bias = random.uniform(0.1, 0.5)
 
-        subgroup1_possible_sets = []
-        for pos in possiblities:
-            pos = tuple(itertools.chain.from_iterable(pos))
-            ress_set = []
-            for s in range(len(sets)):
-                if s in pos:
-                    ss = copy.deepcopy(sets[s])
-                    ss.remove(-1)
-                    ress_set.append(ss)
-                else:
-                    ress_set.append([-1])
-            subgroup1_possible_sets.append(ress_set)
+            # Randomly sample from unprotected and protected indexes without generating all combinations
+            possible_gran = random.sample(unprotected_indexes, granularity)
+            possible_intersec = random.sample(protected_indexes, intersectionality)
 
-        # Calculate the ranks for the generated subsets
-        possible_ranks_subgroup1 = list_possible_ranks_for_subsets(sets, subgroup1_possible_sets)
-        possible_ranks_subgroup1 = set(itertools.chain.from_iterable(possible_ranks_subgroup1))
+            possibility = tuple(possible_gran + possible_intersec)  # Combine the gran and intersec lists into a tuple
 
-        # Check if the current combination already exists in the history
-        if possible_ranks_subgroup1.issubset(history):
-            history.difference_update(possible_ranks_subgroup1)
-            collisions += 1
-            print(f'granularity {granularity}, intersectionality {intersectionality}, similarity {similarity} maxed !')
-
-        possible_ranks_subgroup1.difference_update(history)
-
-        # Choose a subgroup and mark it as used in history
-        subgroup_rank1 = random.choice(list(possible_ranks_subgroup1))
-        subgroup1 = get_tuple_from_multi_set_rank(sets, subgroup_rank1)
-        history.add(subgroup_rank1)
-
-        # Determine attributes to change in the second subgroup
-        possible_chang = [k for k, e in enumerate(subgroup1) if e != -1]
-        sim_ind_to_chang = random.choice([e for e in possible_chang if sets_attr[e]])
-        random.shuffle(possible_chang)
-        possible_chang = possible_chang[:math.ceil(len(possible_chang) * (1 - similarity))]
-        possible_chang.append(sim_ind_to_chang)
-        possible_chang = set(possible_chang)
-
-        # Generate the second subgroup with changes
-        subgroup2_possible_sets = []
-        for k, e in enumerate(subgroup1):
-            if k in possible_chang:
-                p_set = copy.deepcopy(sets[k])
-                if len(p_set) > 2:
-                    p_set.remove(e)
-                p_set.remove(-1)
-                subgroup2_possible_sets.append(p_set)
+            if not collision_tracker.is_collision(possibility):
+                collision_tracker.add_combination(possibility)
+                group = create_group(
+                    granularity, intersectionality,
+                    possibility, attr_categories, sets_attr, correlation_matrix, gen_order, W,
+                    subgroup_bias,
+                    min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
+                    min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
+                    min_diff_subgroup_size, max_diff_subgroup_size, max_group_size, attr_names
+                )
+                results.append(group)
+                pbar.update(1)
             else:
-                subgroup2_possible_sets.append([e])
+                collisions += 1
 
-        possible_ranks_subgroup2 = list_possible_ranks_for_subsets(sets, [subgroup2_possible_sets])
-        possible_ranks_subgroup2 = set(itertools.chain.from_iterable(possible_ranks_subgroup2))
+            if collisions > nb_groups * 2:
+                print(f"\nWarning: Unable to generate {nb_groups} groups. Generated {len(results)} groups.")
+                pbar.total = len(results)
+                pbar.refresh()
+                break
 
-        # Check if the second combination already exists in the history
-        if possible_ranks_subgroup2.issubset(history):
-            history.difference_update(possible_ranks_subgroup2)
-            collisions += 1
-            print(f'granularity {granularity}, intersectionality {intersectionality}, similarity {similarity} maxed !')
-
-        possible_ranks_subgroup2.difference_update(history)
-
-        # Choose the second subgroup and mark it as used in history
-        subgroup_rank2 = random.choice(list(possible_ranks_subgroup2))
-        subgroup2 = get_tuple_from_multi_set_rank(sets, subgroup_rank2)
-        history.add(subgroup_rank2)
-
-        # Calculate the subgroup sizes and generate individual data for each subgroup
-        sub_group_size = math.ceil((max_group_size * frequency) / 2)
-        subgroup1_individuals = generate_data_for_subgroup(sets, subgroup1, alea_uncertainty, sub_group_size)
-        subgroup2_individuals = generate_data_for_subgroup(sets, subgroup2, alea_uncertainty, sub_group_size)
-        group_size = subgroup1_individuals.shape[0] + subgroup2_individuals.shape[1]
-
-        # Generate outcomes for both subgroups
-        subgroup1_outcomes = generate_outcome(subgroup1_individuals, Wt, Wx, sets_attr, magnitude, epis_uncertainty)
-        subgroup2_outcomes = generate_outcome(subgroup2_individuals, Wt, Wx, sets_attr, magnitude, epis_uncertainty)
-
-        # Create keys and metadata for each individual in the subgroups
-        gen_attributes = np.array(
-            [
-                group_size, min_number_of_classes, max_number_of_classes, nb_attributes, prop_protected_attr,
-                nb_groups, max_group_size, hiddenlayers_depth, granularity, intersectionality, similarity,
-                alea_uncertainty, epis_uncertainty, magnitude, frequency
-            ]
-        ).reshape(-1, 1).repeat(sub_group_size, axis=1).T
-
-        subgroup1_key = np.array([f"{'|'.join(list(map(str, subgroup1)))}"]).repeat(sub_group_size, axis=0).reshape(-1,
-                                                                                                                    1)
-        subgroup2_key = np.array([f"{'|'.join(list(map(str, subgroup2)))}"]).repeat(sub_group_size, axis=0).reshape(-1,
-                                                                                                                    1)
-        group_key = np.array(
-            [f"{'|'.join(list(map(str, subgroup1)))}" + "*" + f"{'|'.join(list(map(str, subgroup2)))}"]
-        ).repeat(sub_group_size, axis=0).reshape(-1, 1)
-
-        indv1_key = np.apply_along_axis(lambda x: '|'.join(x), 1, subgroup1_individuals.astype(str)).reshape(-1, 1)
-        indv2_key = np.apply_along_axis(lambda x: '|'.join(x), 1, subgroup2_individuals.astype(str)).reshape(-1, 1)
-        couple_key = np.concatenate(
-            [indv1_key.reshape(-1, 1), np.repeat(['*'], indv1_key.shape[0]).reshape(-1, 1), indv2_key.reshape(-1, 1)],
-            axis=1
-        )
-        couple_key = np.apply_along_axis(lambda x: ''.join(x), 1, couple_key.astype(str)).reshape(-1, 1)
-
-        # Combine all generated data into a single result set
-        res_subgroup1 = np.concatenate(
-            [group_key, subgroup1_key, couple_key, indv1_key, gen_attributes, subgroup1_individuals,
-             subgroup1_outcomes],
-            axis=1
-        )
-        res_subgroup2 = np.concatenate(
-            [group_key, subgroup2_key, couple_key, indv2_key, gen_attributes, subgroup2_individuals,
-             subgroup2_outcomes],
-            axis=1
-        )
-
-        results.append(np.concatenate([res_subgroup1, res_subgroup2]))
-
-    # Define column names for the results dataframe
-    col_names = [
-                    'group_key', 'subgroup_key', 'couple_key', 'indv_key', 'group_size', 'min_number_of_classes',
-                    'max_number_of_classes', 'nb_attributes', 'prop_protected_attr', 'nb_groups', 'max_group_size',
-                    'hiddenlayers_depth', 'granularity', 'intersectionality', 'similarity', 'alea_uncertainty',
-                    'epis_uncertainty', 'magnitude', 'frequency'
-                ] + attr_names + [outcome_column]
-
-    # Combine all generated results into a single dataframe
-    results = pd.DataFrame(np.concatenate(results), columns=col_names)
+    results = pd.concat(results, ignore_index=True)
     results['collisions'] = collisions
 
     for column in attr_names + [outcome_column]:
         results[column] = pd.to_numeric(results[column], errors='ignore')
 
-    # If categorical outcomes are required, bin the outcome into categories
     if categorical_outcome:
         results[outcome_column] = bin_array_values(results[outcome_column], nb_categories_outcome)
+    else:
+        results[outcome_column] = (results[outcome_column] - results[outcome_column].min()) / (
+                results[outcome_column].max() - results[outcome_column].min())
 
-    results = results.sort_values(['group_key', 'couple_key'])
+    results = results.sort_values(['group_key', 'indv_key'])
 
-    # Calculate the difference in outcomes within each group and couple
-    results[f'diff_outcome'] = results.groupby(['group_key', 'couple_key'])[outcome_column].diff().abs().bfill()
+    results[f'diff_outcome'] = results.groupby(['group_key', 'indv_key'])[outcome_column].diff().abs().bfill()
     results['diff_variation'] = coefficient_of_variation(results['diff_outcome'])
 
-    # Map the attributes to whether they are protected or not
     protected_attr = {k: e for k, e in zip(attr_names, sets_attr)}
 
-    # Return a GeneratedData instance containing the results and additional metadata
+    attr_possible_values = {attr_name: values for attr_name, values in zip(attr_names, attr_categories)}
 
-    results = DiscriminationDataFrame(results, columns=col_names)
+    results_d = DiscriminationDataFrame(results)
 
-    return DiscriminationData(
-        dataframe=results,
+    data = DiscriminationData(
+        dataframe=results_d,
         categorical_columns=list(attr_names) + [outcome_column],
         attributes=protected_attr,
         collisions=collisions,
-        nb_groups=nb_groups,
+        nb_groups=results_d['group_key'].nunique(),
         max_group_size=max_group_size,
-        hiddenlayers_depth=hiddenlayers_depth,
-        outcome_column=outcome_column
+        hiddenlayers_depth=W.shape[0],
+        outcome_column=outcome_column,
+        attr_possible_values=attr_possible_values  # Include the possible values
     )
+
+    data = calculate_actual_metrics_and_relevance(data)
+
+    return data
