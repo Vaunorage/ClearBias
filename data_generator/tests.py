@@ -29,6 +29,12 @@ data = generate_data(
 print(f"Generated {len(data.dataframe)} samples in {data.nb_groups} groups")
 print(f"Collisions: {data.collisions}")
 
+#%%
+
+data.train_embedding_model()
+
+
+
 
 #
 # %%
