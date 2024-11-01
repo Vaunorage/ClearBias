@@ -200,6 +200,173 @@ class DiscriminationData:
             max_val = math.ceil(self.xdf[col].max())
             self.input_bounds.append([min_val, max_val])
 
+    def train_embedding_model(self,
+                              n_neighbors=15,
+                              min_dist=0.1,
+                              n_components=2,
+                              metric='euclidean',
+                              random_state=42):
+
+        try:
+            from umap import UMAP
+            from sklearn.preprocessing import StandardScaler
+        except ImportError:
+            raise ImportError("Please install umap-learn and scikit-learn: pip install umap-learn scikit-learn")
+
+        # Get feature columns for embedding
+        feature_cols = self.feature_names
+
+        # Prepare the feature matrix
+        X = self.dataframe[feature_cols].values
+
+        # Create and fit the scaler
+        self.feature_scaler = StandardScaler()
+        X_scaled = self.feature_scaler.fit_transform(X)
+
+        # Create and fit UMAP
+        self.embedding_model = UMAP(
+            n_neighbors=n_neighbors,
+            min_dist=min_dist,
+            n_components=n_components,
+            metric=metric,
+            random_state=random_state
+        )
+
+        self.embedding_model.fit(X_scaled)
+
+        return self
+
+    def embed_data(self,
+                   data: pd.DataFrame,
+                   columns: List[str] = None) -> np.ndarray:
+        if self.embedding_model is None:
+            raise ValueError("Embedding model not trained. Call train_embedding_model first.")
+
+        # Use feature names from training if columns not specified
+        if columns is None:
+            columns = self.feature_names
+
+        # Validate columns
+        missing_cols = set(columns) - set(data.columns)
+        if missing_cols:
+            raise ValueError(f"Missing columns in input data: {missing_cols}")
+
+        # Prepare the feature matrix
+        X = data[columns].values
+
+        # Scale the features using the trained scaler
+        X_scaled = self.feature_scaler.transform(X)
+
+        # Transform the data using the trained UMAP model
+        embedding = self.embedding_model.transform(X_scaled)
+
+        return embedding
+
+    def plot_embedding(self,
+                       data: pd.DataFrame = None,
+                       color_by: str = 'outcome',
+                       figsize: tuple = (12, 8),
+                       title: str = None,
+                       point_size: int = 50,
+                       alpha: float = 0.6,
+                       colormap: str = 'viridis',
+                       columns: List[str] = None) -> plt.Figure:
+        """
+        Plot embedded data with customizable styling.
+
+        Parameters:
+        -----------
+        data : pd.DataFrame, optional
+            Data to embed and plot. If None, uses the training data
+        color_by : str
+            Column name to use for coloring points
+        figsize : tuple
+            Figure size in inches
+        title : str, optional
+            Plot title. If None, generates automatic title
+        point_size : int
+            Size of scatter points
+        alpha : float
+            Transparency of points
+        colormap : str
+            Matplotlib colormap name
+        columns : List[str], optional
+            Columns to use for embedding. If None, uses all feature names
+
+        Returns:
+        --------
+        matplotlib.figure.Figure
+            The figure containing the plot
+        """
+        if self.embedding_model is None:
+            raise ValueError("Embedding model not trained. Call train_embedding_model first.")
+
+        # Use training data if no data provided
+        if data is None:
+            data = self.dataframe
+            embedding = self.embedding_model.embedding_
+        else:
+            embedding = self.embed_data(data, columns)
+
+        # Create the visualization
+        fig, ax = plt.subplots(figsize=figsize)
+
+        # Get color values
+        if color_by not in data.columns:
+            raise ValueError(f"Column '{color_by}' not found in data")
+
+        color_values = data[color_by].values
+
+        # Create color map based on the type of values
+        if np.issubdtype(color_values.dtype, np.number):
+            scatter = ax.scatter(
+                embedding[:, 0],
+                embedding[:, 1],
+                c=color_values,
+                cmap=colormap,
+                alpha=alpha,
+                s=point_size
+            )
+            plt.colorbar(scatter, label=color_by)
+        else:
+            unique_values = np.unique(color_values)
+            palette = sns.color_palette("husl", n_colors=len(unique_values))
+            for value, color in zip(unique_values, palette):
+                mask = color_values == value
+                ax.scatter(
+                    embedding[mask, 0],
+                    embedding[mask, 1],
+                    c=[color],
+                    label=value,
+                    alpha=alpha,
+                    s=point_size
+                )
+            plt.legend(title=color_by)
+
+        # Set title and labels
+        if title is None:
+            title = f'UMAP Embedding\nColored by {color_by}'
+        plt.title(title, pad=20)
+        plt.xlabel('UMAP Dimension 1')
+        plt.ylabel('UMAP Dimension 2')
+
+        # Style the plot
+        ax.grid(True, linestyle='--', alpha=0.7)
+        ax.set_facecolor('#f8f9fa')
+
+        # Add UMAP parameters
+        param_text = (f'UMAP Parameters:\n'
+                      f'n_neighbors={self.embedding_model.n_neighbors}, '
+                      f'min_dist={self.embedding_model.min_dist}')
+        plt.text(0.02, 0.98, param_text,
+                 transform=ax.transAxes,
+                 verticalalignment='top',
+                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+        plt.tight_layout()
+
+        return fig
+
 
 def generate_subgroup2_probabilities(subgroup1_sample, subgroup_sets, similarity, sets_attr):
     subgroup2_probabilities = []

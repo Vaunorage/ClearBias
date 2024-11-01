@@ -1,4 +1,4 @@
-from data_generator.main2 import generate_data
+from data_generator.main import generate_data
 from methods.biasscan.algo import run_bias_scan
 
 ge = generate_data(

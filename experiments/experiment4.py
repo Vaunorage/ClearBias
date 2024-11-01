@@ -7,6 +7,8 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from io import StringIO
+import patsy
+from tqdm import tqdm
 import numpy as np
 from scipy import stats
 from sklearn.ensemble import RandomForestRegressor
@@ -21,7 +23,7 @@ import logging
 from enum import Enum
 import re
 from pathlib import Path
-
+import doubleml as dml
 from path import HERE
 import sqlite3
 import json
@@ -430,8 +432,9 @@ def evaluate_discrimination_detection(
 
 
 class ExperimentRunner:
-    def __init__(self, db_path: str = "experiments.db"):
+    def __init__(self, db_path: str = "experiments.db", output_dir: str = "output_dir"):
         self.db_path = Path(db_path)
+        self.output_dir = Path(output_dir)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.setup_database()
 
@@ -520,7 +523,7 @@ class ExperimentRunner:
 
     def run_method(self, method: Method, ge, config: ExperimentConfig) -> tuple:
         import time
-        from data_generator.main2 import generate_data
+        from data_generator.main import generate_data
         from methods.aequitas.algo import run_aequitas
         from methods.biasscan.algo import run_bias_scan
         from methods.exp_ga.algo import run_expga
@@ -586,7 +589,7 @@ class ExperimentRunner:
             self.save_experiment(experiment_id, config_dict, 'running')
 
         try:
-            from data_generator.main2 import generate_data
+            from data_generator.main import generate_data
 
             ge = generate_data(
                 nb_attributes=config.nb_attributes,
@@ -1260,68 +1263,135 @@ class ExperimentRunner:
                 'adequacy_metrics': {}
             }
 
-    def analyze_discrimination_metrics_cate(self) -> Dict[str, Any]:
+    def analyze_discrimination_metrics_cate(self, methods=None) -> Dict[str, Any]:
+        """
+        Analyze discrimination metrics using CATE with improved error handling and index alignment.
+        """
+
+        def analyze_cate(data, det_metric, treatment_metric, metric_type):
+            """
+            Perform CATE analysis with proper index alignment and robust error handling.
+            """
+            if len(data) < 50:
+                return None
+
+            try:
+                # Prepare data for CATE analysis - ensure index alignment
+                covariates = [m for m in metrics_config['calculated'] + metrics_config['config']
+                              if m != treatment_metric and m in data.columns]
+
+                # Select relevant columns and remove missing values
+                analysis_cols = [det_metric, treatment_metric] + covariates
+                analysis_data = data[analysis_cols].copy().dropna()
+
+                # Reset index to ensure alignment
+                analysis_data = analysis_data.reset_index(drop=True)
+
+                # Define treatment groups using loc to ensure proper alignment
+                median_treatment = analysis_data[treatment_metric].median()
+                T = (analysis_data[treatment_metric] > median_treatment).astype(int)
+
+                # Verify sufficient samples in each group
+                min_group_size = min(T.sum(), len(T) - T.sum())
+                if min_group_size < 10:
+                    return None
+
+                # Prepare outcome and covariates with aligned indices
+                Y = analysis_data[det_metric].values
+                X = analysis_data[covariates]
+
+                if X.empty or len(X.columns) == 0:
+                    return None
+
+                # Standardize covariates
+                scaler = StandardScaler()
+                X_scaled = scaler.fit_transform(X)
+                X_scaled = pd.DataFrame(X_scaled, columns=X.columns, index=X.index)
+
+                # Split data by treatment using boolean indexing with aligned indices
+                mask_treated = T == 1
+                mask_control = T == 0
+
+                X_treated = X_scaled[mask_treated]
+                Y_treated = Y[mask_treated]
+                X_control = X_scaled[mask_control]
+                Y_control = Y[mask_control]
+
+                # Configure cross-validation
+                n_splits = min(5, min(len(Y_treated), len(Y_control)) // 2)
+                if n_splits < 2:
+                    return None
+
+                cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+
+                # Fit models and get predictions
+                rf = RandomForestRegressor(n_estimators=100, random_state=42)
+                y_pred_treated = cross_val_predict(rf, X_treated, Y_treated, cv=cv)
+                y_pred_control = cross_val_predict(rf, X_control, Y_control, cv=cv)
+
+                # Calculate CATE
+                cate = np.mean(y_pred_treated) - np.mean(y_pred_control)
+
+                # Bootstrap for uncertainty estimation
+                n_bootstrap = 1000
+                bootstrap_cates = []
+
+                for _ in range(n_bootstrap):
+                    treated_idx = np.random.choice(len(y_pred_treated), size=len(y_pred_treated))
+                    control_idx = np.random.choice(len(y_pred_control), size=len(y_pred_control))
+
+                    bootstrap_cate = (np.mean(y_pred_treated[treated_idx]) -
+                                      np.mean(y_pred_control[control_idx]))
+                    bootstrap_cates.append(bootstrap_cate)
+
+                # Calculate statistics
+                std_error = np.std(bootstrap_cates)
+                t_stat = cate / std_error if std_error > 0 else 0
+                p_value = 2 * (1 - stats.norm.cdf(abs(t_stat)))
+                ci_lower, ci_upper = np.percentile(bootstrap_cates, [2.5, 97.5])
+
+                # Calculate relative effect
+                control_mean = np.mean(y_pred_control)
+                relative_effect = cate / control_mean if control_mean != 0 else np.nan
+
+                return {
+                    'Detection_Metric': det_metric,
+                    'Metric_Type': metric_type,
+                    'Metric': treatment_metric,
+                    'CATE': cate,
+                    'P_Value': p_value,
+                    'CI_Lower': ci_lower,
+                    'CI_Upper': ci_upper,
+                    'Std_Error': std_error,
+                    'Relative_Effect': relative_effect,
+                    'Sample_Size': len(analysis_data),
+                    'Treated_Size': T.sum(),
+                    'Control_Size': len(T) - T.sum(),
+                    'N_Splits': n_splits
+                }
+
+            except Exception as e:
+                logger.warning(f"Error in CATE analysis for {det_metric} and {treatment_metric}: {str(e)}")
+                return None
+
         try:
-            # Verify database path
-            db_path = Path(self.db_path)
-            if not db_path.exists():
-                return {'error': f'Database not found at {db_path}'}
+            # Get consolidated group detections with proper index
+            detections_df = self.consolidate_group_detections()
+            if detections_df.empty:
+                return {'error': 'No group detection data found'}
 
-            # Get group detections data
-            with sqlite3.connect(db_path) as conn:
-                # Get completed experiments
-                exp_df = pd.read_sql_query(
-                    "SELECT experiment_id FROM experiments WHERE status = 'completed'",
-                    conn
-                )
-                if exp_df.empty:
-                    return {'error': 'No completed experiments found'}
-
-                # Get analysis results
-                placeholders = ','.join('?' * len(exp_df))
-                query = f"""
-                    SELECT experiment_id, method_name, group_detections 
-                    FROM analysis_results 
-                    WHERE experiment_id IN ({placeholders})
-                """
-                analysis_df = pd.read_sql_query(query, conn, params=exp_df['experiment_id'].tolist())
-
-            if analysis_df.empty:
-                return {'error': 'No analysis results found'}
-
-            # Process and combine group detections
-            combined_detections = []
-            for _, row in analysis_df.iterrows():
-                try:
-                    if pd.isna(row['group_detections']):
-                        continue
-
-                    group_df = pd.read_json(row['group_detections'])
-                    if not group_df.empty:
-                        group_df['experiment_id'] = row['experiment_id']
-                        group_df['method'] = row['method_name']
-                        combined_detections.append(group_df)
-
-                except Exception as e:
-                    logger.warning(f"Error processing detections for experiment {row['experiment_id']}: {e}")
-                    continue
-
-            if not combined_detections:
-                return {'error': 'No valid group detection data found'}
-
-            # Combine all detection data
-            detections_df = pd.concat(combined_detections, ignore_index=True)
+            # Reset index to ensure alignment
+            detections_df = detections_df.reset_index(drop=True)
 
             # Define metrics to analyze
             metrics_config = {
                 'detection': [
-                    'nb_indv_detected', 'nb_couple_detected',
                     'indv_detection_rate', 'couple_detection_rate'
                 ],
                 'calculated': [
-                    'calculated_epistemic', 'calculated_aleatoric', 'relevance',
+                    'calculated_epistemic', 'calculated_aleatoric',
                     'calculated_magnitude', 'calculated_group_size', 'calculated_granularity',
-                    'calculated_intersectionality', 'calculated_uncertainty',
+                    'calculated_intersectionality',
                     'calculated_similarity', 'calculated_subgroup_ratio'
                 ],
                 'config': [
@@ -1330,109 +1400,25 @@ class ExperimentRunner:
             }
 
             # Get unique methods
-            methods = detections_df['method'].unique()
+            if methods is None:
+                methods = detections_df['method'].unique()
 
             # Initialize results storage
             overall_results = []
             method_specific_results = {method: [] for method in methods}
-            method_specific_metrics = {method: {} for method in methods}
 
-            # Function to perform CATE analysis on a dataset
-            def analyze_cate(data, det_metric, treatment_metric, metric_type):
-                if len(data) < 50:
-                    return None
+            # Calculate total number of iterations for progress bar
+            total_iterations = 0
+            for det_metric in metrics_config['detection']:
+                if det_metric in detections_df.columns:
+                    for metric_type in ['calculated', 'config']:
+                        for treatment_metric in metrics_config[metric_type]:
+                            if treatment_metric in detections_df.columns:
+                                # Add 1 for overall analysis and 1 for each method-specific analysis
+                                total_iterations += 1 + len(methods)
 
-                try:
-                    # Prepare data for CATE analysis
-                    covariates = [m for m in metrics_config['calculated'] + metrics_config['config']
-                                  if m != treatment_metric and m in data.columns]
-
-                    # Select relevant columns and remove missing values
-                    analysis_cols = [det_metric, treatment_metric] + covariates
-                    analysis_data = data[analysis_cols].copy().dropna()
-
-                    # Define treatment groups
-                    T = (analysis_data[treatment_metric] > analysis_data[treatment_metric].median()).astype(int)
-
-                    # Verify sufficient samples in each group
-                    min_group_size = min(sum(T), len(T) - sum(T))
-                    if min_group_size < 10:
-                        return None
-
-                    # Prepare outcome and covariates
-                    Y = analysis_data[det_metric].values
-                    X = analysis_data[covariates]
-
-                    if X.empty or len(X.columns) == 0:
-                        return None
-
-                    # Standardize covariates
-                    scaler = StandardScaler()
-                    X_scaled = scaler.fit_transform(X)
-                    X_scaled = pd.DataFrame(X_scaled, columns=X.columns)
-
-                    # Split data by treatment
-                    X_treated = X_scaled[T == 1]
-                    Y_treated = Y[T == 1]
-                    X_control = X_scaled[T == 0]
-                    Y_control = Y[T == 0]
-
-                    # Configure cross-validation
-                    n_splits = min(5, min(len(Y_treated), len(Y_control)) // 2)
-                    if n_splits < 2:
-                        return None
-
-                    cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
-
-                    # Fit models and get predictions
-                    rf = RandomForestRegressor(n_estimators=100, random_state=42)
-                    y_pred_treated = cross_val_predict(rf, X_treated, Y_treated, cv=cv)
-                    y_pred_control = cross_val_predict(rf, X_control, Y_control, cv=cv)
-
-                    # Calculate CATE
-                    cate = np.mean(y_pred_treated) - np.mean(y_pred_control)
-
-                    # Bootstrap for uncertainty estimation
-                    n_bootstrap = 1000
-                    bootstrap_cates = []
-
-                    for _ in range(n_bootstrap):
-                        treated_idx = np.random.choice(len(y_pred_treated), size=len(y_pred_treated))
-                        control_idx = np.random.choice(len(y_pred_control), size=len(y_pred_control))
-
-                        bootstrap_cate = (np.mean(y_pred_treated[treated_idx]) -
-                                          np.mean(y_pred_control[control_idx]))
-                        bootstrap_cates.append(bootstrap_cate)
-
-                    # Calculate statistics
-                    std_error = np.std(bootstrap_cates)
-                    t_stat = cate / std_error if std_error > 0 else 0
-                    p_value = 2 * (1 - stats.norm.cdf(abs(t_stat)))
-                    ci_lower, ci_upper = np.percentile(bootstrap_cates, [2.5, 97.5])
-
-                    # Calculate relative effect
-                    control_mean = np.mean(y_pred_control)
-                    relative_effect = cate / control_mean if control_mean != 0 else np.nan
-
-                    return {
-                        'Detection_Metric': det_metric,
-                        'Metric_Type': metric_type,
-                        'Metric': treatment_metric,
-                        'CATE': cate,
-                        'P_Value': p_value,
-                        'CI_Lower': ci_lower,
-                        'CI_Upper': ci_upper,
-                        'Std_Error': std_error,
-                        'Relative_Effect': relative_effect,
-                        'Sample_Size': len(analysis_data),
-                        'Treated_Size': sum(T),
-                        'Control_Size': len(T) - sum(T),
-                        'N_Splits': n_splits
-                    }
-
-                except Exception as e:
-                    logger.warning(f"Error in CATE analysis: {e}")
-                    return None
+            # Create progress bar
+            pbar = tqdm(total=total_iterations, desc="Analyzing CATE metrics")
 
             # Analyze each combination of detection and treatment metrics
             for det_metric in metrics_config['detection']:
@@ -1448,101 +1434,222 @@ class ExperimentRunner:
                         result = analyze_cate(detections_df, det_metric, treatment_metric, metric_type)
                         if result:
                             overall_results.append(result)
+                        pbar.update(1)
 
                         # Per-method analysis
                         for method in methods:
-                            method_data = detections_df[detections_df['method'] == method]
+                            method_data = detections_df[detections_df['method'] == method].reset_index(drop=True)
                             result = analyze_cate(method_data, det_metric, treatment_metric, metric_type)
                             if result:
                                 result['Method'] = method
                                 method_specific_results[method].append(result)
+                            pbar.update(1)
 
-            # Convert results to DataFrames
-            overall_df = pd.DataFrame(overall_results)
-            method_dfs = {method: pd.DataFrame(results) for method, results in method_specific_results.items()
-                          if results}  # Only include methods with results
+            pbar.close()
 
-            # Calculate adequacy metrics for overall results
+            # Convert results to DataFrames with proper index handling
+            overall_df = pd.DataFrame(overall_results) if overall_results else pd.DataFrame()
+            method_dfs = {
+                method: pd.DataFrame(results) if results else pd.DataFrame()
+                for method, results in method_specific_results.items()
+            }
+
+            # Calculate adequacy metrics
             def calculate_adequacy_metrics(df):
                 if df.empty:
                     return None
 
-                return {
+                metrics = {
                     'sample_metrics': {
                         'total_samples': len(df),
-                        'mean_treated_size': df['Treated_Size'].mean(),
-                        'mean_control_size': df['Control_Size'].mean(),
-                        'mean_cv_splits': df['N_Splits'].mean()
+                        'mean_treated_size': df['Treated_Size'].mean() if 'Treated_Size' in df else None,
+                        'mean_control_size': df['Control_Size'].mean() if 'Control_Size' in df else None,
+                        'mean_cv_splits': df['N_Splits'].mean() if 'N_Splits' in df else None
                     },
                     'effect_metrics': {
-                        'mean_cate': df['CATE'].abs().mean(),
-                        'median_cate': df['CATE'].abs().median(),
-                        'max_cate': df['CATE'].abs().max(),
-                        'significant_effects': sum(df['P_Value'] < 0.05)
+                        'mean_cate': df['CATE'].abs().mean() if 'CATE' in df else None,
+                        'median_cate': df['CATE'].abs().median() if 'CATE' in df else None,
+                        'max_cate': df['CATE'].abs().max() if 'CATE' in df else None,
+                        'significant_effects': sum(df['P_Value'] < 0.05) if 'P_Value' in df else None
                     },
                     'precision_metrics': {
-                        'mean_std_error': df['Std_Error'].mean(),
-                        'mean_ci_width': (df['CI_Upper'] - df['CI_Lower']).mean(),
-                        'mean_p_value': df['P_Value'].mean()
+                        'mean_std_error': df['Std_Error'].mean() if 'Std_Error' in df else None,
+                        'mean_ci_width': ((df['CI_Upper'] - df['CI_Lower']).mean()
+                                          if 'CI_Upper' in df and 'CI_Lower' in df else None),
+                        'mean_p_value': df['P_Value'].mean() if 'P_Value' in df else None
                     }
                 }
+
+                # Remove None values
+                metrics = {k: {k2: v2 for k2, v2 in v.items() if v2 is not None}
+                           for k, v in metrics.items()}
+
+                return metrics
 
             overall_adequacy = calculate_adequacy_metrics(overall_df)
             method_adequacy = {method: calculate_adequacy_metrics(df)
                                for method, df in method_dfs.items()}
 
-            # Generate recommendations
-            def generate_recommendations(adequacy_metrics):
-                if not adequacy_metrics:
-                    return []
-
-                recommendations = []
-                if adequacy_metrics['sample_metrics']['total_samples'] < 1000:
-                    recommendations.append("Consider increasing sample size for more reliable estimates")
-                if adequacy_metrics['precision_metrics']['mean_ci_width'] > 0.5:
-                    recommendations.append("Wide confidence intervals suggest need for larger sample size")
-                if adequacy_metrics['effect_metrics']['significant_effects'] < 5:
-                    recommendations.append("Few significant effects found - consider additional metrics or experiments")
-                if adequacy_metrics['sample_metrics']['mean_cv_splits'] < 5:
-                    recommendations.append("Limited cross-validation splits due to sample size")
-                return recommendations
-
-            overall_recommendations = generate_recommendations(overall_adequacy)
-            method_recommendations = {method: generate_recommendations(metrics)
-                                      for method, metrics in method_adequacy.items()}
-
-            # Compare methods
-            method_comparison = {}
-            if len(method_dfs) > 1:
-                comparison_metrics = [
-                    'mean_cate', 'significant_effects', 'mean_std_error', 'mean_ci_width'
-                ]
-                for metric in comparison_metrics:
-                    values = {method: adequacy['effect_metrics'].get(metric) or
-                                      adequacy['precision_metrics'].get(metric)
-                              for method, adequacy in method_adequacy.items()}
-                    method_comparison[metric] = values
-
             return {
                 'overall_analysis': {
                     'cate_results': overall_df,
-                    'adequacy_metrics': overall_adequacy,
-                    'recommendations': overall_recommendations
+                    'adequacy_metrics': overall_adequacy
                 },
                 'method_specific': {
                     method: {
                         'cate_results': df,
-                        'adequacy_metrics': method_adequacy[method],
-                        'recommendations': method_recommendations[method]
+                        'adequacy_metrics': method_adequacy[method]
                     }
                     for method, df in method_dfs.items()
-                },
-                'method_comparison': method_comparison
+                }
             }
 
         except Exception as e:
-            logger.error(f"Error in analysis: {e}")
+            logger.error(f"Error in CATE analysis: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return {'error': str(e)}
+
+    def summarize_method_performance(self) -> pd.DataFrame:
+        """
+        Create a summary table of performance metrics for each method based on group detections.
+
+        Returns:
+            pd.DataFrame: Summary table with performance metrics per method
+        """
+        try:
+            # Get consolidated group detections
+            detections_df = self.consolidate_group_detections()
+
+            if detections_df.empty:
+                return pd.DataFrame()
+
+            # Define metrics to compute
+            detection_metrics = [
+                'indv_detection_rate',
+                'couple_detection_rate'
+            ]
+
+            # Calculate metrics per method
+            method_summaries = []
+
+            for method in detections_df['method'].unique():
+                method_data = detections_df[detections_df['method'] == method]
+
+                # Basic detection metrics
+                summary = {
+                    'method': method,
+                    'total_groups_analyzed': len(method_data),
+                    'unique_experiments': method_data['experiment_id'].nunique()
+                }
+
+                # Calculate statistics for each detection metric
+                for metric in detection_metrics:
+                    if metric in method_data.columns:
+                        summary.update({
+                            f'{metric}_mean': method_data[metric].mean(),
+                            f'{metric}_std': method_data[metric].std()
+                        })
+
+                method_summaries.append(summary)
+
+            # Create summary DataFrame
+            summary_df = pd.DataFrame(method_summaries)
+
+            # Round numeric columns to 4 decimal places
+            numeric_columns = summary_df.select_dtypes(include=['float64']).columns
+            summary_df[numeric_columns] = summary_df[numeric_columns].round(4)
+
+            # Organize columns
+            column_order = [
+                'method', 'total_groups_analyzed', 'unique_experiments',
+                'indv_detection_rate_mean', 'indv_detection_rate_std',
+                'couple_detection_rate_mean', 'couple_detection_rate_std'
+            ]
+
+            # Reorder columns (only include columns that exist in the DataFrame)
+            existing_columns = [col for col in column_order if col in summary_df.columns]
+            summary_df = summary_df[existing_columns]
+
+            return summary_df
+
+        except Exception as e:
+            logger.error(f"Error creating performance summary: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return pd.DataFrame()
+
+    def visualize_detection_rates(self) -> None:
+        """
+        Create distribution plots showing detection rates conditioned on calculated attributes for each method.
+        Excludes the relevance metric.
+        """
+        try:
+            import seaborn as sns
+            import matplotlib.pyplot as plt
+
+            # Get consolidated group detections
+            detections_df = self.consolidate_group_detections()
+
+            if detections_df.empty:
+                logger.warning("No detection data available for visualization")
+                return
+
+            # Define calculated metrics to analyze (excluding relevance)
+            calculated_metrics = [
+                'calculated_epistemic', 'calculated_aleatoric',
+                'calculated_magnitude', 'calculated_group_size', 'calculated_granularity',
+                'calculated_intersectionality',
+                'calculated_similarity', 'calculated_subgroup_ratio'
+            ]
+
+            # Create plots for each method
+            for method in detections_df['method'].unique():
+                method_data = detections_df[detections_df['method'] == method]
+
+                # Create individual detection rate plot
+                fig, axes = plt.subplots(4, 2, figsize=(20, 25))
+                fig.suptitle(f'{method} - Individual Detection Rate by Calculated Attributes', fontsize=16)
+                axes = axes.flatten()
+
+                for i, metric in enumerate(calculated_metrics):
+                    if metric in method_data.columns:
+                        sns.scatterplot(data=method_data, x=metric, y='indv_detection_rate', ax=axes[i])
+                        axes[i].set_title(f'{metric}')
+
+                plt.tight_layout()
+                plt.subplots_adjust(top=0.95)
+
+                # Create output directory if it doesn't exist
+                output_dir = self.output_dir.joinpath('detection_rate_plots')
+                output_dir.mkdir(exist_ok=True)
+
+                # Save individual detection plot
+                plt.savefig(output_dir.joinpath(f'{method}_individual_detection_by_attributes.png'),
+                            bbox_inches='tight', dpi=300)
+                plt.close()
+
+                # Create couple detection rate plot
+                fig, axes = plt.subplots(4, 2, figsize=(20, 25))
+                fig.suptitle(f'{method} - Couple Detection Rate by Calculated Attributes', fontsize=16)
+                axes = axes.flatten()
+
+                for i, metric in enumerate(calculated_metrics):
+                    if metric in method_data.columns:
+                        sns.scatterplot(data=method_data, x=metric, y='couple_detection_rate', ax=axes[i])
+                        axes[i].set_title(f'{metric}')
+
+                plt.tight_layout()
+                plt.subplots_adjust(top=0.95)
+
+                # Save couple detection plot
+                plt.savefig(output_dir.joinpath(f'{method}_couple_detection_by_attributes.png'),
+                            bbox_inches='tight', dpi=300)
+                plt.close()
+
+            logger.info("Detection rate visualizations created successfully")
+
+        except Exception as e:
+            logger.error(f"Error creating detection rate visualizations: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
 
 
 def create_test_configurations() -> List[ExperimentConfig]:
@@ -1688,23 +1795,26 @@ def run_experiments(configs: List[ExperimentConfig], methods: Set[Method] = None
 
 # %%
 DB_PATH = HERE.joinpath("experiments/discrimination_detection_results4.db").as_posix()
+FIGURES_PATH = HERE.joinpath("experiments/figures").as_posix()
 
 # %%
 # configs = create_test_configurations()
-# methods = {Method.AEQUITAS, Method.EXPGA, Method.MLCHECK, Method.BIASSCAN}
+# methods = {Method.MLCHECK}
 # run_experiments(configs, methods=methods, db_path=DB_PATH)
 
 # %%
-runner = ExperimentRunner(DB_PATH)
+runner = ExperimentRunner(DB_PATH, FIGURES_PATH)
 # res = runner.get_experiment_data('8201735c-d54a-4438-935c-f36a76b319d3')
-re2s = runner.consolidate_group_detections()
+# re2s = runner.consolidate_group_detections()
+# re3s = runner.summarize_method_performance()
+# runner.visualize_detection_rates()
 
 print('ddd')
 
 # %%
 # Run analysis
-metric_results_corr = runner.analyze_metrics_influence()
-# metric_results = runner.analyze_discrimination_metrics_cate()
+# metric_results_corr = runner.analyze_metrics_influence()
+metric_results = runner.analyze_discrimination_metrics_cate(methods=['aequitas'])
 
 # %%
 # class ParallelExperimentRunner(ExperimentRunner):

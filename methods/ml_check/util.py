@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import os
 
-from paths import HERE
+from path import HERE
 
 files_folder = HERE.joinpath(f"methods/ml_check/files")
 

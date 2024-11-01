@@ -5,7 +5,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from data_generator.main import DiscriminationData
-from paths import HERE
+from path import HERE
 from methods.ml_check.ml_check import Assume, Assert, RunChecker, PropertyChecker
 from methods.ml_check.util import local_delete, local_load, update_dataframe_types, file_exists
 

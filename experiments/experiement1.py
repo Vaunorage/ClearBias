@@ -19,7 +19,7 @@ from methods.exp_ga.algo import run_expga
 from methods.ml_check.algo import run_mlcheck
 from data_generator.main import generate_data
 from methods.aequitas.algo import run_aequitas
-from paths import HERE
+from path import HERE
 
 # Constants
 DB_NAME = HERE.joinpath('experiments/experiment_results.db')

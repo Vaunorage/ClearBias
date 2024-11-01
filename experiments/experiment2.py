@@ -15,7 +15,7 @@ from methods.biasscan.algo import run_bias_scan
 from methods.exp_ga.algo import run_expga
 from methods.ml_check.algo import run_mlcheck
 from methods.aequitas.algo import run_aequitas
-from paths import HERE
+from path import HERE
 from data_generator.main2 import generate_data, DiscriminationData
 
 # Constants

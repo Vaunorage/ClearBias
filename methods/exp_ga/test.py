@@ -1,4 +1,4 @@
-from data_generator.main2 import generate_data
+from data_generator.main import generate_data
 from methods.exp_ga.algo import run_expga
 
 ge = generate_data(

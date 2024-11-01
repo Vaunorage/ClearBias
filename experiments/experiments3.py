@@ -13,7 +13,7 @@ from datetime import datetime
 import pandas as pd
 from scipy import stats
 
-from paths import HERE
+from path import HERE
 
 # %%
 
