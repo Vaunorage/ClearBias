@@ -29,11 +29,11 @@ data = generate_data(
 print(f"Generated {len(data.dataframe)} samples in {data.nb_groups} groups")
 print(f"Collisions: {data.collisions}")
 
-#%%
+# %%
 
 data.train_embedding_model()
 
-
+data.plot_embedding()
 
 
 #
@@ -729,9 +729,8 @@ def plot_metric_distributions(data_list, num_bins=10):
 
 plot_metric_distributions(generated_data_list)
 
+
 # %%
-
-
 
 
 def test_models_on_multiple_datasets(datasets):

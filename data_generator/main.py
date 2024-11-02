@@ -200,12 +200,7 @@ class DiscriminationData:
             max_val = math.ceil(self.xdf[col].max())
             self.input_bounds.append([min_val, max_val])
 
-    def train_embedding_model(self,
-                              n_neighbors=15,
-                              min_dist=0.1,
-                              n_components=2,
-                              metric='euclidean',
-                              random_state=42):
+    def train_embedding_model(self, n_neighbors=15, min_dist=0.1, n_components=2, metric='euclidean', random_state=42):
 
         try:
             from umap import UMAP
@@ -213,23 +208,20 @@ class DiscriminationData:
         except ImportError:
             raise ImportError("Please install umap-learn and scikit-learn: pip install umap-learn scikit-learn")
 
-        # Get feature columns for embedding
         feature_cols = self.feature_names
 
-        # Prepare the feature matrix
         X = self.dataframe[feature_cols].values
 
-        # Create and fit the scaler
         self.feature_scaler = StandardScaler()
         X_scaled = self.feature_scaler.fit_transform(X)
 
-        # Create and fit UMAP
         self.embedding_model = UMAP(
             n_neighbors=n_neighbors,
             min_dist=min_dist,
             n_components=n_components,
             metric=metric,
-            random_state=random_state
+            random_state=random_state,
+            verbose=True
         )
 
         self.embedding_model.fit(X_scaled)
@@ -264,6 +256,7 @@ class DiscriminationData:
 
     def plot_embedding(self,
                        data: pd.DataFrame = None,
+                       new_data: pd.DataFrame = None,
                        color_by: str = 'outcome',
                        figsize: tuple = (12, 8),
                        title: str = None,
@@ -271,81 +264,68 @@ class DiscriminationData:
                        alpha: float = 0.6,
                        colormap: str = 'viridis',
                        columns: List[str] = None) -> plt.Figure:
-        """
-        Plot embedded data with customizable styling.
 
-        Parameters:
-        -----------
-        data : pd.DataFrame, optional
-            Data to embed and plot. If None, uses the training data
-        color_by : str
-            Column name to use for coloring points
-        figsize : tuple
-            Figure size in inches
-        title : str, optional
-            Plot title. If None, generates automatic title
-        point_size : int
-            Size of scatter points
-        alpha : float
-            Transparency of points
-        colormap : str
-            Matplotlib colormap name
-        columns : List[str], optional
-            Columns to use for embedding. If None, uses all feature names
-
-        Returns:
-        --------
-        matplotlib.figure.Figure
-            The figure containing the plot
-        """
         if self.embedding_model is None:
             raise ValueError("Embedding model not trained. Call train_embedding_model first.")
-
-        # Use training data if no data provided
-        if data is None:
-            data = self.dataframe
-            embedding = self.embedding_model.embedding_
-        else:
-            embedding = self.embed_data(data, columns)
 
         # Create the visualization
         fig, ax = plt.subplots(figsize=figsize)
 
-        # Get color values
-        if color_by not in data.columns:
-            raise ValueError(f"Column '{color_by}' not found in data")
+        # Plot background (original) data
+        background_data = self.dataframe if data is None else data
+        background_embedding = (self.embedding_model.embedding_ if data is None
+                                else self.embed_data(background_data, columns))
 
-        color_values = data[color_by].values
+        # Plot background points in grey
+        ax.scatter(
+            background_embedding[:, 0],
+            background_embedding[:, 1],
+            c='lightgrey',
+            alpha=0.3,
+            s=point_size,
+            label='Background Data'
+        )
 
-        # Create color map based on the type of values
-        if np.issubdtype(color_values.dtype, np.number):
-            scatter = ax.scatter(
-                embedding[:, 0],
-                embedding[:, 1],
-                c=color_values,
-                cmap=colormap,
-                alpha=alpha,
-                s=point_size
-            )
-            plt.colorbar(scatter, label=color_by)
-        else:
-            unique_values = np.unique(color_values)
-            palette = sns.color_palette("husl", n_colors=len(unique_values))
-            for value, color in zip(unique_values, palette):
-                mask = color_values == value
-                ax.scatter(
-                    embedding[mask, 0],
-                    embedding[mask, 1],
-                    c=[color],
-                    label=value,
+        # If new_data is provided, plot it with colors
+        if new_data is not None:
+            if color_by not in new_data.columns:
+                raise ValueError(f"Column '{color_by}' not found in new_data")
+
+            # Embed new data
+            new_embedding = self.embed_data(new_data, columns)
+            color_values = new_data[color_by].values
+
+            # Create color map based on the type of values
+            if np.issubdtype(color_values.dtype, np.number):
+                scatter = ax.scatter(
+                    new_embedding[:, 0],
+                    new_embedding[:, 1],
+                    c=color_values,
+                    cmap=colormap,
                     alpha=alpha,
-                    s=point_size
+                    s=point_size,
+                    label='New Data'
                 )
-            plt.legend(title=color_by)
+                plt.colorbar(scatter, label=color_by)
+            else:
+                unique_values = np.unique(color_values)
+                palette = sns.color_palette("husl", n_colors=len(unique_values))
+                for value, color in zip(unique_values, palette):
+                    mask = color_values == value
+                    ax.scatter(
+                        new_embedding[mask, 0],
+                        new_embedding[mask, 1],
+                        c=[color],
+                        label=f'New Data ({value})',
+                        alpha=alpha,
+                        s=point_size
+                    )
 
         # Set title and labels
         if title is None:
-            title = f'UMAP Embedding\nColored by {color_by}'
+            title = 'UMAP Embedding'
+            if new_data is not None:
+                title += f'\nNew Data Colored by {color_by}'
         plt.title(title, pad=20)
         plt.xlabel('UMAP Dimension 1')
         plt.ylabel('UMAP Dimension 2')
@@ -363,7 +343,12 @@ class DiscriminationData:
                  verticalalignment='top',
                  bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
+        # Add legend
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+
         plt.tight_layout()
+
+        plt.show()
 
         return fig
 

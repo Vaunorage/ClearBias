@@ -1,5 +1,6 @@
 import ast
 import multiprocessing
+import warnings
 from functools import lru_cache
 from multiprocessing import freeze_support
 import traceback
@@ -7,6 +8,8 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from io import StringIO
+
+import matplotlib.pyplot as plt
 import patsy
 from tqdm import tqdm
 import numpy as np
@@ -27,6 +30,13 @@ import doubleml as dml
 from path import HERE
 import sqlite3
 import json
+
+warnings.filterwarnings("ignore")
+# Ignore specific warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -376,36 +386,68 @@ def evaluate_discrimination_detection(
     for key, value in avg_metrics.items():
         results_df[key] = value
 
-    # Create group tracking structures
+    # Create group tracking structures with additional tracking for original vs new
     group_stats = {}
     for group_key in all_group_keys:
         group_individuals = set(synthetic_data[synthetic_data['group_key'] == group_key]['indv_key'])
         group_stats[group_key] = {
             'total_individuals': len(group_individuals),
             'detected_individuals': set(),
-            'detected_couples': set()
+            'detected_couples': set(),
+            'original_individuals': set(),
+            'new_individuals': set(),
+            'original_couples': set(),
+            'new_couples': set()
         }
 
-    # Process detections efficiently
+    # Process detections efficiently with original vs new tracking
     for _, row in results_df.iterrows():
         if row['correct_detection']:
             for group_key in row['couple_part_of_a_group']:
-                group_stats[group_key]['detected_couples'].add(row['couple_key'])
-                indv1, indv2 = row['couple_key'].split('-')
-                group_stats[group_key]['detected_individuals'].update([indv1, indv2])
+                # Add couple
+                couple_key = row['couple_key']
+                group_stats[group_key]['detected_couples'].add(couple_key)
 
-    # Create group detections DataFrame efficiently
+                # Process individuals
+                indv1, indv2 = couple_key.split('-')
+                both_individuals = {indv1, indv2}
+                group_stats[group_key]['detected_individuals'].update(both_individuals)
+
+                # Separate original and new individuals
+                original_in_couple = {indv for indv in both_individuals if indv in all_indv_keys}
+                new_in_couple = both_individuals - original_in_couple
+
+                group_stats[group_key]['original_individuals'].update(original_in_couple)
+                group_stats[group_key]['new_individuals'].update(new_in_couple)
+
+                # Classify couple as original or new
+                if len(original_in_couple) == 2:  # Both individuals are original
+                    group_stats[group_key]['original_couples'].add(couple_key)
+                else:
+                    group_stats[group_key]['new_couples'].add(couple_key)
+
+    # Create group detections DataFrame efficiently with new rates
     group_detections = []
     for group_key, stats in group_stats.items():
         group_data = synthetic_data[synthetic_data['group_key'] == group_key].iloc[0].to_dict()
 
+        # Calculate rates for original vs new
+        total_detected_individuals = len(stats['detected_individuals'])
+        total_detected_couples = len(stats['detected_couples'])
+
         detection_metrics = {
             'group_key': group_key,
-            'nb_indv_detected': len(stats['detected_individuals']),
-            'nb_couple_detected': len(stats['detected_couples']),
-            'indv_detection_rate': len(stats['detected_individuals']) / stats['total_individuals'],
-            'couple_detection_rate': len(stats['detected_couples']) / stats['total_individuals'],
-            'group_size': stats['total_individuals']
+            'nb_indv_detected': total_detected_individuals,
+            'nb_couple_detected': total_detected_couples,
+            'indv_detection_rate': total_detected_individuals / stats['total_individuals'],
+            'couple_detection_rate': total_detected_couples / stats['total_individuals'],
+            'group_size': stats['total_individuals'],
+            # New metrics for original vs new rates
+            'original_individual_rate': len(stats['original_individuals']) / stats['total_individuals'],
+            'new_individual_rate': len(stats['new_individuals']) / stats['total_individuals'],
+            'original_couple_rate': len(
+                stats['original_couples']) / total_detected_couples if total_detected_couples > 0 else 0,
+            'new_couple_rate': len(stats['new_couples']) / total_detected_couples if total_detected_couples > 0 else 0
         }
 
         # Add configuration attributes if available
@@ -1651,6 +1693,169 @@ class ExperimentRunner:
             logger.error(f"Error creating detection rate visualizations: {e}")
             logger.error(f"Traceback: {traceback.format_exc()}")
 
+    def plot_discriminatory_individuals(self,
+                                        experiment_id: str,
+                                        method_name: str = None,
+                                        n_neighbors: int = 15,
+                                        min_dist: float = 0.1,
+                                        figsize: tuple = (12, 8),
+                                        background_alpha: float = 0.2,
+                                        point_size: int = 80) -> plt.Figure:
+        """
+        Plot discriminatory individuals from experiment results overlaid on synthetic data embedding.
+        Optimized version using vectorized operations instead of iterrows().
+        """
+        try:
+            from umap import UMAP
+            from sklearn.preprocessing import StandardScaler
+        except ImportError:
+            raise ImportError("Please install umap-learn and scikit-learn: pip install umap-learn scikit-learn")
+
+        # Get experiment data
+        experiment_data = self.get_experiment_data(
+            experiment_id,
+            tables=['synthetic_data', 'analysis_results']
+        )
+
+        if not experiment_data:
+            raise ValueError(f"No data found for experiment {experiment_id}")
+
+        # Get synthetic data and results
+        synthetic_data = experiment_data['synthetic_data']['full_data']
+        analysis_results = experiment_data['analysis_results']
+
+        # Get all attribute columns (both protected and unprotected)
+        attr_columns = [col for col in synthetic_data.columns if col.startswith('Attr')]
+        if not attr_columns:
+            raise ValueError("No attribute columns found in synthetic data")
+
+        # Prepare the feature matrix for UMAP
+        X = synthetic_data[attr_columns].values
+
+        # Scale the features
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        # Create and fit UMAP
+        umap_model = UMAP(
+            n_neighbors=n_neighbors,
+            min_dist=min_dist,
+            n_components=2,
+            random_state=42,
+            verbose=True
+        )
+
+        background_embedding = umap_model.fit_transform(X_scaled)
+
+        # Create the visualization
+        fig, ax = plt.subplots(figsize=figsize)
+
+        # Plot background points
+        ax.scatter(
+            background_embedding[:, 0],
+            background_embedding[:, 1],
+            c='lightgrey',
+            alpha=background_alpha,
+            s=point_size // 2,
+            label='Background Data'
+        )
+
+        # Determine methods to process
+        if method_name:
+            methods_to_process = [method_name]
+        else:
+            methods_to_process = analysis_results['evaluated_results'].keys()
+
+        # Extract discriminatory individuals using vectorized operations
+        all_discriminatory_indv = set()
+        for method in methods_to_process:
+            if method not in analysis_results['evaluated_results']:
+                continue
+
+            eval_results = analysis_results['evaluated_results'][method]
+
+            # Filter for valid couple keys
+            valid_couples = eval_results[eval_results['couple_key'].str.contains('-', na=False)]
+
+            # Split all couple keys at once
+            couples_split = valid_couples['couple_key'].str.split('-', expand=True)
+
+            # Add all individuals to the set using vectorized operations
+            all_discriminatory_indv.update(couples_split[0].unique())
+            all_discriminatory_indv.update(couples_split[1].unique())
+
+        if all_discriminatory_indv:
+            # Create mask for discriminatory individuals
+            disc_mask = synthetic_data['indv_key'].isin(all_discriminatory_indv)
+            disc_indv_data = synthetic_data[disc_mask]
+
+            # Get features for discriminatory individuals
+            disc_features = disc_indv_data[attr_columns].values
+
+            # Scale and embed discriminatory individuals
+            disc_features_scaled = scaler.transform(disc_features)
+            disc_embedding = umap_model.transform(disc_features_scaled)
+
+            # Create mask for original vs new individuals
+            original_mask = disc_indv_data['indv_key'].isin(synthetic_data['indv_key'])
+
+            # Plot original discriminatory individuals
+            if original_mask.any():
+                ax.scatter(
+                    disc_embedding[original_mask, 0],
+                    disc_embedding[original_mask, 1],
+                    c='green',
+                    alpha=0.8,
+                    s=point_size,
+                    label='Original Discriminatory Individuals'
+                )
+
+            # Plot new discriminatory individuals
+            new_mask = ~original_mask
+            if new_mask.any():
+                ax.scatter(
+                    disc_embedding[new_mask, 0],
+                    disc_embedding[new_mask, 1],
+                    c='red',
+                    alpha=0.8,
+                    s=point_size,
+                    label='New Discriminatory Individuals'
+                )
+
+            # Set title and labels
+            title = 'Discriminatory Individuals in Synthetic Data Space'
+            if method_name:
+                title += f'\nMethod: {method_name}'
+            plt.title(title, pad=20)
+            plt.xlabel('UMAP Dimension 1')
+            plt.ylabel('UMAP Dimension 2')
+
+            # Style the plot
+            ax.grid(True, linestyle='--', alpha=0.7)
+            ax.set_facecolor('#f8f9fa')
+
+            # Add UMAP parameters
+            param_text = (f'UMAP Parameters:\n'
+                          f'n_neighbors={n_neighbors}, '
+                          f'min_dist={min_dist}')
+            plt.text(0.02, 0.98, param_text,
+                     transform=ax.transAxes,
+                     verticalalignment='top',
+                     bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+            # Add legend with counts
+            n_original = original_mask.sum()
+            n_new = new_mask.sum()
+            legend_title = (f'Individual Counts:\n'
+                            f'Original: {n_original}\n'
+                            f'New: {n_new}')
+            plt.legend(title=legend_title, bbox_to_anchor=(1.05, 1), loc='upper left')
+
+        plt.tight_layout()
+        plt.show()
+
+        return fig
+
 
 def create_test_configurations() -> List[ExperimentConfig]:
     base_config = {
@@ -1794,12 +1999,12 @@ def run_experiments(configs: List[ExperimentConfig], methods: Set[Method] = None
 
 
 # %%
-DB_PATH = HERE.joinpath("experiments/discrimination_detection_results4.db").as_posix()
+DB_PATH = HERE.joinpath("experiments/discrimination_detection_results5.db").as_posix()
 FIGURES_PATH = HERE.joinpath("experiments/figures").as_posix()
 
 # %%
 # configs = create_test_configurations()
-# methods = {Method.MLCHECK}
+# methods = {Method.MLCHECK, Method.BIASSCAN, Method.EXPGA, Method.AEQUITAS}
 # run_experiments(configs, methods=methods, db_path=DB_PATH)
 
 # %%
@@ -1814,7 +2019,10 @@ print('ddd')
 # %%
 # Run analysis
 # metric_results_corr = runner.analyze_metrics_influence()
-metric_results = runner.analyze_discrimination_metrics_cate(methods=['aequitas'])
+# metric_results = runner.analyze_discrimination_metrics_cate(methods=['aequitas'])
+
+# %%
+runner.plot_discriminatory_individuals('45bafd30-7c65-4c9c-b7c4-17b9d7cfc705')
 
 # %%
 # class ParallelExperimentRunner(ExperimentRunner):
@@ -1888,7 +2096,7 @@ metric_results = runner.analyze_discrimination_metrics_cate(methods=['aequitas']
 #
 # # %%
 # def main():
-#     DB_PATH = HERE.joinpath("experiments/discrimination_detection_results_parallel.db").as_posix()
+#     DB_PATH = HERE.joinpath("experiments/discrimination_detection_results5.db").as_posix()
 #
 #     # Get optimized configurations
 #     configs = create_test_configurations()
@@ -1897,7 +2105,7 @@ metric_results = runner.analyze_discrimination_metrics_cate(methods=['aequitas']
 #     max_workers = multiprocessing.cpu_count() - 1  # Leave one CPU free
 #
 #     # Run experiments in parallel
-#     methods = {Method.AEQUITAS}
+#     methods = {Method.MLCHECK, Method.BIASSCAN, Method.EXPGA, Method.AEQUITAS}
 #     run_parallel_experiments(
 #         configs,
 #         methods=methods,
