@@ -1,13 +1,20 @@
 import copy
+import datetime
+import hashlib
+import json
 import math
+import os
+import pickle
 import random
+from pathlib import Path
+
 import numpy as np
 from numpy.linalg import norm
 from scipy.linalg import eigh
 from tqdm import tqdm
 from dataclasses import dataclass, field
 from pandas import DataFrame
-from typing import Literal, TypeVar, Any, List, Dict, Tuple, Union
+from typing import Literal, TypeVar, Any, List, Dict, Tuple, Union, Optional
 from scipy.stats import norm, multivariate_normal, beta, stats, gaussian_kde
 import itertools
 import pandas as pd
@@ -24,12 +31,106 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.colors import LinearSegmentedColormap
 
+from data_generator.main_old import DiscriminationData
+from path import HERE
+
 warnings.filterwarnings("ignore")
 # Ignore specific warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
+
+
+def generate_cache_key(params: dict) -> str:
+    # Sort the parameters to ensure consistent ordering
+    ordered_params = dict(sorted(params.items()))
+
+    # Convert numpy arrays and other complex types to serializable format
+    def make_serializable(obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (list, tuple, dict, str, int, float, bool, type(None))):
+            return obj
+        return str(obj)
+
+    serializable_params = {k: make_serializable(v) for k, v in ordered_params.items()}
+
+    # Create a hash of the parameters
+    param_str = json.dumps(serializable_params, sort_keys=True)
+    return hashlib.md5(param_str.encode()).hexdigest()
+
+
+class DataCache:
+
+    def __init__(self):
+        self.cache_dir = HERE.joinpath(".cache/discrimination_data")
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create a metadata file to track cache contents
+        self.metadata_file = self.cache_dir / "metadata.json"
+        self.metadata = self._load_metadata()
+
+    def _load_metadata(self) -> dict:
+        """Load metadata from file or create if doesn't exist."""
+        if self.metadata_file.exists():
+            with open(self.metadata_file, 'r') as f:
+                return json.load(f)
+        return {}
+
+    def _save_metadata(self):
+        """Save metadata to file."""
+        with open(self.metadata_file, 'w') as f:
+            json.dump(self.metadata, f, indent=2)
+
+    def get_cache_path(self, cache_key: str) -> Path:
+        """Get the full path for a cache file."""
+        return self.cache_dir / f"{cache_key}.pkl"
+
+    def save(self, data: DiscriminationData, params: dict):
+        cache_key = generate_cache_key(params)
+        cache_path = self.get_cache_path(cache_key)
+
+        # Save the data
+        with open(cache_path, 'wb') as f:
+            pickle.dump(data, f)
+
+        # Update metadata
+        self.metadata[cache_key] = {
+            'params': params,
+            'created_at': str(datetime.datetime.now()),
+            'file_path': str(cache_path)
+        }
+        self._save_metadata()
+
+    def load(self, params: dict) -> Optional[DiscriminationData]:
+        cache_key = generate_cache_key(params)
+        cache_path = self.get_cache_path(cache_key)
+
+        if cache_path.exists():
+            try:
+                with open(cache_path, 'rb') as f:
+                    return pickle.load(f)
+            except Exception as e:
+                print(f"Error loading cached data: {e}")
+                return None
+        return None
+
+    def clear(self):
+        """Clear all cached data."""
+        for cache_file in self.cache_dir.glob("*.pkl"):
+            cache_file.unlink()
+        self.metadata = {}
+        self._save_metadata()
+
+    def get_cache_info(self) -> dict:
+        """Get information about the cache contents."""
+        return {
+            'cache_dir': str(self.cache_dir),
+            'num_cached_items': len(self.metadata),
+            'total_size_mb': sum(os.path.getsize(f) for f in self.cache_dir.glob("*.pkl")) / (1024 * 1024),
+            'items': self.metadata
+        }
 
 
 class GaussianCopulaCategorical:
@@ -74,14 +175,11 @@ def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attrib
     if nb_attributes < 2:
         raise ValueError("nb_attributes must be at least 2 to ensure both protected and unprotected attributes.")
 
-    # Ensure at least one protected and one unprotected attribute
     protected_attr = [True, False]
 
-    # Randomly assign additional attributes based on prop_protected_attr
     for _ in range(nb_attributes - 2):
         protected_attr.append(random.random() < prop_protected_attr)
 
-    # Shuffle to randomize the order
     random.shuffle(protected_attr)
 
     i_t = 1
@@ -897,8 +995,22 @@ def generate_data(
         min_diff_subgroup_size=0.0,
         max_diff_subgroup_size=0.5,
         categorical_outcome: bool = True,
-        nb_categories_outcome: int = 6
+        nb_categories_outcome: int = 6,
+        use_cache: bool = True,
 ):
+    cache = DataCache()
+
+    # Create parameters dictionary for cache key generation
+    params = locals()
+    params.pop('cache')  # Remove cache object from params
+
+    # Try to load from cache if use_cache is True
+    if use_cache:
+        cached_data = cache.load(params)
+        if cached_data is not None:
+            print("Using cached data")
+            return cached_data
+
     outcome_column = 'outcome'
 
     if correlation_matrix is None:

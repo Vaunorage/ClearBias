@@ -145,6 +145,14 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     # Create DataFrame from results
     df: ExpGAResultDF = pd.DataFrame(results,
                                      columns=["Original Input", "Altered Input", "Original Outcome", "Altered Outcome"])
+
+    # If no results were found, return empty DataFrame with correct structure
+    if df.empty:
+        empty_df = pd.DataFrame(columns=[
+                                            'group_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'
+                                        ] + list(dataset.feature_names))
+        return empty_df
+
     df['Outcome Difference'] = df['Altered Outcome'] - df['Original Outcome']
     df['group_id'] = [str(uuid.uuid4())[:8] for _ in range(df.shape[0])]
 
@@ -155,21 +163,24 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     df2.rename(columns={'Altered Input': 'input', 'Altered Outcome': 'outcome'}, inplace=True)
 
     df = pd.concat([df1, df2])
-
     df.rename(columns={'Outcome Difference': 'diff_outcome'}, inplace=True)
-
     df['diff_outcome'] = df['diff_outcome'].apply(abs)
 
+    # Convert input arrays to separate columns
     df_attr = pd.DataFrame(df['input'].apply(lambda x: list(x)).tolist(), columns=dataset.feature_names)
-
     df = pd.concat([df.reset_index(drop=True), df_attr.reset_index(drop=True)], axis=1)
-
     df.drop(columns=['input'], inplace=True)
-
     df.sort_values(by=['group_id'], inplace=True)
 
-    df['indv_key'] = df.apply(lambda row: '|'.join(str(int(row[col])) for col in list(dataset.attributes)), axis=1)
-    df['couple_key'] = df.groupby(df.index // 2)['indv_key'].transform('-'.join)
+    # Create indv_key only if DataFrame is not empty
+    valid_attrs = [col for col in dataset.attributes if col in df.columns]
+    df['indv_key'] = df[valid_attrs].apply(
+        lambda row: '|'.join(str(int(x)) for x in row),
+        axis=1
+    )
+
+    # Create couple_key
+    df['couple_key'] = df.groupby(df.index // 2)['indv_key'].transform(lambda x: '-'.join(x))
 
     return df
 

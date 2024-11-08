@@ -4,7 +4,11 @@ import pandas as pd
 
 class GA:
     def __init__(self, nums, bound, func, DNA_SIZE=None, cross_rate=0.8, mutation=0.003):
-        self.nums = np.array(nums)
+        # Convert input nums to proper numpy array shape
+        self.nums = np.array(nums, dtype=np.int32)
+        if len(self.nums.shape) == 2:
+            self.nums = self.nums.reshape(len(nums), -1)
+
         self.bound = np.array(bound)
         self.func = func
         self.cross_rate = cross_rate
@@ -22,33 +26,35 @@ class GA:
         self.POP = self.nums.copy()
         self.copy_POP = self.nums.copy()
 
+        # Ensure POP has correct shape
+        if len(self.POP.shape) == 1:
+            self.POP = self.POP.reshape(self.POP_SIZE, -1)
+            self.copy_POP = self.copy_POP.reshape(self.POP_SIZE, -1)
+
     def get_fitness(self, non_negative=False):
-        result = [self.func(individual) for individual in self.POP]
+        result = np.array([self.func(individual) for individual in self.POP])
         if non_negative:
-            result -= np.min(result)
+            result = result - np.min(result)
         return result
 
     def select(self):
         fitness = self.get_fitness()
 
-        # Normalize fitness to probabilities
         if len(fitness) == 0:
             raise ValueError("Fitness array is empty.")
 
         total_fitness = np.sum(fitness)
         if total_fitness == 0:
-            probabilities = np.ones(len(fitness)) / len(fitness)  # Uniform probabilities if all fitness are zero
+            probabilities = np.ones(len(fitness)) / len(fitness)
         else:
             probabilities = fitness / total_fitness
 
-        # Ensure probabilities are a 1-D array and sum to 1
         probabilities = probabilities.squeeze()
         if probabilities.ndim == 0:
             probabilities = np.array([probabilities])
 
-        probabilities = probabilities / np.sum(probabilities)  # Normalize to ensure sum is 1
+        probabilities = probabilities / np.sum(probabilities)
 
-        # Selection process
         selected_indices = np.random.choice(np.arange(self.POP_SIZE), size=self.POP_SIZE, replace=True, p=probabilities)
         self.POP = self.POP[selected_indices]
 
@@ -56,15 +62,33 @@ class GA:
         for i in range(self.POP_SIZE):
             if np.random.rand() < self.cross_rate:
                 partner_idx = np.random.randint(0, self.POP_SIZE)
-                cross_points = np.random.randint(0, len(self.bound))
-                end_points = np.random.randint(cross_points, len(self.bound))
-                self.POP[i][cross_points:end_points] = self.POP[partner_idx][cross_points:end_points]
+
+                # Ensure proper array shapes for crossover
+                if len(self.POP[i].shape) == 1 and len(self.POP[partner_idx].shape) == 1:
+                    cross_points = np.random.randint(0, self.POP[i].size)
+                    end_points = np.random.randint(cross_points + 1, self.POP[i].size + 1)
+
+                    # Create copies to avoid modifying original arrays
+                    temp = self.POP[i].copy()
+                    temp[cross_points:end_points] = self.POP[partner_idx][cross_points:end_points]
+                    self.POP[i] = temp
 
     def mutate(self):
-        for individual in self.POP:
-            for gene in range(self.DNA_SIZE):
+        for i in range(len(self.POP)):
+            individual = self.POP[i].flatten()  # Ensure 1D array for mutation
+
+            for gene_idx in range(individual.size):
                 if np.random.rand() < self.mutation:
-                    individual[0][gene] = np.random.randint(self.bound[gene][0], self.bound[gene][1])
+                    if gene_idx < len(self.bound):  # Check if we have bounds for this gene
+                        low = int(self.bound[gene_idx][0])
+                        high = int(self.bound[gene_idx][1])
+
+                        if high > low:
+                            new_value = np.random.randint(low, high + 1)
+                            individual[gene_idx] = new_value
+
+            # Reshape back if necessary and update population
+            self.POP[i] = individual.reshape(self.POP[i].shape)
 
     def evolve(self):
         self.select()
@@ -76,27 +100,47 @@ class GA:
 
     def log(self):
         fitness = self.get_fitness()
-        population_log = ["".join(map(str, individual)) for individual in self.POP]
-        return population_log, fitness
-
-# Usage example (assuming a defined fitness function `fitness_func`):
-# nums = [[...], [...], ...]  # Define your population here
-# bounds = [(min, max), (min, max), ...]  # Define your bounds here
-# ga = GeneticAlgorithm(nums, bounds, fitness_func)
-# ga.evolve()
+        population_log = [ind.flatten().tolist() for ind in self.POP]
+        return population_log, fitness.tolist()
 
 
-# if __name__ == '__main__':
-#     nums = [[3,0,10,3,1,6,3,0,1,0,0,40,0],[4,3,20,13,2,5,3,0,0,0,0,50,0],[3,0,14,1,0,4,2,4,1,0,0,80,0],[5,0,5,3,1,0,5,0,0,0,0,40,0]]
-#     bound = config.input_bounds
-#     # func = lambda x, y: x*np.cos(2*np.pi*y)+y*np.sin(2*np.pi*x)
-#     DNA_SIZE = len(bound)
-#     cross_rate = 0.7
-#     mutation = 0.01
-#     ga = GA(nums=nums, bound=bound, func=evaluate_local, DNA_SIZE=DNA_SIZE, cross_rate=cross_rate, mutation=mutation)
-#     res = ga.log()
-#     print(res)
-#     for i in range(10):
-#         ga.evolution()
-#         res = ga.log()
-#         print(res)
+# Example usage:
+if __name__ == '__main__':
+    # Example input data
+    nums = [
+        [3, 0, 10, 3, 1, 6, 3, 0, 1, 0, 0, 40, 0],
+        [4, 3, 20, 13, 2, 5, 3, 0, 0, 0, 0, 50, 0],
+        [3, 0, 14, 1, 0, 4, 2, 4, 1, 0, 0, 80, 0],
+        [5, 0, 5, 3, 1, 0, 5, 0, 0, 0, 0, 40, 0]
+    ]
+
+    # Example bounds
+    bound = [[0, 10] for _ in range(13)]
+
+
+    # Example fitness function
+    def evaluate_local(x):
+        return sum(x)
+
+
+    # Initialize GA
+    ga = GA(
+        nums=nums,
+        bound=bound,
+        func=evaluate_local,
+        DNA_SIZE=len(bound),
+        cross_rate=0.7,
+        mutation=0.01
+    )
+
+    # Run evolution
+    try:
+        for generation in range(10):
+            ga.evolve()
+            population, fitness = ga.log()
+            print(f"Generation {generation + 1}:")
+            print(f"Population: {population}")
+            print(f"Fitness: {fitness}\n")
+    except Exception as e:
+        print(f"Error occurred: {str(e)}")
+        print(f"Current population shape: {ga.POP.shape}")

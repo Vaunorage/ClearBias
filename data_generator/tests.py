@@ -12,7 +12,7 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score, f1_score, recall_score
 
 # %%
-nb_attributes = 20
+nb_attributes = 10
 correlation_matrix = generate_valid_correlation_matrix(nb_attributes)
 
 data = generate_data(
@@ -21,8 +21,8 @@ data = generate_data(
     min_number_of_classes=2,
     max_number_of_classes=9,
     prop_protected_attr=0.4,
-    nb_groups=500,
-    max_group_size=100,
+    nb_groups=1,
+    max_group_size=400,
     categorical_outcome=True,
     nb_categories_outcome=4)
 

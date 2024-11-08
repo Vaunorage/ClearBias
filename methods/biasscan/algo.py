@@ -157,7 +157,7 @@ def run_bias_scan(ge,
     expectations = pd.Series(model.predict(ge.dataframe[list(ge.attributes)].values))
 
     # Perform bias scan
-    _, _, subsets1 = bias_scan(data=ge.dataframe[list(ge.attributes)],
+    l1, l2, subsets1 = bias_scan(data=ge.dataframe[list(ge.attributes)],
                                observations=observations,
                                expectations=expectations,
                                verbose=True,
@@ -167,7 +167,7 @@ def run_bias_scan(ge,
                                overpredicted=True,
                                mode=bias_scan_mode)
 
-    _, _, subsets2 = bias_scan(data=ge.dataframe[list(ge.attributes)],
+    d1, d2, subsets2 = bias_scan(data=ge.dataframe[list(ge.attributes)],
                                observations=observations,
                                expectations=expectations,
                                verbose=True,

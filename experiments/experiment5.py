@@ -1,5 +1,7 @@
 import ast
 import multiprocessing
+import signal
+import time
 import warnings
 from functools import lru_cache
 from multiprocessing import freeze_support
@@ -27,6 +29,11 @@ from enum import Enum
 import re
 from pathlib import Path
 import doubleml as dml
+
+from methods.aequitas.algo import run_aequitas
+from methods.biasscan.algo import run_bias_scan
+from methods.exp_ga.algo import run_expga
+from methods.ml_check.algo import run_mlcheck
 from path import HERE
 import sqlite3
 import json
@@ -43,201 +50,6 @@ logger = logging.getLogger(__name__)
 
 
 # %%
-
-def is_individual_part_of_the_original_indv(indv_key, indv_key_list):
-    return indv_key in indv_key_list
-
-
-def is_individual_part_of_a_group(indv_key, group_key_list):
-    res = []
-    for grp in group_key_list:
-        opt1, opt2 = grp.split('-')
-        if matches_pattern(opt1, indv_key) or matches_pattern(opt2, indv_key):
-            res.append(grp)
-    return res
-
-
-def is_couple_part_of_a_group(couple_key, group_key_list):
-    res = []
-
-    couple_key_elems = couple_key.split('-')
-    if len(couple_key_elems) != 2:
-        print(f"Warning: Unexpected couple key format: {couple_key}")
-        return res
-
-    opt1 = f"{couple_key_elems[0]}-{couple_key_elems[1]}"
-    opt2 = f"{couple_key_elems[1]}-{couple_key_elems[0]}"
-
-    for grp_key in group_key_list:
-        if matches_pattern(grp_key, opt1) or matches_pattern(grp_key, opt2):
-            res.append(grp_key)
-    return res
-
-
-def count_individuals_per_group(aequitas_results: pd.DataFrame, all_group_keys: set) -> dict:
-    group_counts = {group: 0 for group in all_group_keys}
-
-    for _, row in aequitas_results.iterrows():
-        groups = row['couple_part_of_a_group']
-        for group in groups:
-            if group in group_counts:
-                group_counts[group] += 1
-
-    return group_counts
-
-
-def create_group_individual_table(aequitas_results: pd.DataFrame, synthetic_data: pd.DataFrame,
-                                  all_group_keys: set) -> pd.DataFrame:
-    calculated_properties = [
-        'calculated_epistemic', 'calculated_aleatoric', 'relevance',
-        'calculated_magnitude', 'calculated_group_size', 'calculated_granularity',
-        'calculated_intersectionality', 'calculated_uncertainty',
-        'calculated_similarity', 'calculated_subgroup_ratio'
-    ]
-
-    # Create a dictionary of groups with their individuals, metrics, and couples
-    group_data = {group: {'individuals': set(), 'metrics': [], 'couples': set()} for group in all_group_keys}
-
-    # Process synthetic data
-    for _, row in synthetic_data.iterrows():
-        group = row['group_key']
-        if group in group_data:
-            group_data[group]['individuals'].add(row['indv_key'])
-            group_data[group]['metrics'].append({prop: row[prop] for prop in calculated_properties})
-
-    # Process Aequitas results
-    detected_groups = set()
-    for _, row in aequitas_results.iterrows():
-        for group in row['couple_part_of_a_group']:
-            if group in group_data:
-                detected_groups.add(group)
-                indv1, indv2 = row['couple_key'].split('-')
-                group_data[group]['individuals'].update([indv1, indv2])
-                group_data[group]['couples'].add(row['couple_key'])
-
-    # Create result data
-    result_data = []
-    for group, data in group_data.items():
-        base_row = {
-            'group_key': group,
-            'individuals': list(data['individuals']),
-            'num_individuals': len(data['individuals']),
-            'detected': group in detected_groups,
-            'couple_keys': list(data['couples'])
-        }
-
-        if data['metrics']:
-            for metrics in data['metrics']:
-                row = base_row.copy()
-                row.update(metrics)
-                result_data.append(row)
-        else:
-            row = base_row.copy()
-            row.update({prop: None for prop in calculated_properties})
-            result_data.append(row)
-
-    return pd.DataFrame(result_data)
-
-
-@lru_cache(maxsize=1024)
-def compile_pattern(pattern_string: str) -> re.Pattern:
-    """Compile and cache regex pattern."""
-    regex_pattern = pattern_string.replace("*", r"\d").replace("|", r"\|").replace("-", r"\-")
-    return re.compile(f"^{regex_pattern}$")
-
-
-@lru_cache(maxsize=4096)
-def matches_pattern(pattern_string: str, test_string: str) -> bool:
-    """Cached pattern matching."""
-    pattern = compile_pattern(pattern_string)
-    return bool(pattern.match(test_string))
-
-
-def vectorized_group_check(keys: np.ndarray, group_patterns: Set[str]) -> np.ndarray:
-    """Vectorized group membership check."""
-    return np.array([
-        any(matches_pattern(pattern, key) for pattern in group_patterns)
-        for key in keys
-    ])
-
-
-def process_group_memberships(df: pd.DataFrame, group_keys: Set[str]) -> pd.DataFrame:
-    """Process all group memberships in one pass."""
-    # Convert to numpy array for faster iteration
-    keys = df['couple_key'].values
-    group_keys_array = np.array(list(group_keys))
-
-    # Initialize result matrix
-    result_matrix = np.zeros((len(keys), len(group_keys_array)), dtype=bool)
-
-    # Process each key
-    for i, key in enumerate(keys):
-        if '-' in key:
-            opt1, opt2 = key.split('-')
-            # Check both orientations
-            key_patterns = [f"{opt1}-{opt2}", f"{opt2}-{opt1}"]
-            for j, group_key in enumerate(group_keys_array):
-                result_matrix[i, j] = any(matches_pattern(group_key, pattern) for pattern in key_patterns)
-
-    # Convert results to list of group keys
-    return pd.Series([
-        [group_keys_array[j] for j in np.where(row)[0]]
-        for row in result_matrix
-    ])
-
-
-def create_optimized_group_individual_table(
-        aequitas_results: pd.DataFrame,
-        synthetic_data: pd.DataFrame,
-        all_group_keys: set
-) -> pd.DataFrame:
-    """Create group individual table with optimized operations."""
-    calculated_properties = [
-        'calculated_epistemic', 'calculated_aleatoric', 'relevance',
-        'calculated_magnitude', 'calculated_group_size', 'calculated_granularity',
-        'calculated_intersectionality', 'calculated_uncertainty',
-        'calculated_similarity', 'calculated_subgroup_ratio'
-    ]
-
-    # Process synthetic data efficiently
-    group_metrics = synthetic_data.groupby('group_key')[calculated_properties].agg(list).to_dict('index')
-
-    # Process Aequitas results efficiently
-    detected_groups = set()
-    group_individuals = {group: set() for group in all_group_keys}
-    group_couples = {group: set() for group in all_group_keys}
-
-    for _, row in aequitas_results.iterrows():
-        for group in row['couple_part_of_a_group']:
-            if group in group_individuals:
-                detected_groups.add(group)
-                indv1, indv2 = row['couple_key'].split('-')
-                group_individuals[group].update([indv1, indv2])
-                group_couples[group].add(row['couple_key'])
-
-    # Create result data efficiently
-    result_data = []
-    for group in all_group_keys:
-        individuals = list(group_individuals[group])
-        base_row = {
-            'group_key': group,
-            'individuals': individuals,
-            'num_individuals': len(individuals),
-            'detected': group in detected_groups,
-            'couple_keys': list(group_couples[group])
-        }
-
-        if group in group_metrics:
-            metrics = group_metrics[group]
-            for prop in calculated_properties:
-                if prop in metrics:
-                    base_row[prop] = metrics[prop][0]  # Take first value since they should be identical
-        else:
-            base_row.update({prop: None for prop in calculated_properties})
-
-        result_data.append(base_row)
-
-    return pd.DataFrame(result_data)
 
 
 class Method(Enum):
@@ -261,16 +73,16 @@ class ExperimentConfig:
 
     # Method specific parameters
     # Aequitas
-    aequitas_global_iteration_limit: int = 100
-    aequitas_local_iteration_limit: int = 10
-    aequitas_model_type: str = "RandomForest"
-    aequitas_perturbation_unit: float = 1.0
-    aequitas_threshold: float = 0.0
+    global_iteration_limit: int = 100
+    local_iteration_limit: int = 10
+    model_type: str = "RandomForest"
+    perturbation_unit: float = 1.0
+    threshold: float = 0.0
 
     # BiassScan
-    bias_scan_test_size: float = 0.3
-    bias_scan_random_state: int = 42
-    bias_scan_n_estimators: int = 200
+    test_size: float = 0.3
+    random_state: int = 42
+    n_estimators: int = 200
     bias_scan_num_iters: int = 100
     bias_scan_scoring: str = 'Poisson'
     bias_scan_favorable_value: str = 'high'
@@ -279,8 +91,8 @@ class ExperimentConfig:
     # ExpGA
     expga_threshold: float = 0.5
     expga_threshold_rank: float = 0.5
-    expga_max_global: int = 50
-    expga_max_local: int = 50
+    max_global: int = 50
+    max_local: int = 50
 
     # MLCheck
     mlcheck_iteration_no: int = 1
@@ -291,148 +103,130 @@ class ExperimentConfig:
         elif isinstance(self.methods, list):
             self.methods = set(self.methods)
 
+    def __hash__(self):
+
+        return hash((
+            self.nb_attributes,
+            self.prop_protected_attr,
+            self.nb_groups,
+            self.max_group_size,
+            self.nb_categories_outcome,
+            self.min_number_of_classes,
+            self.max_number_of_classes,
+            self.global_iteration_limit,
+            self.local_iteration_limit,
+            self.model_type,
+            self.perturbation_unit,
+            self.threshold,
+            self.test_size,
+            self.random_state,
+            self.n_estimators,
+            self.bias_scan_num_iters,
+            self.bias_scan_scoring,
+            self.bias_scan_favorable_value,
+            self.bias_scan_mode,
+            self.expga_threshold,
+            self.expga_threshold_rank,
+            self.max_global,
+            self.max_local,
+            self.mlcheck_iteration_no
+        ))
+
+
+@lru_cache(maxsize=4096)
+def matches_pattern(pattern: str, value: str) -> bool:
+    """Convert the pattern with * wildcards to regex and match against value."""
+    import re
+    # Escape special regex characters except *
+    regex_pattern = re.escape(pattern).replace('\\*', '.*')
+    return bool(re.match(f'^{regex_pattern}$', value))
+
+
+def is_individual_part_of_the_original_indv(indv_key, indv_key_list):
+    return indv_key in indv_key_list
+
+
+def is_couple_part_of_a_group(couple_key, group_key_list):
+    res = []
+
+    couple_key_elems = couple_key.split('-')
+    if len(couple_key_elems) != 2:
+        print(f"Warning: Unexpected couple key format: {couple_key}")
+        return res
+
+    opt1 = f"{couple_key_elems[0]}-{couple_key_elems[1]}"
+    opt2 = f"{couple_key_elems[1]}-{couple_key_elems[0]}"
+
+    for grp_key in group_key_list:
+        if matches_pattern(grp_key, opt1) or matches_pattern(grp_key, opt2):
+            res.append(grp_key)
+    return res
+
 
 def evaluate_discrimination_detection(
         synthetic_data: pd.DataFrame,
-        results_df: pd.DataFrame,
-        experiment_id: str,
-        method: str
+        results_df: pd.DataFrame
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Evaluate discrimination detection results with optimized performance.
-    """
-    # Pre-compute frequently used values
-    calculated_properties = [
-        'calculated_epistemic', 'calculated_aleatoric', 'calculated_magnitude',
-        'calculated_group_size', 'calculated_granularity', 'calculated_intersectionality',
-        'calculated_uncertainty', 'calculated_similarity', 'calculated_subgroup_ratio'
-    ]
-
-    # Convert types only for required columns
-    synthetic_data = synthetic_data.copy()
-    synthetic_data[['indv_key', 'group_key', 'subgroup_key']] = (
-        synthetic_data[['indv_key', 'group_key', 'subgroup_key']].astype(str)
-    )
-
-    # Pre-compute group data
-    unique_groups = synthetic_data['group_key'].unique()
-    group_data_dict = {
-        group: synthetic_data[synthetic_data['group_key'] == group]
-        for group in unique_groups
-    }
-
+    """Optimized evaluation of discrimination detection with fixed metrics calculation."""
     if results_df.empty:
-        # Optimize empty results case
-        group_analysis_data = []
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-        for group_key, group_data in group_data_dict.items():
-            # Calculate stats efficiently using vectorized operations
-            group_individuals = group_data['indv_key'].unique()
-            calc_stats = group_data[calculated_properties].agg(['mean', 'min', 'max', 'median'])
+    # Convert to string type once
+    synthetic_data = synthetic_data.astype({
+        'indv_key': str,
+        'group_key': str,
+        'subgroup_key': str
+    })
 
-            group_stats = {
-                'group_key': group_key,
-                'synthetic_group_size': len(group_data),
-                'nb_unique_indv': len(group_individuals),
-                'individuals_part_of_original_data': [],
-                'couples_part_of_original_data': [],
-                'new_individuals_part_of_a_group_regex': [],
-                'new_couples_part_of_a_group_regex': [],
-                'num_exact_individual_matches': 0,
-                'num_exact_couple_matches': 0,
-                'num_new_group_individuals': 0,
-                'num_new_group_couples': 0,
-                **{prop: calc_stats.loc['mean', prop] for prop in calculated_properties},
-                **{
-                    f"{prop}_{stat}": calc_stats.loc[stat, prop]
-                    for prop in ['calculated_epistemic', 'calculated_aleatoric']
-                    for stat in ['min', 'max', 'median']
-                }
-            }
-            group_analysis_data.append(group_stats)
+    results_df = results_df.astype({
+        'indv_key': str,
+        'couple_key': str
+    })
 
-        # Create empty DataFrames efficiently
-        empty_metrics = pd.DataFrame([{
-            'experiment_id': experiment_id,
-            'method': method,
-            'group_key': group_key,
-            'synthetic_group_size': len(group_data),
-            'num_exact_individual_matches': 0,
-            'num_exact_couple_matches': 0,
-            'num_new_group_individuals': 0,
-            'num_new_group_couples': 0
-        } for group_key, group_data in group_data_dict.items()])
+    # Create a DataFrame for group-level analysis
+    unique_groups = synthetic_data['group_key'].unique()
 
-        return (
-            pd.DataFrame(group_analysis_data),
-            pd.DataFrame(columns=[
-                'indv_key', 'couple_key', 'is_original_data',
-                'is_individual_part_of_a_group', 'is_couple_part_of_a_group',
-                'matching_groups'
-            ]),
-            empty_metrics
+    def analyze_group(group_key: str) -> pd.Series:
+        # Get individuals in this group from synthetic data
+        group_synthetic_indv = set(
+            synthetic_data[synthetic_data['group_key'] == group_key]['indv_key']
         )
 
-    # Process non-empty results case
-    results_df = results_df.copy()
-    results_df[['indv_key', 'couple_key']] = results_df[['indv_key', 'couple_key']].astype(str)
+        # Split group key into its two patterns
+        group_patterns = group_key.split('-')
+        pattern1, pattern2 = group_patterns[0], group_patterns[1]
 
-    # Cache pattern matching results
-    @lru_cache(maxsize=1024)
-    def cached_matches_pattern(pattern: str, key: str) -> bool:
-        return matches_pattern(pattern, key)
-
-    # Pre-compute unique values
-    unique_indv_keys = set(results_df['indv_key'].unique())
-    unique_couple_keys = set(results_df['couple_key'].unique())
-
-    # Pre-compute group patterns
-    group_patterns = {
-        group_key: group_key.split('-')
-        for group_key in unique_groups
-    }
-
-    # Pre-compute individual sets for each group
-    group_individuals = {
-        group_key: set(group_data['indv_key'].unique())
-        for group_key, group_data in group_data_dict.items()
-    }
-
-    group_analysis_data = []
-
-    for group_key, group_data in group_data_dict.items():
-        pattern1, pattern2 = group_patterns[group_key]
-        current_group_individuals = group_individuals[group_key]
-
-        # Efficient set operations for matches
-        exact_indv_matches = list(unique_indv_keys.intersection(current_group_individuals))
-
-        # Optimize couple matching using sets
-        exact_couple_matches = [
-            couple_key for couple_key in unique_couple_keys
-            if all(indv in current_group_individuals for indv in couple_key.split('-'))
+        # Find exact individual matches in results
+        exact_indv_matches = [
+            key for key in results_df['indv_key'].unique()
+            if is_individual_part_of_the_original_indv(key, group_synthetic_indv)
         ]
 
-        # Cache results of pattern matching
+        # For couples, we need to check if both individuals in the couple are exact matches
+        exact_couple_matches = []
+        for couple_key in results_df['couple_key'].unique():
+            indv1, indv2 = couple_key.split('-')
+            if (is_individual_part_of_the_original_indv(indv1, group_synthetic_indv) and
+                    is_individual_part_of_the_original_indv(indv2, group_synthetic_indv)):
+                exact_couple_matches.append(couple_key)
+
+        # Find new individuals matching either group pattern but not in original data
         new_group_indv = [
-            key for key in unique_indv_keys
-            if key not in exact_indv_matches and
-               (cached_matches_pattern(pattern1, key) or cached_matches_pattern(pattern2, key))
+            key for key in results_df['indv_key'].unique()
+            if (matches_pattern(pattern1, key) or matches_pattern(pattern2, key))
+               and key not in exact_indv_matches
         ]
 
+        # Find new couples matching group pattern but not in exact matches
         new_group_couples = [
-            key for key in unique_couple_keys
-            if key not in exact_couple_matches and
-               is_couple_part_of_a_group(key, [group_key])
+            key for key in results_df['couple_key'].unique()
+            if is_couple_part_of_a_group(key, [group_key])
+               and key not in exact_couple_matches
         ]
 
-        # Calculate stats efficiently using vectorized operations
-        calc_stats = group_data[calculated_properties].agg(['mean', 'min', 'max', 'median'])
-
-        group_stats = {
+        return pd.Series({
             'group_key': group_key,
-            'synthetic_group_size': len(group_data),
-            'nb_unique_indv': len(current_group_individuals),
+            'synthetic_group_size': len(group_synthetic_indv),
             'individuals_part_of_original_data': exact_indv_matches,
             'couples_part_of_original_data': exact_couple_matches,
             'new_individuals_part_of_a_group_regex': new_group_indv,
@@ -440,73 +234,128 @@ def evaluate_discrimination_detection(
             'num_exact_individual_matches': len(exact_indv_matches),
             'num_exact_couple_matches': len(exact_couple_matches),
             'num_new_group_individuals': len(new_group_indv),
-            'num_new_group_couples': len(new_group_couples),
-            **{prop: calc_stats.loc['mean', prop] for prop in calculated_properties},
-            **{
-                f"{prop}_{stat}": calc_stats.loc[stat, prop]
-                for prop in ['calculated_epistemic', 'calculated_aleatoric']
-                for stat in ['min', 'max', 'median']
-            }
-        }
-        group_analysis_data.append(group_stats)
+            'num_new_group_couples': len(new_group_couples)
+        })
 
-    group_analysis_df = pd.DataFrame(group_analysis_data)
+    # Create group analysis DataFrame
+    group_analysis_df = pd.DataFrame([
+        analyze_group(group_key) for group_key in unique_groups
+    ])
 
-    # Optimize results processing using vectorized operations where possible
-    def process_row(row):
-        indv_key = row['indv_key']
-        couple_key = row['couple_key']
+    # Process results additions
+    def process_results_row(row):
+        # Check if individual is an exact match in any group
+        is_original = any(
+            is_individual_part_of_the_original_indv(row['indv_key'],
+                                                    synthetic_data[synthetic_data['group_key'] == group_key][
+                                                        'indv_key'])
+            for group_key in unique_groups
+        )
 
-        # Use pre-computed sets for faster lookups
-        is_original = any(indv_key in group_set for group_set in group_individuals.values())
+        # Check which groups the individual matches patterns for
+        individual_groups = []
+        for group_key in unique_groups:
+            pattern1, pattern2 = group_key.split('-')
+            if matches_pattern(pattern1, row['indv_key']) or matches_pattern(pattern2, row['indv_key']):
+                individual_groups.append(group_key)
 
-        # Use cached pattern matching
-        matching_groups = [
-            group_key for group_key, patterns in group_patterns.items()
-            if any(cached_matches_pattern(pattern, indv_key) for pattern in patterns)
+        # Check which groups the couple matches patterns for
+        couple_groups = [
+            group_key for group_key in unique_groups
+            if is_couple_part_of_a_group(row['couple_key'], [group_key])
         ]
 
         return pd.Series({
             'is_original_data': is_original,
-            'is_individual_part_of_a_group': bool(matching_groups),
-            'is_couple_part_of_a_group': any(
-                is_couple_part_of_a_group(couple_key, [group_key])
-                for group_key in unique_groups
-            ),
-            'matching_groups': matching_groups
+            'is_individual_part_of_a_group': len(individual_groups) > 0,
+            'is_couple_part_of_a_group': len(couple_groups) > 0,
+            'matching_groups': individual_groups
         })
 
-    # Process results in chunks for better memory usage
-    chunk_size = 1000
-    results_additions = []
-    for i in range(0, len(results_df), chunk_size):
-        chunk = results_df.iloc[i:i + chunk_size]
-        results_additions.append(chunk.apply(process_row, axis=1))
-    results_additions = pd.concat(results_additions)
+    # Apply the processing to results data
+    results_additions = results_df.apply(process_results_row, axis=1)
     results_df = pd.concat([results_df, results_additions], axis=1)
 
-    # Create metrics DataFrame efficiently
-    metrics_columns = [
-        'group_key', 'synthetic_group_size', 'num_exact_individual_matches',
-        'num_exact_couple_matches', 'num_new_group_individuals', 'num_new_group_couples'
-    ]
-    metrics_df = group_analysis_df[metrics_columns].copy()
-    metrics_df.insert(0, 'experiment_id', experiment_id)
-    metrics_df.insert(1, 'method', method)
+    # Create a summary DataFrame
+    summary_df = pd.DataFrame({
+        'total_synthetic_records': len(synthetic_data),
+        'total_result_records': len(results_df),
+        'total_groups': len(unique_groups),
+        'avg_group_size': group_analysis_df['synthetic_group_size'].mean(),
+        'avg_exact_matches_per_group': group_analysis_df['num_exact_individual_matches'].mean(),
+        'avg_new_matches_per_group': group_analysis_df['num_new_group_individuals'].mean()
+    }, index=[0])
 
-    return group_analysis_df, results_df, metrics_df
+    return group_analysis_df, results_df, summary_df
+
+
+def timeout_handler(signum, frame):
+    raise TimeoutError("Method execution timed out")
+
+
+def run_method_with_timeout(method, ge, config):
+    """Wrapper function to run in separate process without using signals"""
+    try:
+        start_time = time.time()
+
+        if method == Method.AEQUITAS:
+            results_df, metrics = run_aequitas(
+                ge.training_dataframe,
+                col_to_be_predicted=ge.outcome_column,
+                sensitive_param_name_list=ge.protected_attributes,
+                perturbation_unit=config.aequitas_perturbation_unit,
+                model_type=config.aequitas_model_type,
+                threshold=config.aequitas_threshold,
+                global_iteration_limit=config.aequitas_global_iteration_limit,
+                local_iteration_limit=config.aequitas_local_iteration_limit
+            )
+        elif method == Method.BIASSCAN:
+            results_df, metrics = run_bias_scan(
+                ge,
+                test_size=config.bias_scan_test_size,
+                random_state=config.random_state,
+                n_estimators=config.bias_scan_n_estimators,
+                bias_scan_num_iters=config.bias_scan_num_iters,
+                bias_scan_scoring=config.bias_scan_scoring,
+                bias_scan_favorable_value=config.bias_scan_favorable_value,
+                bias_scan_mode=config.bias_scan_mode
+            )
+        elif method == Method.EXPGA:
+            results_df, metrics = run_expga(
+                ge,
+                threshold=config.expga_threshold,
+                threshold_rank=config.expga_threshold_rank,
+                max_global=config.max_global,
+                max_local=config.max_local
+            )
+        elif method == Method.MLCHECK:
+            results_df, metrics = run_mlcheck(
+                ge,
+                iteration_no=config.mlcheck_iteration_no
+            )
+
+        execution_time = time.time() - start_time
+        return results_df, metrics, execution_time
+
+    except Exception as e:
+        logger.error(f"Error in method execution: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return pd.DataFrame(), {"error": str(e)}, 0
 
 
 class ExperimentRunner:
-    def __init__(self, db_path: str = "experiments.db", output_dir: str = "output_dir"):
+    def __init__(self, db_path: str = "experiments.db", output_dir: str = "output_dir",
+                 max_workers: int = None, method_timeout: int = 5):  # 10 minutes default timeout
         self.db_path = Path(db_path)
         self.output_dir = Path(output_dir)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.setup_database()
+        self.max_workers = max_workers if max_workers is not None else max(1, multiprocessing.cpu_count() - 1)
+        self.method_timeout = method_timeout
 
     def setup_database(self):
-        """Setup database tables with attribute and outcome data stored as JSON"""
-        # Create empty DataFrames with base schema
+        """Setup database tables including synthetic data storage"""
+        # Create empty DataFrames with correct schema
         experiments_df = pd.DataFrame(columns=[
             'experiment_id', 'config', 'methods', 'status',
             'start_time', 'end_time', 'error'
@@ -517,30 +366,10 @@ class ExperimentRunner:
             'result_data', 'metrics', 'execution_time'
         ])
 
-        analysis_metadata_df = pd.DataFrame(columns=[
-            'analysis_id', 'experiment_id', 'method_name', 'created_at'
-        ])
-
-        # Add all possible attribute columns to augmented_results schema
-        augmented_results_df = pd.DataFrame(columns=[
-            'analysis_id', 'indv_key', 'couple_key', 'is_original_data',
-            'is_individual_part_of_a_group', 'is_couple_part_of_a_group',
-            'matching_groups', 'data'
-        ])
-
-        evaluated_results_df = pd.DataFrame(columns=[
-            'analysis_id', 'group_key', 'synthetic_group_size', 'nb_unique_indv',
-            'individuals_part_of_original_data', 'couples_part_of_original_data',
-            'new_individuals_part_of_a_group_regex', 'new_couples_part_of_a_group_regex',
-            'num_exact_individual_matches', 'num_exact_couple_matches',
-            'num_new_group_individuals', 'num_new_group_couples',
-            'calculated_epistemic', 'calculated_aleatoric',
-            'calculated_magnitude', 'calculated_group_size', 'calculated_granularity',
-            'calculated_intersectionality', 'calculated_uncertainty',
-            'calculated_similarity', 'calculated_subgroup_ratio',
-            'calculated_epistemic_min', 'calculated_aleatoric_min',
-            'calculated_epistemic_max', 'calculated_aleatoric_max',
-            'calculated_epistemic_median', 'calculated_aleatoric_median'
+        analysis_df = pd.DataFrame(columns=[
+            'analysis_id', 'experiment_id', 'method_name',
+            'evaluated_results', 'group_individual_table',
+            'group_detections', 'analysis_metrics', 'created_at'
         ])
 
         synthetic_data_df = pd.DataFrame(columns=[
@@ -552,21 +381,10 @@ class ExperimentRunner:
 
         # Create tables using to_sql
         with sqlite3.connect(self.db_path) as conn:
-            experiments_df.to_sql('experiments', conn, if_exists='replace', index=False)
-            results_df.to_sql('results', conn, if_exists='replace', index=False)
-            analysis_metadata_df.to_sql('analysis_metadata', conn, if_exists='replace', index=False)
-            evaluated_results_df.to_sql('evaluated_results', conn, if_exists='replace', index=False)
-            augmented_results_df.to_sql('augmented_results', conn, if_exists='replace', index=False)
-            synthetic_data_df.to_sql('synthetic_data', conn, if_exists='replace', index=False)
-
-        # Add indexing for better performance
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                'CREATE INDEX IF NOT EXISTS idx_augmented_results_analysis_id ON augmented_results(analysis_id)')
-            cursor.execute(
-                'CREATE INDEX IF NOT EXISTS idx_evaluated_results_analysis_id ON evaluated_results(analysis_id)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_experiments_id ON experiments(experiment_id)')
+            experiments_df.to_sql('experiments', conn, if_exists='append', index=False)
+            results_df.to_sql('results', conn, if_exists='append', index=False)
+            analysis_df.to_sql('analysis_results', conn, if_exists='append', index=False)
+            synthetic_data_df.to_sql('synthetic_data', conn, if_exists='append', index=False)
 
     def experiment_exists(self, config: ExperimentConfig) -> Optional[str]:
         """Check if an experiment with the same configuration exists using pandas"""
@@ -592,7 +410,7 @@ class ExperimentRunner:
 
         return {Method(row['method_name']) for _, row in df.iterrows()}
 
-    def resume_experiments(self):
+    def resume_experiments(self, continue_when_error=True):
         """Resume experiments using pandas operations"""
         with sqlite3.connect(self.db_path) as conn:
             incomplete_experiments = pd.read_sql_query(
@@ -616,168 +434,43 @@ class ExperimentRunner:
                     self.run_experiment(config, row['experiment_id'])
                 except Exception as e:
                     logger.error(f"Failed to resume experiment {row['experiment_id']}: {str(e)}")
-                    continue
+                    if not continue_when_error:
+                        raise e
+                    else:
+                        continue
 
     def run_method(self, method: Method, ge, config: ExperimentConfig) -> tuple:
-        """
-        Run a discrimination detection method with timeout and error handling.
+        """Run method with timeout using ProcessPoolExecutor"""
+        ctx = multiprocessing.get_context('spawn')  # Use spawn context for Windows compatibility
 
-        Parameters:
-        -----------
-        method : Method
-            The method to run (Aequitas, BiassScan, etc.)
-        ge : object
-            Generated data object
-        config : ExperimentConfig
-            Configuration for the experiment
-
-        Returns:
-        --------
-        tuple: (results_df, metrics, execution_time)
-        """
-        import time
-        import signal
-        from contextlib import contextmanager
-        from functools import partial
-        from data_generator.main import generate_data
-        from methods.aequitas.algo import run_aequitas
-        from methods.biasscan.algo import run_bias_scan
-        from methods.exp_ga.algo import run_expga
-        from methods.ml_check.algo import run_mlcheck
-
-        @contextmanager
-        def timeout(seconds):
-            def signal_handler(signum, frame):
-                raise TimeoutError(f"Method execution timed out after {seconds} seconds")
-
-            # Register the signal function handler
-            signal.signal(signal.SIGALRM, signal_handler)
-
-            # Set the alarm
-            if hasattr(signal, 'SIGALRM'):  # Only on Unix-like systems
-                signal.alarm(seconds)
+        with ProcessPoolExecutor(max_workers=1, mp_context=ctx) as executor:
+            future = executor.submit(run_method_with_timeout, method, ge, config)
 
             try:
-                yield
-            finally:
-                if hasattr(signal, 'SIGALRM'):  # Only on Unix-like systems
-                    signal.alarm(0)  # Disable the alarm
+                # Wait for the result with timeout
+                results_df, metrics, execution_time = future.result(timeout=self.method_timeout)
+                return results_df, metrics, execution_time
 
-        start_time = time.time()
-        results_df = pd.DataFrame()
-        metrics = {}
+            except TimeoutError:
+                logger.warning(f"Method {method.value} timed out after {self.method_timeout} seconds")
+                # Cancel the future if possible
+                future.cancel()
+                return pd.DataFrame(), {"error": "timeout"}, self.method_timeout
 
-        try:
-            # Set method-specific timeouts
-            if method == Method.AEQUITAS:
-                timeout_seconds = 300  # 5 minutes for Aequitas
-            else:
-                timeout_seconds = 1800  # 30 minutes for other methods
+            except Exception as e:
+                logger.error(f"Error running method {method.value}: {str(e)}")
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                return pd.DataFrame(), {"error": str(e)}, 0
 
-            # Only use timeout on Unix-like systems where signal.SIGALRM is available
-            if hasattr(signal, 'SIGALRM'):
-                with timeout(timeout_seconds):
-                    if method == Method.AEQUITAS:
-                        results_df, metrics = run_aequitas(
-                            ge.training_dataframe,
-                            col_to_be_predicted=ge.outcome_column,
-                            sensitive_param_name_list=ge.protected_attributes,
-                            perturbation_unit=config.aequitas_perturbation_unit,
-                            model_type=config.aequitas_model_type,
-                            threshold=config.aequitas_threshold,
-                            global_iteration_limit=config.aequitas_global_iteration_limit,
-                            local_iteration_limit=config.aequitas_local_iteration_limit
-                        )
-                    elif method == Method.BIASSCAN:
-                        results_df, metrics = run_bias_scan(
-                            ge,
-                            test_size=config.bias_scan_test_size,
-                            random_state=config.bias_scan_random_state,
-                            n_estimators=config.bias_scan_n_estimators,
-                            bias_scan_num_iters=config.bias_scan_num_iters,
-                            bias_scan_scoring=config.bias_scan_scoring,
-                            bias_scan_favorable_value=config.bias_scan_favorable_value,
-                            bias_scan_mode=config.bias_scan_mode
-                        )
-                    elif method == Method.EXPGA:
-                        results_df, metrics = run_expga(
-                            ge,
-                            threshold=config.expga_threshold,
-                            threshold_rank=config.expga_threshold_rank,
-                            max_global=config.expga_max_global,
-                            max_local=config.expga_max_local
-                        )
-                    elif method == Method.MLCHECK:
-                        results_df, metrics = run_mlcheck(
-                            ge,
-                            iteration_no=config.mlcheck_iteration_no
-                        )
-            else:
-                # On Windows or systems without SIGALRM, run without timeout
-                if method == Method.AEQUITAS:
-                    results_df, metrics = run_aequitas(
-                        ge.training_dataframe,
-                        col_to_be_predicted=ge.outcome_column,
-                        sensitive_param_name_list=ge.protected_attributes,
-                        perturbation_unit=config.aequitas_perturbation_unit,
-                        model_type=config.aequitas_model_type,
-                        threshold=config.aequitas_threshold,
-                        global_iteration_limit=config.aequitas_global_iteration_limit,
-                        local_iteration_limit=config.aequitas_local_iteration_limit
-                    )
-                elif method == Method.BIASSCAN:
-                    results_df, metrics = run_bias_scan(
-                        ge,
-                        test_size=config.bias_scan_test_size,
-                        random_state=config.bias_scan_random_state,
-                        n_estimators=config.bias_scan_n_estimators,
-                        bias_scan_num_iters=config.bias_scan_num_iters,
-                        bias_scan_scoring=config.bias_scan_scoring,
-                        bias_scan_favorable_value=config.bias_scan_favorable_value,
-                        bias_scan_mode=config.bias_scan_mode
-                    )
-                elif method == Method.EXPGA:
-                    results_df, metrics = run_expga(
-                        ge,
-                        threshold=config.expga_threshold,
-                        threshold_rank=config.expga_threshold_rank,
-                        max_global=config.expga_max_global,
-                        max_local=config.expga_max_local
-                    )
-                elif method == Method.MLCHECK:
-                    results_df, metrics = run_mlcheck(
-                        ge,
-                        iteration_no=config.mlcheck_iteration_no
-                    )
-
-        except TimeoutError as e:
-            logger.error(f"Method {method.value} timed out: {str(e)}")
-            metrics = {'error': 'timeout'}
-        except KeyboardInterrupt:
-            logger.error(f"Method {method.value} was interrupted by user")
-            metrics = {'error': 'interrupted'}
-        except Exception as e:
-            logger.error(f"Error running method {method.value}: {str(e)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            metrics = {'error': str(e)}
-
-        execution_time = time.time() - start_time
-
-        # Ensure results_df is a DataFrame even if empty
-        if not isinstance(results_df, pd.DataFrame):
-            results_df = pd.DataFrame()
-
-        return results_df, metrics, execution_time
-
-    def run_experiment(self, config: ExperimentConfig, existing_id: str = None):
-        """Run experiment with synthetic data storage"""
+    def run_experiment(self, config: ExperimentConfig, existing_id: str = None, continue_when_error=False):
+        """Run experiment with timeout handling"""
         if existing_id is None:
             existing_id = self.experiment_exists(config)
             if existing_id:
                 logger.info(f"Experiment already completed with ID: {existing_id}")
                 return existing_id
 
-            experiment_id = str(uuid.uuid4())
+            experiment_id = str(hash(config))
         else:
             experiment_id = existing_id
 
@@ -809,25 +502,39 @@ class ExperimentRunner:
                 logger.info(f"Running method: {method.value}")
                 try:
                     results_df, metrics, execution_time = self.run_method(method, ge, config)
-                    self.save_result(experiment_id, method.value, results_df, metrics, execution_time)
-                    logger.info(f"Completed method: {method.value}")
+
+                    if isinstance(metrics, dict) and metrics.get("error") == "timeout":
+                        logger.warning(f"Method {method.value} timed out - moving to next method")
+                        if not continue_when_error:
+                            self.update_experiment_status(experiment_id, 'timeout', f"Method {method.value} timed out")
+                            continue
+                    else:
+                        self.save_result(experiment_id, method.value, results_df, metrics, execution_time)
+                        logger.info(f"Completed method: {method.value}")
+
                 except Exception as e:
-                    logger.error(f"Failed to run method {method.value}: {str(e)}")
-                    raise e
+                    error_msg = f"Failed to run method {method.value}: {str(e)}"
+                    logger.error(error_msg)
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+                    if not continue_when_error:
+                        self.update_experiment_status(experiment_id, 'failed', error_msg)
+                        raise e
 
             self.update_experiment_status(experiment_id, 'completed')
             logger.info(f"Experiment completed successfully: {experiment_id}")
 
             logger.info(f"Analyzing results for experiment: {experiment_id}")
-            # Pass config to evaluate_discrimination_detection
-            self.analyze_experiment_results(experiment_id, ge.dataframe, config)
+            self.analyze_experiment_results(experiment_id, ge.dataframe)
 
             logger.info(f"Experiment and analysis completed successfully: {experiment_id}")
 
         except Exception as e:
-            self.update_experiment_status(experiment_id, 'failed', str(e))
-            logger.error(f"Experiment failed: {str(e)}")
-            raise e
+            error_msg = f"Experiment failed: {str(e)}"
+            self.update_experiment_status(experiment_id, 'failed', error_msg)
+            logger.error(error_msg)
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            if not continue_when_error:
+                raise e
 
         return experiment_id
 
@@ -854,7 +561,7 @@ class ExperimentRunner:
             'result_id': str(uuid.uuid4()),
             'experiment_id': experiment_id,
             'method_name': method_name,
-            'result_data': result_df.to_json(),
+            'result_data': result_df.reset_index(drop=True).to_json(),
             'metrics': json.dumps(metrics),
             'execution_time': execution_time
         }])
@@ -877,21 +584,8 @@ class ExperimentRunner:
                 current_data.to_sql('experiments', conn, if_exists='replace', index=False)
 
     def analyze_experiment_results(self, experiment_id: str, synthetic_data: pd.DataFrame,
-                                   config: Optional[ExperimentConfig] = None):
+                                   continue_when_error=True):
         """Analyze results using pandas operations"""
-        if config is None:
-            with sqlite3.connect(self.db_path) as conn:
-                config_df = pd.read_sql_query(
-                    "SELECT config FROM experiments WHERE experiment_id = ?",
-                    conn,
-                    params=(experiment_id,)
-                )
-                if not config_df.empty:
-                    config_dict = json.loads(config_df.iloc[0]['config'])
-                    config_dict['methods'] = {Method(m) for m in config_dict['methods']}
-                    config = ExperimentConfig(**config_dict)
-                else:
-                    logger.warning(f"Could not find configuration for experiment {experiment_id}")
 
         with sqlite3.connect(self.db_path) as conn:
             results_df = pd.read_sql_query(
@@ -905,102 +599,65 @@ class ExperimentRunner:
             result_df = pd.read_json(row['result_data'])
 
             try:
-                # Run evaluation
-                group_analysis_df, augmented_results_df, metrics_df = evaluate_discrimination_detection(
-                    synthetic_data, result_df, experiment_id, method_name
+                # Run evaluation with config
+                evaluated_results, group_individual_table, group_detections = evaluate_discrimination_detection(
+                    synthetic_data, result_df
                 )
 
-                # Save analysis results using the new method
+                # Calculate any additional analysis metrics
+                analysis_metrics = {
+                    'total_evaluated': len(evaluated_results),
+                    'total_groups': len(group_detections),
+                    'total_individuals': len(group_individual_table)
+                    # Add any other relevant metrics
+                }
+
+                # Save the analysis results
                 self.save_analysis_results(
                     experiment_id,
                     method_name,
-                    group_analysis_df,
-                    augmented_results_df,
-                    metrics_df
+                    evaluated_results,
+                    group_individual_table,
+                    group_detections,
+                    analysis_metrics
                 )
 
-                logger.info(f"Analysis completed for experiment {experiment_id}, method {method_name}")
-
             except Exception as e:
-                logger.error(f"Error analyzing results for method {method_name}: {str(e)}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                continue
+                error_msg = f"Failed to analyze results for method {method_name}: {str(e)}"
+                logger.error(error_msg)
+                if not continue_when_error:
+                    raise e
 
-    def save_analysis_results(
-            self,
-            experiment_id: str,
-            method_name: str,
-            group_analysis_df: pd.DataFrame,
-            results_df: pd.DataFrame,
-            metrics_df: pd.DataFrame
-    ):
-        """
-        Save analysis results with list columns converted to JSON strings.
-        """
+    def save_analysis_results(self, experiment_id: str, method_name: str,
+                              evaluated_results: pd.DataFrame,
+                              group_individual_table: pd.DataFrame,
+                              group_detections: pd.DataFrame,
+                              analysis_metrics: Dict):
         try:
-            # Generate a unique analysis ID
-            analysis_id = str(uuid.uuid4())
-            current_time = datetime.now()
-
-            # Save analysis metadata
-            metadata = pd.DataFrame([{
-                'analysis_id': analysis_id,
+            # Create analysis data entry
+            analysis_data = pd.DataFrame([{
+                'analysis_id': str(uuid.uuid4()),
                 'experiment_id': experiment_id,
                 'method_name': method_name,
-                'created_at': current_time
+                'evaluated_results': evaluated_results.to_json(
+                    date_format='iso') if not evaluated_results.empty else None,
+                'group_individual_table': group_individual_table.to_json(
+                    date_format='iso') if not group_individual_table.empty else None,
+                'group_detections': group_detections.to_json(date_format='iso') if not group_detections.empty else None,
+                'analysis_metrics': json.dumps(analysis_metrics) if analysis_metrics else None,
+                'created_at': datetime.now()
             }])
 
-            # Convert list columns to JSON strings for evaluated results
-            evaluated_results = group_analysis_df.copy()
-            evaluated_results['analysis_id'] = analysis_id
-            evaluated_results['individuals_part_of_original_data'] = evaluated_results[
-                'individuals_part_of_original_data'].apply(json.dumps)
-            evaluated_results['couples_part_of_original_data'] = evaluated_results[
-                'couples_part_of_original_data'].apply(json.dumps)
-            evaluated_results['new_individuals_part_of_a_group_regex'] = evaluated_results[
-                'new_individuals_part_of_a_group_regex'].apply(json.dumps)
-            evaluated_results['new_couples_part_of_a_group_regex'] = evaluated_results[
-                'new_couples_part_of_a_group_regex'].apply(json.dumps)
-
-            # Convert list columns to JSON strings for augmented results
-            augmented_results = pd.DataFrame([{
-                'analysis_id': analysis_id,
-                'indv_key': row['indv_key'] if 'indv_key' in row else None,
-                'couple_key': row['couple_key'] if 'couple_key' in row else None,
-                'is_original_data': row['is_original_data'] if 'is_original_data' in row else None,
-                'is_individual_part_of_a_group': row[
-                    'is_individual_part_of_a_group'] if 'is_individual_part_of_a_group' in row else None,
-                'is_couple_part_of_a_group': row[
-                    'is_couple_part_of_a_group'] if 'is_couple_part_of_a_group' in row else None,
-                'matching_groups': json.dumps(row['matching_groups']) if 'matching_groups' in row else None,
-                'data': json.dumps(row[
-                                       (list(filter(lambda x: x.startswith('Attr') or x == 'outcome',
-                                                    results_df.columns.tolist())))].to_dict()),
-            } for _, row in results_df.iterrows()])
-
-            # Save metrics
-            metrics_data = metrics_df.copy()
-            metrics_data['analysis_id'] = analysis_id
-
-            # Save all DataFrames to the database
+            # Save to database
             with sqlite3.connect(self.db_path) as conn:
-                metadata.to_sql('analysis_metadata', conn, if_exists='append', index=False)
+                analysis_data.to_sql('analysis_results', conn, if_exists='append', index=False)
 
-                if not evaluated_results.empty:
-                    evaluated_results.to_sql('evaluated_results', conn, if_exists='append', index=False)
-
-                if not augmented_results.empty:
-                    augmented_results.to_sql('augmented_results', conn, if_exists='append', index=False)
-
-                if not metrics_data.empty:
-                    metrics_data.to_sql('analysis_metrics', conn, if_exists='append', index=False)
-
-            logger.info(f"Successfully saved analysis results for experiment {experiment_id}, method {method_name}")
+            logger.info(f"Saved analysis results for experiment {experiment_id}, method {method_name}")
 
         except Exception as e:
-            logger.error(f"Error saving analysis results: {str(e)}")
+            logger.error(
+                f"Error saving analysis results for experiment {experiment_id}, method {method_name}: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
-            raise
 
     def save_synthetic_data(self, experiment_id: str, ge):
         """Save synthetic dataset to database"""
@@ -1171,78 +828,6 @@ class ExperimentRunner:
                     }
 
         return result
-
-    def consolidate_group_detections(self, experiment_ids: Optional[List[str]] = None) -> pd.DataFrame:
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                # If no experiment_ids provided, get all completed experiments
-                if experiment_ids is None:
-                    exp_df = pd.read_sql_query(
-                        "SELECT experiment_id FROM experiments WHERE status = 'completed'",
-                        conn
-                    )
-                    experiment_ids = exp_df['experiment_id'].tolist()
-
-                # Get all relevant analysis results in one query
-                placeholders = ','.join('?' * len(experiment_ids))
-                query = f"""
-                    SELECT experiment_id, method_name, group_detections 
-                    FROM analysis_results 
-                    WHERE experiment_id IN ({placeholders})
-                """
-                analysis_df = pd.read_sql_query(query, conn, params=experiment_ids)
-
-            if analysis_df.empty:
-                return pd.DataFrame()
-
-            combined_detections = []
-
-            # Process each row's group detections
-            for _, row in analysis_df.iterrows():
-                try:
-                    # Skip if no group_detections
-                    if pd.isna(row['group_detections']):
-                        continue
-
-                    # Parse the JSON into a DataFrame
-                    group_df = pd.read_json(row['group_detections'])
-                    if group_df.empty:
-                        continue
-
-                    # Add identification columns
-                    group_df['experiment_id'] = row['experiment_id']
-                    group_df['method'] = row['method_name']
-
-                    combined_detections.append(group_df)
-
-                except Exception as e:
-                    logger.warning(
-                        f"Error processing group detections for experiment {row['experiment_id']}, "
-                        f"method {row['method_name']}: {e}"
-                    )
-                    continue
-
-            # Return empty DataFrame if no valid data found
-            if not combined_detections:
-                return pd.DataFrame()
-
-            # Combine all DataFrames
-            final_df = pd.concat(combined_detections, ignore_index=True)
-
-            # Organize columns with identification columns first
-            cols = list(final_df.columns)
-            for col in ['experiment_id', 'method', 'group_key']:
-                if col in cols:
-                    cols.remove(col)
-                    cols.insert(0, col)
-
-            final_df = final_df[cols]
-
-            return final_df
-
-        except Exception as e:
-            logger.error(f"Error consolidating group detections: {e}")
-            return pd.DataFrame()
 
     def analyze_metrics_influence(self) -> Dict[str, Any]:  # Changed return type to include adequacy analysis
         detections_df = self.consolidate_group_detections()
@@ -1732,74 +1317,6 @@ class ExperimentRunner:
             logger.error(f"Traceback: {traceback.format_exc()}")
             return {'error': str(e)}
 
-    def summarize_method_performance(self) -> pd.DataFrame:
-        """
-        Create a summary table of performance metrics for each method based on group detections.
-
-        Returns:
-            pd.DataFrame: Summary table with performance metrics per method
-        """
-        try:
-            # Get consolidated group detections
-            detections_df = self.consolidate_group_detections()
-
-            if detections_df.empty:
-                return pd.DataFrame()
-
-            # Define metrics to compute
-            detection_metrics = [
-                'indv_detection_rate',
-                'couple_detection_rate'
-            ]
-
-            # Calculate metrics per method
-            method_summaries = []
-
-            for method in detections_df['method'].unique():
-                method_data = detections_df[detections_df['method'] == method]
-
-                # Basic detection metrics
-                summary = {
-                    'method': method,
-                    'total_groups_analyzed': len(method_data),
-                    'unique_experiments': method_data['experiment_id'].nunique()
-                }
-
-                # Calculate statistics for each detection metric
-                for metric in detection_metrics:
-                    if metric in method_data.columns:
-                        summary.update({
-                            f'{metric}_mean': method_data[metric].mean(),
-                            f'{metric}_std': method_data[metric].std()
-                        })
-
-                method_summaries.append(summary)
-
-            # Create summary DataFrame
-            summary_df = pd.DataFrame(method_summaries)
-
-            # Round numeric columns to 4 decimal places
-            numeric_columns = summary_df.select_dtypes(include=['float64']).columns
-            summary_df[numeric_columns] = summary_df[numeric_columns].round(4)
-
-            # Organize columns
-            column_order = [
-                'method', 'total_groups_analyzed', 'unique_experiments',
-                'indv_detection_rate_mean', 'indv_detection_rate_std',
-                'couple_detection_rate_mean', 'couple_detection_rate_std'
-            ]
-
-            # Reorder columns (only include columns that exist in the DataFrame)
-            existing_columns = [col for col in column_order if col in summary_df.columns]
-            summary_df = summary_df[existing_columns]
-
-            return summary_df
-
-        except Exception as e:
-            logger.error(f"Error creating performance summary: {e}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return pd.DataFrame()
-
     def visualize_detection_rates(self) -> None:
         """
         Create distribution plots showing detection rates conditioned on calculated attributes for each method.
@@ -2039,131 +1556,126 @@ class ExperimentRunner:
 
 
 def create_test_configurations() -> List[ExperimentConfig]:
-    # Parameter ranges
-    param_ranges = {
-        # Dataset parameters
-        'nb_attributes': [5, 10, 20, 50],
-        'prop_protected_attr': [0.1, 0.3, 0.5, 0.8],
-        'nb_groups': [10, 50, 100, 200],
-        'max_group_size': [100, 400, 1000, 2000],
-
-        # Method parameters
-        'aequitas': {
-            'lightweight': {
-                'aequitas_perturbation_unit': 0.5,
-                'aequitas_global_iteration_limit': 50,
-                'aequitas_local_iteration_limit': 5,
-                'aequitas_threshold': 0.1
-            },
-            'default': {
-                'aequitas_perturbation_unit': 1.0,
-                'aequitas_global_iteration_limit': 100,
-                'aequitas_local_iteration_limit': 10,
-                'aequitas_threshold': 0.0
-            },
-            'intensive': {
-                'aequitas_perturbation_unit': 2.0,
-                'aequitas_global_iteration_limit': 500,
-                'aequitas_local_iteration_limit': 50,
-                'aequitas_threshold': 0.0
-            }
-        },
-        'biasscan': {
-            'lightweight': {
-                'bias_scan_test_size': 0.2,
-                'bias_scan_n_estimators': 100,
-                'bias_scan_num_iters': 50
-            },
-            'default': {
-                'bias_scan_test_size': 0.3,
-                'bias_scan_n_estimators': 200,
-                'bias_scan_num_iters': 100
-            },
-            'intensive': {
-                'bias_scan_test_size': 0.4,
-                'bias_scan_n_estimators': 1000,
-                'bias_scan_num_iters': 500
-            }
-        },
-        'expga': {
-            'lightweight': {
-                'expga_threshold': 0.7,
-                'expga_threshold_rank': 0.7,
-                'expga_max_global': 25,
-                'expga_max_local': 25
-            },
-            'default': {
-                'expga_threshold': 0.5,
-                'expga_threshold_rank': 0.5,
-                'expga_max_global': 50,
-                'expga_max_local': 50
-            },
-            'intensive': {
-                'expga_threshold': 0.3,
-                'expga_threshold_rank': 0.3,
-                'expga_max_global': 200,
-                'expga_max_local': 200
-            }
-        },
-        'mlcheck': {
-            'lightweight': {'mlcheck_iteration_no': 1},
-            'default': {'mlcheck_iteration_no': 10},
-            'intensive': {'mlcheck_iteration_no': 50}
-        }
-    }
-
-    # Base configuration
     base_config = {
-        'min_number_of_classes': 2,
-        'max_number_of_classes': 10,
-        'nb_categories_outcome': 4
+        "min_number_of_classes": 2,
+        "max_number_of_classes": 10,
+        "nb_categories_outcome": 4
     }
 
-    # Method mapping
-    method_map = {
-        'aequitas': Method.AEQUITAS,
-        'biasscan': Method.BIASSCAN,
-        'expga': Method.EXPGA,
-        'mlcheck': Method.MLCHECK
-    }
+    test_variations = [
 
-    # Generate dataset combinations
-    interesting_combinations = [
-        # Standard combinations
-        {'nb_attributes': 10, 'prop_protected_attr': 0.3, 'nb_groups': 50, 'max_group_size': 400},
-        # Edge cases
-        {'nb_attributes': 5, 'prop_protected_attr': 0.1, 'nb_groups': 10, 'max_group_size': 100},
-        {'nb_attributes': 50, 'prop_protected_attr': 0.8, 'nb_groups': 200, 'max_group_size': 2000},
-        # Varying one parameter at a time from standard
-        *[{'nb_attributes': val, 'prop_protected_attr': 0.3, 'nb_groups': 50, 'max_group_size': 400}
-          for val in param_ranges['nb_attributes'] if val != 10],
-        *[{'nb_attributes': 10, 'prop_protected_attr': val, 'nb_groups': 50, 'max_group_size': 400}
-          for val in param_ranges['prop_protected_attr'] if val != 0.3],
-        *[{'nb_attributes': 10, 'prop_protected_attr': 0.3, 'nb_groups': val, 'max_group_size': 400}
-          for val in param_ranges['nb_groups'] if val != 50],
-        *[{'nb_attributes': 10, 'prop_protected_attr': 0.3, 'nb_groups': 50, 'max_group_size': val}
-          for val in param_ranges['max_group_size'] if val != 400]
+        {"nb_attributes": 10, "prop_protected_attr": 0.3, "nb_groups": 1, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.3, "nb_groups": 1, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.3, "nb_groups": 2, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.3, "nb_groups": 2, "max_group_size": 400},
+
+        # Varying number of discriminatory groups (nb_groups)
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 5, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 10, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 25, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 75, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 100, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 150, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 200, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 300, "max_group_size": 400},
+
+        # Varying proportion of protected attributes (prop_protected_attr)
+        {"nb_attributes": 10, "prop_protected_attr": 0.05, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.1, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.15, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.25, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.3, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.4, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.5, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.6, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.8, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 1.0, "nb_groups": 50, "max_group_size": 400},
+
+        # Varying number of discriminatory groups (nb_groups)
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 1, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 5, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 10, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 25, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 75, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 100, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 150, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 200, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 300, "max_group_size": 400},
+
+        # Varying proportion of protected attributes (prop_protected_attr)
+        {"nb_attributes": 10, "prop_protected_attr": 0.05, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.1, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.15, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.25, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.3, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.4, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.5, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.6, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 0.8, "nb_groups": 50, "max_group_size": 400},
+        {"nb_attributes": 10, "prop_protected_attr": 1.0, "nb_groups": 50, "max_group_size": 400},
+
+        # # Varying number of attributes (nb_attributes)
+        # {"nb_attributes": 3, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 100},
+        # {"nb_attributes": 5, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 100},
+        # {"nb_attributes": 8, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 100},
+        # {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 100},
+        # {"nb_attributes": 15, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 100},
+        # {"nb_attributes": 20, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 100},
+        # {"nb_attributes": 30, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 100},
+        # {"nb_attributes": 50, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 100},
+        # {"nb_attributes": 75, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 100},
+        # {"nb_attributes": 100, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 100},
+        #
+        # # Varying max group size (max_group_size)
+        # {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 10},
+        # {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 20},
+        # {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 50},
+        # {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 100},
+        # {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 200},
+        # {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 500},
+        # {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 1000},
+        # {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 2000},
+        # {"nb_attributes": 10, "prop_protected_attr": 0.2, "nb_groups": 50, "max_group_size": 5000},
+        #
+        # # Combined variations
+        # # High complexity scenarios
+        # {"nb_attributes": 50, "prop_protected_attr": 0.5, "nb_groups": 200, "max_group_size": 1000},
+        # {"nb_attributes": 75, "prop_protected_attr": 0.4, "nb_groups": 300, "max_group_size": 2000},
+        # {"nb_attributes": 100, "prop_protected_attr": 0.3, "nb_groups": 500, "max_group_size": 5000},
+        #
+        # # Low complexity scenarios
+        # {"nb_attributes": 3, "prop_protected_attr": 0.1, "nb_groups": 5, "max_group_size": 20},
+        # {"nb_attributes": 5, "prop_protected_attr": 0.15, "nb_groups": 10, "max_group_size": 50},
+        # {"nb_attributes": 8, "prop_protected_attr": 0.2, "nb_groups": 15, "max_group_size": 75},
+        #
+        # # Balanced scenarios
+        # {"nb_attributes": 15, "prop_protected_attr": 0.3, "nb_groups": 75, "max_group_size": 250},
+        # {"nb_attributes": 25, "prop_protected_attr": 0.35, "nb_groups": 100, "max_group_size": 500},
+        # {"nb_attributes": 35, "prop_protected_attr": 0.4, "nb_groups": 150, "max_group_size": 750},
+        #
+        # # Edge cases
+        # {"nb_attributes": 2, "prop_protected_attr": 0.01, "nb_groups": 1, "max_group_size": 10},
+        # # Minimal configuration
+        # {"nb_attributes": 100, "prop_protected_attr": 1.0, "nb_groups": 1000, "max_group_size": 5000},
+        # # Maximal configuration
+        # {"nb_attributes": 10, "prop_protected_attr": 0.5, "nb_groups": 50, "max_group_size": 100},
+        # Perfectly balanced protected attributes
     ]
 
     configurations = []
-
-    # Generate configurations
-    for dataset_params in interesting_combinations:
-        for method_name, method_enum in method_map.items():
-            for intensity in ['lightweight', 'default', 'intensive']:
-                config = {
-                    **base_config,
-                    **dataset_params,
-                    **param_ranges[method_name][intensity],
-                    'methods': {method_enum}
-                }
-                configurations.append(ExperimentConfig(**config))
+    for variation in test_variations:
+        config_dict = {**base_config, **variation}
+        configurations.append(ExperimentConfig(**config_dict))
 
     return configurations
 
 
 def run_experiments(configs: List[ExperimentConfig], methods: Set[Method] = None,
-                    db_path: str = "experiments.db"):
+                    db_path: str = "experiments.db", continue_when_error=True):
     """Run experiments with duplicate prevention"""
     runner = ExperimentRunner(db_path)
 
@@ -2173,7 +1685,7 @@ def run_experiments(configs: List[ExperimentConfig], methods: Set[Method] = None
             config.methods = methods
 
     # Resume any incomplete experiments
-    runner.resume_experiments()
+    runner.resume_experiments(continue_when_error=continue_when_error)
 
     # Run new experiments, skipping duplicates
     for config in configs:
@@ -2182,7 +1694,7 @@ def run_experiments(configs: List[ExperimentConfig], methods: Set[Method] = None
             logger.info(f"Skipping duplicate experiment (ID: {existing_id})")
             continue
 
-        experiment_id = runner.run_experiment(config)
+        experiment_id = runner.run_experiment(config, continue_when_error=continue_when_error)
         logger.info(f"Completed experiment: {experiment_id}")
 
 
@@ -2190,19 +1702,33 @@ def run_experiments(configs: List[ExperimentConfig], methods: Set[Method] = None
 DB_PATH = HERE.joinpath("experiments/discrimination_detection_results5.db").as_posix()
 FIGURES_PATH = HERE.joinpath("experiments/figures").as_posix()
 
+
 # %%
-configs = create_test_configurations()
-methods = {Method.AEQUITAS}
-run_experiments(configs, methods=methods, db_path=DB_PATH)
+def main():
+    """Main function to run experiments"""
+    multiprocessing.freeze_support()
+
+    configs = create_test_configurations()
+    methods = {Method.MLCHECK}
+
+    DB_PATH = HERE.joinpath("experiments/discrimination_detection_results5.db").as_posix()
+    FIGURES_PATH = HERE.joinpath("experiments/figures").as_posix()
+
+    run_experiments(configs, methods=methods, db_path=DB_PATH, continue_when_error=False)
+
+
+if __name__ == '__main__':
+    main()
 
 # %%
 # runner = ExperimentRunner(DB_PATH, FIGURES_PATH)
-# res = runner.get_experiment_data('8201735c-d54a-4438-935c-f36a76b319d3')
-# re2s = runner.consolidate_group_detections()
+# res = runner.get_experiment_data('4e2a04c4-27e7-44c7-ab14-c1121105a007')
+# re2s = runner.generate_performance_report()
+# re4s = runner.summarize_experiment_performance()
 # re3s = runner.summarize_method_performance()
 # runner.visualize_detection_rates()
-
-print('ddd')
+# %%
+# print(re4s['new_individuals_found'].head())
 
 # %%
 # Run analysis

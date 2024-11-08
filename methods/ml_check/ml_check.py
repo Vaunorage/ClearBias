@@ -1,6 +1,3 @@
-import hashlib
-import uuid
-
 import pandas as pd
 import numpy as np
 import random as rd
@@ -10,13 +7,10 @@ import re
 import torch
 from joblib import load
 import time
-from itertools import tee
-
 from methods.ml_check import util, assume2logic, assert2logic
 from methods.ml_check.pruning import Pruner
 from methods.ml_check.tree2logic import gen_tree_smt_fairness
-from methods.ml_check.util import local_save, local_load, file_exists, run_z3_solver
-from methods.ml_check import pruning
+from methods.ml_check.util import local_save, local_load, run_z3_solver
 
 
 class DataGenerator:
@@ -431,7 +425,6 @@ class RunChecker:
             testMatrix['indv_key'] = ''
             testMatrix['couple_key'] = ''
 
-
         local_save(testMatrix, 'Cand-Set', force_rewrite=True)
 
     def remove_duplicates_from_candidate_set(self, dfCandidate):
@@ -453,77 +446,6 @@ class RunChecker:
                 candIndx += 2
 
         return testMatrix
-
-    # def remove_duplicates_from_candidate_set(self):
-    #     dfCandidate = local_load('CandidateSet')
-    #     dfTest = local_load('TestSet')
-    #
-    # def remove_duplicates_from_candidate_set(self, n=2):
-    #     def hash_rows(*rows):
-    #         return hashlib.md5(pd.concat(rows).to_string().encode()).hexdigest()
-    #
-    #     def create_n_row_hashes(df, n):
-    #         if len(df) < n:
-    #             return pd.Series([], index=df.index)
-    #
-    #         iters = tee(df.iterrows(), n)
-    #         for i, it in enumerate(iters[1:], 1):
-    #             for _ in range(i):
-    #                 next(it, None)
-    #
-    #         hashes = []
-    #         for group in zip(*iters):
-    #             if len(group) == n:
-    #                 hashes.append(hash_rows(*[row for _, row in group]))
-    #             else:
-    #                 break  # Stop when we can't form a full group
-    #
-    #         return pd.Series(hashes, index=df.index[:len(hashes)])
-    #
-    #     df1 = local_load('CandidateSet')
-    #     df2 = local_load('TestSet')
-    #
-    #     df1['n_row_hash'] = create_n_row_hashes(df1, n)
-    #     df2['n_row_hash'] = create_n_row_hashes(df2, n)
-    #
-    #     duplicate_hashes = pd.concat([df1['n_row_hash'], df2['n_row_hash']]).value_counts()
-    #     duplicate_hashes = duplicate_hashes[duplicate_hashes > 1].index
-    #
-    #     def create_mask(df):
-    #         if 'n_row_hash' not in df.columns or df['n_row_hash'].empty:
-    #             return pd.Series(True, index=df.index)
-    #         mask = ~df['n_row_hash'].isin(duplicate_hashes)
-    #         for i in range(1, n):
-    #             mask &= ~df['n_row_hash'].shift(-i).isin(duplicate_hashes)
-    #         return mask
-    #
-    #     df1_result = df1[create_mask(df1)].drop('n_row_hash', axis=1).reset_index(drop=True)
-    #
-    #     for file_name in ['TestSet', 'Cand-Set']:
-    #         df = df1_result if file_name == 'Cand-Set' else df2[create_mask(df2)].drop('n_row_hash',
-    #                                                                                    axis=1).reset_index(drop=True)
-    #         df = df[(df.T != 0).any()]
-    #         local_save(df, file_name, force_rewrite=True)
-
-    #     df_unique = dfCandidate.drop_duplicates()
-    #
-    #     df_unique = pd.merge(df_unique, dfTest, how='outer', indicator=True).query('_merge == "left_only"').drop(
-    #         '_merge', axis=1)
-
-    # dfCombined = pd.concat([dfTest, dfCandidate])
-    # pairs = dfCombined.values.reshape(-1, 2, dfCombined.shape[1])
-    # df_pairs = pd.DataFrame(pairs.reshape(-1, 2 * dfCombined.shape[1]))
-    # df_unique = df_pairs.drop_duplicates()
-    # unique_pairs = df_unique.values.reshape(-1, 2, dfCombined.shape[1])
-    # testMatrix = unique_pairs.reshape(-1, dfCombined.shape[1])
-
-    # local_save(df_unique, 'TestSet')
-    # local_save(df_unique, 'Cand-Set')
-    #
-    # for file_name in ['TestSet', 'Cand-Set']:
-    #     df = local_load(file_name)
-    #     df = df[(df.T != 0).any()]
-    #     local_save(df, file_name, force_rewrite=True)
 
     def process_pruned_candidates(self):
         dfCand = local_load('Cand-Set')
@@ -590,17 +512,6 @@ class RunChecker:
             return
 
         df = pd.concat(self.discriminatory_cases)
-
-        # # Convert feature arrays to separate columns
-        # feature_df = pd.DataFrame(df['features'].tolist(),
-        #                           columns=[f'feature_{i}' for i in range(len(df['features'][0]))])
-        #
-        # # Combine with other columns
-        # result_df = pd.concat([
-        #     df[['group_id']],
-        #     feature_df,
-        #     df.drop(['group_id', 'features'], axis=1)
-        # ], axis=1)
 
         local_save(df, 'DiscriminatoryCases', force_rewrite=True)
         print(f"Saved {len(df)} discriminatory cases in {df['couple_key'].nunique()} groups to file.")
