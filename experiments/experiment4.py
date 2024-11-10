@@ -552,12 +552,12 @@ class ExperimentRunner:
 
         # Create tables using to_sql
         with sqlite3.connect(self.db_path) as conn:
-            experiments_df.to_sql('experiments', conn, if_exists='replace', index=False)
-            results_df.to_sql('results', conn, if_exists='replace', index=False)
-            analysis_metadata_df.to_sql('analysis_metadata', conn, if_exists='replace', index=False)
-            evaluated_results_df.to_sql('evaluated_results', conn, if_exists='replace', index=False)
-            augmented_results_df.to_sql('augmented_results', conn, if_exists='replace', index=False)
-            synthetic_data_df.to_sql('synthetic_data', conn, if_exists='replace', index=False)
+            experiments_df.to_sql('experiments', conn, if_exists='append', index=False)
+            results_df.to_sql('results', conn, if_exists='append', index=False)
+            analysis_metadata_df.to_sql('analysis_metadata', conn, if_exists='append', index=False)
+            evaluated_results_df.to_sql('evaluated_results', conn, if_exists='append', index=False)
+            augmented_results_df.to_sql('augmented_results', conn, if_exists='append', index=False)
+            synthetic_data_df.to_sql('synthetic_data', conn, if_exists='append', index=False)
 
         # Add indexing for better performance
         with sqlite3.connect(self.db_path) as conn:
@@ -850,11 +850,12 @@ class ExperimentRunner:
                     result_df: pd.DataFrame, metrics: Dict[str, Any],
                     execution_time: float):
         """Save results using pandas DataFrame"""
+
         result_data = pd.DataFrame([{
             'result_id': str(uuid.uuid4()),
             'experiment_id': experiment_id,
             'method_name': method_name,
-            'result_data': result_df.to_json(),
+            'result_data': result_df.reset_index(drop=True).to_json(),
             'metrics': json.dumps(metrics),
             'execution_time': execution_time
         }])
@@ -2038,85 +2039,127 @@ class ExperimentRunner:
         return fig
 
 
-def create_test_configurations() -> List[ExperimentConfig]:
-    # Parameter ranges
-    param_ranges = {
-        # Dataset parameters
-        'nb_attributes': [5, 10, 20, 50],
-        'prop_protected_attr': [0.1, 0.3, 0.5, 0.8],
-        'nb_groups': [10, 50, 100, 200],
-        'max_group_size': [100, 400, 1000, 2000],
+def create_method_aware_configurations(methods: Set[Method] = None) -> List[ExperimentConfig]:
+    """
+    Creates test configurations optimized for specific discrimination detection methods.
 
-        # Method parameters
+    Args:
+        methods: Set of Method enums to create configurations for. If None, creates for all methods.
+
+    Returns:
+        List of ExperimentConfig objects tailored for specified methods
+    """
+    # Parameter ranges optimized per method
+    param_ranges = {
+        # Dataset parameters - adjusted based on method characteristics
         'aequitas': {
-            'lightweight': {
-                'aequitas_perturbation_unit': 0.5,
-                'aequitas_global_iteration_limit': 50,
-                'aequitas_local_iteration_limit': 5,
-                'aequitas_threshold': 0.1
-            },
-            'default': {
-                'aequitas_perturbation_unit': 1.0,
-                'aequitas_global_iteration_limit': 100,
-                'aequitas_local_iteration_limit': 10,
-                'aequitas_threshold': 0.0
-            },
-            'intensive': {
-                'aequitas_perturbation_unit': 2.0,
-                'aequitas_global_iteration_limit': 500,
-                'aequitas_local_iteration_limit': 50,
-                'aequitas_threshold': 0.0
+            'nb_attributes': [5, 10, 15],  # Aequitas is sensitive to attribute count
+            'prop_protected_attr': [0.2, 0.4, 0.6],  # Works well with moderate protected attributes
+            'nb_groups': [20, 50, 100],  # Moderate group counts due to local search
+            'max_group_size': [200, 500, 1000],  # Balanced sizes for perturbation analysis
+            'configs': {
+                'lightweight': {
+                    'aequitas_perturbation_unit': 0.5,
+                    'aequitas_global_iteration_limit': 50,
+                    'aequitas_local_iteration_limit': 5,
+                    'aequitas_threshold': 0.1,
+                    'aequitas_model_type': 'rf'  # Random Forest for speed
+                },
+                'default': {
+                    'aequitas_perturbation_unit': 1.0,
+                    'aequitas_global_iteration_limit': 100,
+                    'aequitas_local_iteration_limit': 10,
+                    'aequitas_threshold': 0.0,
+                    'aequitas_model_type': 'rf'
+                },
+                'intensive': {
+                    'aequitas_perturbation_unit': 2.0,
+                    'aequitas_global_iteration_limit': 200,  # Reduced from 500 for practicality
+                    'aequitas_local_iteration_limit': 25,  # Reduced from 50 for practicality
+                    'aequitas_threshold': 0.0,
+                    'aequitas_model_type': 'rf'
+                }
             }
         },
         'biasscan': {
-            'lightweight': {
-                'bias_scan_test_size': 0.2,
-                'bias_scan_n_estimators': 100,
-                'bias_scan_num_iters': 50
-            },
-            'default': {
-                'bias_scan_test_size': 0.3,
-                'bias_scan_n_estimators': 200,
-                'bias_scan_num_iters': 100
-            },
-            'intensive': {
-                'bias_scan_test_size': 0.4,
-                'bias_scan_n_estimators': 1000,
-                'bias_scan_num_iters': 500
+            'nb_attributes': [10, 20, 50],  # BiasScan handles more attributes well
+            'prop_protected_attr': [0.1, 0.3, 0.5],  # Works well with varied proportions
+            'nb_groups': [50, 100, 200],  # Can handle larger group counts
+            'max_group_size': [500, 1000, 2000],  # Needs larger samples for statistical significance
+            'configs': {
+                'lightweight': {
+                    'bias_scan_test_size': 0.2,
+                    'bias_scan_n_estimators': 100,
+                    'bias_scan_num_iters': 50,
+                    'bias_scan_scoring': 'Poisson',
+                    'bias_scan_mode': 'ordinal'
+                },
+                'default': {
+                    'bias_scan_test_size': 0.3,
+                    'bias_scan_n_estimators': 200,
+                    'bias_scan_num_iters': 100,
+                    'bias_scan_scoring': 'Poisson',
+                    'bias_scan_mode': 'ordinal'
+                },
+                'intensive': {
+                    'bias_scan_test_size': 0.4,
+                    'bias_scan_n_estimators': 500,  # Reduced from 1000 for practicality
+                    'bias_scan_num_iters': 200,  # Reduced from 500 for practicality
+                    'bias_scan_scoring': 'Poisson',
+                    'bias_scan_mode': 'ordinal'
+                }
             }
         },
         'expga': {
-            'lightweight': {
-                'expga_threshold': 0.7,
-                'expga_threshold_rank': 0.7,
-                'expga_max_global': 25,
-                'expga_max_local': 25
-            },
-            'default': {
-                'expga_threshold': 0.5,
-                'expga_threshold_rank': 0.5,
-                'expga_max_global': 50,
-                'expga_max_local': 50
-            },
-            'intensive': {
-                'expga_threshold': 0.3,
-                'expga_threshold_rank': 0.3,
-                'expga_max_global': 200,
-                'expga_max_local': 200
+            'nb_attributes': [5, 10, 20],  # EXPGA works better with moderate attribute counts
+            'prop_protected_attr': [0.2, 0.4, 0.6],  # Sensitive to protected attribute ratio
+            'nb_groups': [20, 50, 100],  # Moderate group counts due to genetic algorithm
+            'max_group_size': [200, 500, 1000],  # Balanced sizes for evolution
+            'configs': {
+                'lightweight': {
+                    'expga_threshold': 0.7,
+                    'expga_threshold_rank': 0.7,
+                    'expga_max_global': 25,
+                    'expga_max_local': 25
+                },
+                'default': {
+                    'expga_threshold': 0.5,
+                    'expga_threshold_rank': 0.5,
+                    'expga_max_global': 50,
+                    'expga_max_local': 50
+                },
+                'intensive': {
+                    'expga_threshold': 0.3,
+                    'expga_threshold_rank': 0.3,
+                    'expga_max_global': 100,  # Reduced from 200 for practicality
+                    'expga_max_local': 100  # Reduced from 200 for practicality
+                }
             }
         },
         'mlcheck': {
-            'lightweight': {'mlcheck_iteration_no': 1},
-            'default': {'mlcheck_iteration_no': 10},
-            'intensive': {'mlcheck_iteration_no': 50}
+            'nb_attributes': [5, 10, 15],  # MLCheck is more sensitive to attribute count
+            'prop_protected_attr': [0.1, 0.3, 0.5],  # Works well with varied proportions
+            'nb_groups': [20, 50, 100],  # Moderate group counts due to checking complexity
+            'max_group_size': [200, 500, 1000],  # Balanced sizes for verification
+            'configs': {
+                'lightweight': {
+                    'mlcheck_iteration_no': 1
+                },
+                'default': {
+                    'mlcheck_iteration_no': 5  # Reduced from 10 for practicality
+                },
+                'intensive': {
+                    'mlcheck_iteration_no': 20  # Reduced from 50 for practicality
+                }
+            }
         }
     }
 
     # Base configuration
     base_config = {
         'min_number_of_classes': 2,
-        'max_number_of_classes': 10,
-        'nb_categories_outcome': 4
+        'max_number_of_classes': 5,  # Reduced from 10 for more focused testing
+        'nb_categories_outcome': 2  # Binary classification for initial testing
     }
 
     # Method mapping
@@ -2127,34 +2170,48 @@ def create_test_configurations() -> List[ExperimentConfig]:
         'mlcheck': Method.MLCHECK
     }
 
-    # Generate dataset combinations
-    interesting_combinations = [
-        # Standard combinations
-        {'nb_attributes': 10, 'prop_protected_attr': 0.3, 'nb_groups': 50, 'max_group_size': 400},
-        # Edge cases
-        {'nb_attributes': 5, 'prop_protected_attr': 0.1, 'nb_groups': 10, 'max_group_size': 100},
-        {'nb_attributes': 50, 'prop_protected_attr': 0.8, 'nb_groups': 200, 'max_group_size': 2000},
-        # Varying one parameter at a time from standard
-        *[{'nb_attributes': val, 'prop_protected_attr': 0.3, 'nb_groups': 50, 'max_group_size': 400}
-          for val in param_ranges['nb_attributes'] if val != 10],
-        *[{'nb_attributes': 10, 'prop_protected_attr': val, 'nb_groups': 50, 'max_group_size': 400}
-          for val in param_ranges['prop_protected_attr'] if val != 0.3],
-        *[{'nb_attributes': 10, 'prop_protected_attr': 0.3, 'nb_groups': val, 'max_group_size': 400}
-          for val in param_ranges['nb_groups'] if val != 50],
-        *[{'nb_attributes': 10, 'prop_protected_attr': 0.3, 'nb_groups': 50, 'max_group_size': val}
-          for val in param_ranges['max_group_size'] if val != 400]
-    ]
+    # If no methods specified, use all
+    if methods is None:
+        methods = set(Method)
 
     configurations = []
 
-    # Generate configurations
-    for dataset_params in interesting_combinations:
-        for method_name, method_enum in method_map.items():
+    # Generate configurations for each specified method
+    for method_name, method_enum in method_map.items():
+        if method_enum not in methods:
+            continue
+
+        method_params = param_ranges[method_name]
+
+        # Generate standard combinations
+        standard_combo = {
+            'nb_attributes': method_params['nb_attributes'][1],
+            'prop_protected_attr': method_params['prop_protected_attr'][1],
+            'nb_groups': method_params['nb_groups'][1],
+            'max_group_size': method_params['max_group_size'][1]
+        }
+
+        # Generate configurations that vary one parameter at a time
+        interesting_combinations = [
+            standard_combo,  # Standard case
+            # Varying each parameter individually from standard
+            *[{**standard_combo, 'nb_attributes': val}
+              for val in method_params['nb_attributes']],
+            *[{**standard_combo, 'prop_protected_attr': val}
+              for val in method_params['prop_protected_attr']],
+            *[{**standard_combo, 'nb_groups': val}
+              for val in method_params['nb_groups']],
+            *[{**standard_combo, 'max_group_size': val}
+              for val in method_params['max_group_size']]
+        ]
+
+        # Generate configuration for each combination and intensity
+        for dataset_params in interesting_combinations:
             for intensity in ['lightweight', 'default', 'intensive']:
                 config = {
                     **base_config,
                     **dataset_params,
-                    **param_ranges[method_name][intensity],
+                    **method_params['configs'][intensity],
                     'methods': {method_enum}
                 }
                 configurations.append(ExperimentConfig(**config))
@@ -2191,8 +2248,8 @@ DB_PATH = HERE.joinpath("experiments/discrimination_detection_results5.db").as_p
 FIGURES_PATH = HERE.joinpath("experiments/figures").as_posix()
 
 # %%
-configs = create_test_configurations()
-methods = {Method.AEQUITAS}
+methods = {Method.MLCHECK}
+configs = create_method_aware_configurations(methods=methods)
 run_experiments(configs, methods=methods, db_path=DB_PATH)
 
 # %%

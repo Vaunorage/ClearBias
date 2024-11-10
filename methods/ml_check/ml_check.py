@@ -205,7 +205,7 @@ class PropertyChecker:
             model = load(model_path)
             self.paramDict["model_path"] = model_path
         self.paramDict["model_type"] = "sklearn"
-        local_save(model, "MUT")
+        local_save(model, "MUT", force_rewrite=True)
         return model
 
     def _handle_training_data(self, train_data_available, train_data_loc, train_ratio):
@@ -499,8 +499,11 @@ class RunChecker:
         y = dfCand[self.paramDict['output_class_name']]
 
         dfCand.rename(columns={self.paramDict['output_class_name']: 'z3_pred'}, inplace=True)
-        if not dfCand.empty:
-            dfCand['whitebox_pred'] = self.model.predict(X)
+        try:
+            if not dfCand.empty:
+                dfCand['whitebox_pred'] = self.model.predict(X)
+        except:
+            pass
 
         self.discriminatory_cases.append(dfCand)
 
@@ -514,7 +517,7 @@ class RunChecker:
         df = pd.concat(self.discriminatory_cases)
 
         local_save(df, 'DiscriminatoryCases', force_rewrite=True)
-        print(f"Saved {len(df)} discriminatory cases in {df['couple_key'].nunique()} groups to file.")
+        print(f"Saved {len(df)} discriminatory cases in {df['couple_key'].nunique()} couples to file.")
 
     def is_counterexample_group(self, group):
         misclassified = []
