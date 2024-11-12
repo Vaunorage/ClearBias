@@ -11,3 +11,7 @@ z3-solver
 aif360
 ucimlrepo
 boto
+patsy
+statsmodels
+doubleml
+seaborn
