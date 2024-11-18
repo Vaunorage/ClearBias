@@ -73,16 +73,16 @@ class ExperimentConfig:
 
     # Method specific parameters
     # Aequitas
-    global_iteration_limit: int = 100
-    local_iteration_limit: int = 10
-    model_type: str = "RandomForest"
-    perturbation_unit: float = 1.0
-    threshold: float = 0.0
+    aequitas_global_iteration_limit: int = 100
+    aequitas_local_iteration_limit: int = 10
+    aequitas_model_type: str = "RandomForest"
+    aequitas_perturbation_unit: float = 1.0
+    aequitas_threshold: float = 0.0
 
     # BiassScan
-    test_size: float = 0.3
-    random_state: int = 42
-    n_estimators: int = 200
+    bias_scan_test_size: float = 0.3
+    bias_scan_random_state: int = 42
+    bias_scan_n_estimators: int = 200
     bias_scan_num_iters: int = 100
     bias_scan_scoring: str = 'Poisson'
     bias_scan_favorable_value: str = 'high'
@@ -91,8 +91,8 @@ class ExperimentConfig:
     # ExpGA
     expga_threshold: float = 0.5
     expga_threshold_rank: float = 0.5
-    max_global: int = 50
-    max_local: int = 50
+    expga_max_global: int = 50
+    expga_max_local: int = 50
 
     # MLCheck
     mlcheck_iteration_no: int = 1
@@ -1709,7 +1709,7 @@ def main():
     multiprocessing.freeze_support()
 
     configs = create_test_configurations()
-    methods = {Method.MLCHECK}
+    methods = {Method.AEQUITAS}
 
     DB_PATH = HERE.joinpath("experiments/discrimination_detection_results5.db").as_posix()
     FIGURES_PATH = HERE.joinpath("experiments/figures").as_posix()

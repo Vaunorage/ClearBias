@@ -2312,14 +2312,14 @@ def run_experiments(configs: List[ExperimentConfig], methods: Set[Method] = None
 
 
 # %%
-DB_PATH = HERE.joinpath("experiments/discrimination_detection_results5.db").as_posix()
+DB_PATH = HERE.joinpath("experiments/discrimination_detection_results4.db").as_posix()
 FIGURES_PATH = HERE.joinpath("experiments/figures").as_posix()
 
 # %%
-# for meth in [Method.AEQUITAS, Method.EXPGA, Method.MLCHECK, Method.BIASSCAN]:
-#     methods = {meth}
-#     configs = create_method_configurations(methods=methods)
-#     run_experiments(configs, methods=methods, db_path=DB_PATH)
+for meth in [Method.AEQUITAS]:
+    methods = {meth}
+    configs = create_method_configurations(methods=methods)
+    run_experiments(configs, methods=methods, db_path=DB_PATH)
 
 # %%
 runner = ExperimentRunner(DB_PATH, FIGURES_PATH)
@@ -2332,8 +2332,7 @@ print('ddd')
 
 # %%
 # Run analysis
-metric_results_corr = runner.analyze_metrics_influence()
-metric_results = runner.analyze_discrimination_metrics_cate(methods=['aequitas'])
+# metric_results = runner.analyze_discrimination_metrics_cate(methods=['aequitas'])
 
 # %%
 # runner.plot_discriminatory_individuals('45bafd30-7c65-4c9c-b7c4-17b9d7cfc705')

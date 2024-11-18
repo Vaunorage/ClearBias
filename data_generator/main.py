@@ -265,7 +265,7 @@ class DiscriminationData:
 
     @property
     def attr_columns(self) -> List[str]:
-        return self.dataframe.get_attr_columns()
+        return list(self.attributes)
 
     @property
     def protected_attributes(self):
@@ -298,157 +298,74 @@ class DiscriminationData:
             max_val = math.ceil(self.xdf[col].max())
             self.input_bounds.append([min_val, max_val])
 
-    def train_embedding_model(self, n_neighbors=15, min_dist=0.1, n_components=2, metric='euclidean', random_state=42):
+    @staticmethod
+    def generate_individual_synth_combinations(df: pd.DataFrame,
+                                               drop_duplicates=False) -> pd.DataFrame:
+        feature_cols = list(filter(lambda x: 'Attr' in x, df.columns))
 
-        try:
-            from umap import UMAP
-            from sklearn.preprocessing import StandardScaler
-        except ImportError:
-            raise ImportError("Please install umap-learn and scikit-learn: pip install umap-learn scikit-learn")
+        # Initialize list to store all combinations
+        all_combinations = []
 
-        feature_cols = self.feature_names
+        # Group the data by group_key
+        grouped = df.groupby('group_key')
 
-        X = self.dataframe[feature_cols].values
+        for group_key, group_data in grouped:
+            # Get unique subgroups for this group
+            subgroups = group_data['subgroup_key'].unique()
 
-        self.feature_scaler = StandardScaler()
-        X_scaled = self.feature_scaler.fit_transform(X)
+            if len(subgroups) != 2:
+                raise ValueError(f"Group {group_key} does not have exactly 2 subgroups")
 
-        self.embedding_model = UMAP(
-            n_neighbors=n_neighbors,
-            min_dist=min_dist,
-            n_components=n_components,
-            metric=metric,
-            random_state=random_state,
-            verbose=True
-        )
+            # Get data for each subgroup including features
+            subgroup1_data = df[
+                (df['group_key'] == group_key) &
+                (df['subgroup_key'] == subgroups[0])
+                ]
 
-        self.embedding_model.fit(X_scaled)
+            subgroup2_data = df[
+                (df['group_key'] == group_key) &
+                (df['subgroup_key'] == subgroups[1])
+                ]
 
-        return self
+            # Generate all possible combinations
+            for idx1, row1 in subgroup1_data.iterrows():
+                for idx2, row2 in subgroup2_data.iterrows():
+                    combination = {
+                        'group_key': group_key,
+                        'subgroup1_key': subgroups[0],
+                        'subgroup2_key': subgroups[1],
+                        'indv_key_1': row1['indv_key'],
+                        'indv_key_2': row2['indv_key']
+                    }
 
-    def embed_data(self,
-                   data: pd.DataFrame,
-                   columns: List[str] = None) -> np.ndarray:
-        if self.embedding_model is None:
-            raise ValueError("Embedding model not trained. Call train_embedding_model first.")
+                    # Add feature columns for individual 1
+                    for feature in feature_cols:
+                        combination[f'{feature}_1'] = row1[feature]
 
-        # Use feature names from training if columns not specified
-        if columns is None:
-            columns = self.feature_names
+                    # Add feature columns for individual 2
+                    for feature in feature_cols:
+                        combination[f'{feature}_2'] = row2[feature]
 
-        # Validate columns
-        missing_cols = set(columns) - set(data.columns)
-        if missing_cols:
-            raise ValueError(f"Missing columns in input data: {missing_cols}")
+                    all_combinations.append(combination)
 
-        # Prepare the feature matrix
-        X = data[columns].values
+        # Convert to DataFrame
+        result_df = pd.DataFrame(all_combinations)
 
-        # Scale the features using the trained scaler
-        X_scaled = self.feature_scaler.transform(X)
+        result_df['couple_key'] = result_df.apply(lambda x: f"{x['indv_key_1']}-{x['indv_key_2']}", axis=1)
 
-        # Transform the data using the trained UMAP model
-        embedding = self.embedding_model.transform(X_scaled)
+        # Reorder columns for better readability
+        column_order = ['group_key', 'subgroup1_key', 'subgroup2_key',
+                        'indv_key_1', 'indv_key_2', 'couple_key']
 
-        return embedding
+        # Add feature columns to the order
+        for feature in feature_cols:
+            column_order.extend([f'{feature}_1', f'{feature}_2'])
 
-    def plot_embedding(self,
-                       data: pd.DataFrame = None,
-                       new_data: pd.DataFrame = None,
-                       color_by: str = 'outcome',
-                       figsize: tuple = (12, 8),
-                       title: str = None,
-                       point_size: int = 50,
-                       alpha: float = 0.6,
-                       colormap: str = 'viridis',
-                       columns: List[str] = None) -> plt.Figure:
+        res = result_df[column_order]
 
-        if self.embedding_model is None:
-            raise ValueError("Embedding model not trained. Call train_embedding_model first.")
-
-        # Create the visualization
-        fig, ax = plt.subplots(figsize=figsize)
-
-        # Plot background (original) data
-        background_data = self.dataframe if data is None else data
-        background_embedding = (self.embedding_model.embedding_ if data is None
-                                else self.embed_data(background_data, columns))
-
-        # Plot background points in grey
-        ax.scatter(
-            background_embedding[:, 0],
-            background_embedding[:, 1],
-            c='lightgrey',
-            alpha=0.3,
-            s=point_size,
-            label='Background Data'
-        )
-
-        # If new_data is provided, plot it with colors
-        if new_data is not None:
-            if color_by not in new_data.columns:
-                raise ValueError(f"Column '{color_by}' not found in new_data")
-
-            # Embed new data
-            new_embedding = self.embed_data(new_data, columns)
-            color_values = new_data[color_by].values
-
-            # Create color map based on the type of values
-            if np.issubdtype(color_values.dtype, np.number):
-                scatter = ax.scatter(
-                    new_embedding[:, 0],
-                    new_embedding[:, 1],
-                    c=color_values,
-                    cmap=colormap,
-                    alpha=alpha,
-                    s=point_size,
-                    label='New Data'
-                )
-                plt.colorbar(scatter, label=color_by)
-            else:
-                unique_values = np.unique(color_values)
-                palette = sns.color_palette("husl", n_colors=len(unique_values))
-                for value, color in zip(unique_values, palette):
-                    mask = color_values == value
-                    ax.scatter(
-                        new_embedding[mask, 0],
-                        new_embedding[mask, 1],
-                        c=[color],
-                        label=f'New Data ({value})',
-                        alpha=alpha,
-                        s=point_size
-                    )
-
-        # Set title and labels
-        if title is None:
-            title = 'UMAP Embedding'
-            if new_data is not None:
-                title += f'\nNew Data Colored by {color_by}'
-        plt.title(title, pad=20)
-        plt.xlabel('UMAP Dimension 1')
-        plt.ylabel('UMAP Dimension 2')
-
-        # Style the plot
-        ax.grid(True, linestyle='--', alpha=0.7)
-        ax.set_facecolor('#f8f9fa')
-
-        # Add UMAP parameters
-        param_text = (f'UMAP Parameters:\n'
-                      f'n_neighbors={self.embedding_model.n_neighbors}, '
-                      f'min_dist={self.embedding_model.min_dist}')
-        plt.text(0.02, 0.98, param_text,
-                 transform=ax.transAxes,
-                 verticalalignment='top',
-                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-
-        # Add legend
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-
-        plt.tight_layout()
-
-        plt.show()
-
-        return fig
+        if drop_duplicates:
+            res.drop_duplicates(inplace=True)
+        return res
 
 
 def generate_subgroup2_probabilities(subgroup1_sample, subgroup_sets, similarity, sets_attr):
@@ -835,7 +752,7 @@ def create_group(granularity, intersectionality,
                  subgroup_bias,
                  min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
                  min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
-                 min_diff_subgroup_size, max_diff_subgroup_size, max_group_size, attr_names
+                 min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size, attr_names
                  ):
     # Separate non-protected and protected attributes and reorder them
     non_protected_columns = [attr for attr, protected in zip(attr_names, sets_attr) if not protected]
@@ -878,13 +795,16 @@ def create_group(granularity, intersectionality,
                                                  list(subgroup1_sample)).generate_samples(1)
     subgroup2_vals = [subgroup_sets[i][e] for i, e in enumerate(subgroup2_sample[0])]
 
-    total_group_size = math.ceil(max_group_size * frequency)
+    # Calculate total group size based on frequency while respecting min and max constraints
+    total_group_size = max(min_group_size, math.ceil(max_group_size * frequency))
+    total_group_size = min(total_group_size, max_group_size)
 
     diff_percentage = random.uniform(min_diff_subgroup_size, max_diff_subgroup_size)
     diff_size = int(total_group_size * diff_percentage)
 
-    subgroup1_size = max(1, (total_group_size + diff_size) // 2)
-    subgroup2_size = max(1, total_group_size - subgroup1_size)
+    # Ensure each subgroup meets minimum size requirements
+    subgroup1_size = max(min_group_size // 2, (total_group_size + diff_size) // 2)
+    subgroup2_size = max(min_group_size // 2, total_group_size - subgroup1_size)
 
     generator = IndividualsGenerator(
         schema=attr_categories,
@@ -983,6 +903,7 @@ def generate_data(
         min_number_of_classes=None,
         max_number_of_classes=None,
         prop_protected_attr=0.2,
+        min_group_size=10,  # Added minimum group size parameter
         max_group_size=100,
         min_similarity=0.0,
         max_similarity=1.0,
@@ -998,6 +919,13 @@ def generate_data(
         nb_categories_outcome: int = 6,
         use_cache: bool = True,
 ):
+    # Validate min_group_size
+    if min_group_size >= max_group_size:
+        raise ValueError("min_group_size must be less than max_group_size")
+
+    if min_group_size < 2:
+        raise ValueError("min_group_size must be at least 2 to ensure both subgroups have at least one member")
+
     cache = DataCache()
 
     # Create parameters dictionary for cache key generation
@@ -1047,11 +975,10 @@ def generate_data(
 
             subgroup_bias = random.uniform(0.1, 0.5)
 
-            # Randomly sample from unprotected and protected indexes without generating all combinations
             possible_gran = random.sample(unprotected_indexes, granularity)
             possible_intersec = random.sample(protected_indexes, intersectionality)
 
-            possibility = tuple(possible_gran + possible_intersec)  # Combine the gran and intersec lists into a tuple
+            possibility = tuple(possible_gran + possible_intersec)
 
             if not collision_tracker.is_collision(possibility):
                 collision_tracker.add_combination(possibility)
@@ -1061,7 +988,7 @@ def generate_data(
                     subgroup_bias,
                     min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
                     min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
-                    min_diff_subgroup_size, max_diff_subgroup_size, max_group_size, attr_names
+                    min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size, attr_names
                 )
                 results.append(group)
                 pbar.update(1)
@@ -1106,7 +1033,7 @@ def generate_data(
         max_group_size=max_group_size,
         hiddenlayers_depth=W.shape[0],
         outcome_column=outcome_column,
-        attr_possible_values=attr_possible_values  # Include the possible values
+        attr_possible_values=attr_possible_values
     )
 
     data = calculate_actual_metrics_and_relevance(data)

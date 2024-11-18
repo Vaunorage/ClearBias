@@ -15,3 +15,4 @@ patsy
 statsmodels
 doubleml
 seaborn
+hdbscan
