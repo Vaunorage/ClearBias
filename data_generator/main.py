@@ -250,6 +250,12 @@ class DiscriminationDataFrame(DataFrame):
         return self[col_name] if col_name in self.columns else None
 
 
+def sort_two_strings(str1: str, str2: str) -> tuple[str, str]:
+    if str1 <= str2:
+        return (str1, str2)
+    return (str2, str1)
+
+
 @dataclass
 class DiscriminationData:
     dataframe: DiscriminationDataFrame
@@ -303,20 +309,16 @@ class DiscriminationData:
                                                drop_duplicates=False) -> pd.DataFrame:
         feature_cols = list(filter(lambda x: 'Attr' in x, df.columns))
 
-        # Initialize list to store all combinations
         all_combinations = []
 
-        # Group the data by group_key
         grouped = df.groupby('group_key')
 
         for group_key, group_data in grouped:
-            # Get unique subgroups for this group
             subgroups = group_data['subgroup_key'].unique()
 
             if len(subgroups) != 2:
                 raise ValueError(f"Group {group_key} does not have exactly 2 subgroups")
 
-            # Get data for each subgroup including features
             subgroup1_data = df[
                 (df['group_key'] == group_key) &
                 (df['subgroup_key'] == subgroups[0])
@@ -327,37 +329,40 @@ class DiscriminationData:
                 (df['subgroup_key'] == subgroups[1])
                 ]
 
-            # Generate all possible combinations
             for idx1, row1 in subgroup1_data.iterrows():
                 for idx2, row2 in subgroup2_data.iterrows():
+                    # Sort the individual keys
+                    sorted_keys = sort_two_strings(row1['indv_key'], row2['indv_key'])
+
                     combination = {
                         'group_key': group_key,
                         'subgroup1_key': subgroups[0],
                         'subgroup2_key': subgroups[1],
-                        'indv_key_1': row1['indv_key'],
-                        'indv_key_2': row2['indv_key']
+                        'indv_key_1': sorted_keys[0],
+                        'indv_key_2': sorted_keys[1]
                     }
 
-                    # Add feature columns for individual 1
-                    for feature in feature_cols:
-                        combination[f'{feature}_1'] = row1[feature]
-
-                    # Add feature columns for individual 2
-                    for feature in feature_cols:
-                        combination[f'{feature}_2'] = row2[feature]
+                    # Need to match the features with the correct sorted individual
+                    if sorted_keys[0] == row1['indv_key']:
+                        # Keys are already in original order
+                        for feature in feature_cols:
+                            combination[f'{feature}_1'] = row1[feature]
+                            combination[f'{feature}_2'] = row2[feature]
+                    else:
+                        # Keys were swapped, so swap the features too
+                        for feature in feature_cols:
+                            combination[f'{feature}_1'] = row2[feature]
+                            combination[f'{feature}_2'] = row1[feature]
 
                     all_combinations.append(combination)
 
-        # Convert to DataFrame
         result_df = pd.DataFrame(all_combinations)
 
         result_df['couple_key'] = result_df.apply(lambda x: f"{x['indv_key_1']}-{x['indv_key_2']}", axis=1)
 
-        # Reorder columns for better readability
         column_order = ['group_key', 'subgroup1_key', 'subgroup2_key',
                         'indv_key_1', 'indv_key_2', 'couple_key']
 
-        # Add feature columns to the order
         for feature in feature_cols:
             column_order.extend([f'{feature}_1', f'{feature}_2'])
 
