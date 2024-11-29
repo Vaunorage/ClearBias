@@ -1,16 +1,9 @@
-import ast
-import multiprocessing
 import warnings
 from functools import lru_cache
-from multiprocessing import freeze_support
 import traceback
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
-from io import StringIO
-
 import matplotlib.pyplot as plt
-import patsy
 from tqdm import tqdm
 import numpy as np
 from scipy import stats
@@ -26,7 +19,6 @@ import logging
 from enum import Enum
 import re
 from pathlib import Path
-import doubleml as dml
 from path import HERE
 import sqlite3
 import json
@@ -44,20 +36,11 @@ logger = logging.getLogger(__name__)
 
 # %%
 
-def is_individual_part_of_the_original_indv(indv_key, indv_key_list):
-    return indv_key in indv_key_list
+def get_column_values(df):
+    return [set(df[col].unique()) for col in df.columns]
 
 
-def is_individual_part_of_a_group(indv_key, group_key_list):
-    res = []
-    for grp in group_key_list:
-        opt1, opt2 = grp.split('-')
-        if matches_pattern(opt1, indv_key) or matches_pattern(opt2, indv_key):
-            res.append(grp)
-    return res
-
-
-def is_couple_part_of_a_group(couple_key, group_key_list):
+def is_couple_part_of_a_group(couple_key, group_key_list, res_pattern):
     res = []
 
     couple_key_elems = couple_key.split('-')
@@ -68,8 +51,10 @@ def is_couple_part_of_a_group(couple_key, group_key_list):
     opt1 = f"{couple_key_elems[0]}-{couple_key_elems[1]}"
     opt2 = f"{couple_key_elems[1]}-{couple_key_elems[0]}"
 
+    grp_res_pattern = f"{res_pattern}-{res_pattern}"
+
     for grp_key in group_key_list:
-        if matches_pattern(grp_key, opt1) or matches_pattern(grp_key, opt2):
+        if matches_pattern(grp_key, opt1, grp_res_pattern) or matches_pattern(grp_key, opt2, grp_res_pattern):
             res.append(grp_key)
     return res
 
@@ -139,51 +124,34 @@ def create_group_individual_table(aequitas_results: pd.DataFrame, synthetic_data
     return pd.DataFrame(result_data)
 
 
-@lru_cache(maxsize=1024)
-def compile_pattern(pattern_string: str) -> re.Pattern:
-    """Compile and cache regex pattern."""
-    regex_pattern = pattern_string.replace("*", r"\d").replace("|", r"\|").replace("-", r"\-")
-    return re.compile(f"^{regex_pattern}$")
-
-
 @lru_cache(maxsize=4096)
-def matches_pattern(pattern_string: str, test_string: str) -> bool:
+def matches_pattern(pattern_string: str, test_string: str, data_schema: str) -> bool:
     """Cached pattern matching."""
-    pattern = compile_pattern(pattern_string)
-    return bool(pattern.match(test_string))
 
+    def _compile_pattern(pattern_string: str, data_schema: str):
+        res_pattern = []
+        for k, v in zip(pattern_string.split('|'), data_schema.split('|')):
+            if k == '*':
+                res_pattern.append(f"[{v}]")
+            else:
+                res_pattern.append(k)
+        res_pattern = "\|".join(res_pattern)
+        return res_pattern
 
-def vectorized_group_check(keys: np.ndarray, group_patterns: Set[str]) -> np.ndarray:
-    """Vectorized group membership check."""
-    return np.array([
-        any(matches_pattern(pattern, key) for pattern in group_patterns)
-        for key in keys
-    ])
+    if '-' in pattern_string:
+        if '-' not in data_schema:
+            data_schema = f"{data_schema}-{data_schema}"
+        result_pat = []
+        for pat1, pat2 in zip(pattern_string.split('-'), data_schema.split('-')):
+            result_pat.append(_compile_pattern(pat1, pat2))
 
+        pattern = re.compile('\-'.join(result_pat))
+        res = bool(pattern.match(test_string))
+        return res
 
-def process_group_memberships(df: pd.DataFrame, group_keys: Set[str]) -> pd.DataFrame:
-    """Process all group memberships in one pass."""
-    # Convert to numpy array for faster iteration
-    keys = df['couple_key'].values
-    group_keys_array = np.array(list(group_keys))
-
-    # Initialize result matrix
-    result_matrix = np.zeros((len(keys), len(group_keys_array)), dtype=bool)
-
-    # Process each key
-    for i, key in enumerate(keys):
-        if '-' in key:
-            opt1, opt2 = key.split('-')
-            # Check both orientations
-            key_patterns = [f"{opt1}-{opt2}", f"{opt2}-{opt1}"]
-            for j, group_key in enumerate(group_keys_array):
-                result_matrix[i, j] = any(matches_pattern(group_key, pattern) for pattern in key_patterns)
-
-    # Convert results to list of group keys
-    return pd.Series([
-        [group_keys_array[j] for j in np.where(row)[0]]
-        for row in result_matrix
-    ])
+    else:
+        pattern = re.compile(_compile_pattern(pattern_string, data_schema))
+        return bool(pattern.match(test_string))
 
 
 def create_optimized_group_individual_table(
@@ -254,10 +222,15 @@ class ExperimentConfig:
     prop_protected_attr: float
     nb_groups: int
     max_group_size: int
+    min_group_size: int = 10
     nb_categories_outcome: int = 4
-    methods: Set[Method] = None  # Methods to run
+    methods: Set[Method] = None
     min_number_of_classes: int = 2
     max_number_of_classes: int = 4
+    min_granularity: int = 1
+    max_granularity: int = None
+    min_intersectionality: int = 1
+    max_intersectionality: int = None
 
     # Method specific parameters
     # Aequitas
@@ -293,7 +266,7 @@ class ExperimentConfig:
 
 
 def evaluate_discrimination_detection(
-        synthetic_data: pd.DataFrame,
+        ge,
         results_df: pd.DataFrame,
         experiment_id: str,
         method: str
@@ -301,6 +274,8 @@ def evaluate_discrimination_detection(
     """
     Evaluate discrimination detection results with optimized performance.
     """
+    synthetic_data = ge.dataframe
+
     # Pre-compute frequently used values
     calculated_properties = [
         'calculated_epistemic', 'calculated_aleatoric', 'calculated_magnitude',
@@ -313,6 +288,13 @@ def evaluate_discrimination_detection(
     synthetic_data[['indv_key', 'group_key', 'subgroup_key']] = (
         synthetic_data[['indv_key', 'group_key', 'subgroup_key']].astype(str)
     )
+
+    if ge.attr_possible_values is None:
+        data_schema = get_column_values(
+            synthetic_data[list(filter(lambda x: 'Attr' in x, synthetic_data.columns))].drop_duplicates())
+        data_schema = '|'.join([''.join(list(map(str, e))) for e in data_schema])
+    else:
+        data_schema = ge.schema
 
     # Pre-compute group data
     unique_groups = synthetic_data['group_key'].unique()
@@ -367,7 +349,7 @@ def evaluate_discrimination_detection(
             pd.DataFrame(group_analysis_data),
             pd.DataFrame(columns=[
                 'indv_key', 'couple_key', 'is_original_data',
-                'is_individual_part_of_a_group', 'is_couple_part_of_a_group',
+                'is_couple_part_of_a_group',
                 'matching_groups'
             ]),
             empty_metrics
@@ -376,11 +358,6 @@ def evaluate_discrimination_detection(
     # Process non-empty results case
     results_df = results_df.copy()
     results_df[['indv_key', 'couple_key']] = results_df[['indv_key', 'couple_key']].astype(str)
-
-    # Cache pattern matching results
-    @lru_cache(maxsize=1024)
-    def cached_matches_pattern(pattern: str, key: str) -> bool:
-        return matches_pattern(pattern, key)
 
     # Pre-compute unique values
     unique_indv_keys = set(results_df['indv_key'].unique())
@@ -417,13 +394,13 @@ def evaluate_discrimination_detection(
         new_group_indv = [
             key for key in unique_indv_keys
             if key not in exact_indv_matches and
-               (cached_matches_pattern(pattern1, key) or cached_matches_pattern(pattern2, key))
+               (matches_pattern(pattern1, key, data_schema) or matches_pattern(pattern2, key, data_schema))
         ]
 
         new_group_couples = [
             key for key in unique_couple_keys
             if key not in exact_couple_matches and
-               is_couple_part_of_a_group(key, [group_key])
+               is_couple_part_of_a_group(key, [group_key], data_schema)
         ]
 
         # Calculate stats efficiently using vectorized operations
@@ -463,16 +440,12 @@ def evaluate_discrimination_detection(
         # Use cached pattern matching
         matching_groups = [
             group_key for group_key, patterns in group_patterns.items()
-            if any(cached_matches_pattern(pattern, indv_key) for pattern in patterns)
+            if matches_pattern(group_key, couple_key, data_schema)
         ]
 
         return pd.Series({
             'is_original_data': is_original,
-            'is_individual_part_of_a_group': bool(matching_groups),
-            'is_couple_part_of_a_group': any(
-                is_couple_part_of_a_group(couple_key, [group_key])
-                for group_key in unique_groups
-            ),
+            'is_couple_part_of_a_group': len(matching_groups) > 0,
             'matching_groups': matching_groups
         })
 
@@ -524,7 +497,7 @@ class ExperimentRunner:
         # Add all possible attribute columns to augmented_results schema
         augmented_results_df = pd.DataFrame(columns=[
             'analysis_id', 'indv_key', 'couple_key', 'is_original_data',
-            'is_individual_part_of_a_group', 'is_couple_part_of_a_group',
+            'is_couple_part_of_a_group',
             'matching_groups', 'data'
         ])
 
@@ -547,7 +520,7 @@ class ExperimentRunner:
             'synthetic_data_id', 'experiment_id',
             'training_data', 'full_data',
             'protected_attributes', 'outcome_column',
-            'created_at'
+            'created_at', 'attr_possible_values'
         ])
 
         # Create tables using to_sql
@@ -769,7 +742,7 @@ class ExperimentRunner:
 
         return results_df, metrics, execution_time
 
-    def run_experiment(self, config: ExperimentConfig, existing_id: str = None):
+    def run_experiment(self, config: ExperimentConfig, existing_id: str = None, use_cache=False):
         """Run experiment with synthetic data storage"""
         if existing_id is None:
             existing_id = self.experiment_exists(config)
@@ -794,11 +767,16 @@ class ExperimentRunner:
                 nb_attributes=config.nb_attributes,
                 min_number_of_classes=config.min_number_of_classes,
                 max_number_of_classes=config.max_number_of_classes,
+                min_granularity=config.min_granularity,
+                max_granularity=config.max_granularity,
+                min_intersectionality=config.min_intersectionality,
+                max_intersectionality=config.max_intersectionality,
                 prop_protected_attr=config.prop_protected_attr,
                 nb_groups=config.nb_groups,
                 max_group_size=config.max_group_size,
                 categorical_outcome=True,
-                nb_categories_outcome=config.nb_categories_outcome
+                nb_categories_outcome=config.nb_categories_outcome,
+                use_cache=use_cache
             )
 
             # Save synthetic data
@@ -820,7 +798,7 @@ class ExperimentRunner:
 
             logger.info(f"Analyzing results for experiment: {experiment_id}")
             # Pass config to evaluate_discrimination_detection
-            self.analyze_experiment_results(experiment_id, ge.dataframe, config)
+            self.analyze_experiment_results(experiment_id, ge, config)
 
             logger.info(f"Experiment and analysis completed successfully: {experiment_id}")
 
@@ -877,9 +855,10 @@ class ExperimentRunner:
                 # Write back to database
                 current_data.to_sql('experiments', conn, if_exists='replace', index=False)
 
-    def analyze_experiment_results(self, experiment_id: str, synthetic_data: pd.DataFrame,
+    def analyze_experiment_results(self, experiment_id: str, ge,
                                    config: Optional[ExperimentConfig] = None):
         """Analyze results using pandas operations"""
+
         if config is None:
             with sqlite3.connect(self.db_path) as conn:
                 config_df = pd.read_sql_query(
@@ -908,7 +887,7 @@ class ExperimentRunner:
             try:
                 # Run evaluation
                 group_analysis_df, augmented_results_df, metrics_df = evaluate_discrimination_detection(
-                    synthetic_data, result_df, experiment_id, method_name
+                    ge, result_df, experiment_id, method_name
                 )
 
                 # Save analysis results using the new method
@@ -969,8 +948,6 @@ class ExperimentRunner:
                 'indv_key': row['indv_key'] if 'indv_key' in row else None,
                 'couple_key': row['couple_key'] if 'couple_key' in row else None,
                 'is_original_data': row['is_original_data'] if 'is_original_data' in row else None,
-                'is_individual_part_of_a_group': row[
-                    'is_individual_part_of_a_group'] if 'is_individual_part_of_a_group' in row else None,
                 'is_couple_part_of_a_group': row[
                     'is_couple_part_of_a_group'] if 'is_couple_part_of_a_group' in row else None,
                 'matching_groups': json.dumps(row['matching_groups']) if 'matching_groups' in row else None,
@@ -1012,7 +989,8 @@ class ExperimentRunner:
             'full_data': ge.dataframe.to_json(),
             'protected_attributes': json.dumps(ge.protected_attributes),
             'outcome_column': ge.outcome_column,
-            'created_at': datetime.now()
+            'created_at': datetime.now(),
+            'attr_possible_values': ge.schema
         }])
 
         with sqlite3.connect(self.db_path) as conn:
@@ -2288,7 +2266,7 @@ def create_method_configurations(methods: Set[Method] = None) -> List[Experiment
 
 
 def run_experiments(configs: List[ExperimentConfig], methods: Set[Method] = None,
-                    db_path: str = "experiments.db"):
+                    db_path: str = "experiments.db", use_cache=True):
     """Run experiments with duplicate prevention"""
     runner = ExperimentRunner(db_path)
 
@@ -2307,19 +2285,26 @@ def run_experiments(configs: List[ExperimentConfig], methods: Set[Method] = None
             logger.info(f"Skipping duplicate experiment (ID: {existing_id})")
             continue
 
-        experiment_id = runner.run_experiment(config)
+        experiment_id = runner.run_experiment(config, use_cache=use_cache)
         logger.info(f"Completed experiment: {experiment_id}")
 
 
 # %%
-DB_PATH = HERE.joinpath("experiments/discrimination_detection_results4.db").as_posix()
+DB_PATH = HERE.joinpath("experiments/discrimination_detection_results5.db").as_posix()
 FIGURES_PATH = HERE.joinpath("experiments/figures").as_posix()
 
 # %%
-for meth in [Method.AEQUITAS]:
-    methods = {meth}
-    configs = create_method_configurations(methods=methods)
-    run_experiments(configs, methods=methods, db_path=DB_PATH)
+# for meth in [Method.AEQUITAS]:
+#     methods = {meth}
+#     configs = create_method_configurations(methods=methods)
+#     run_experiments(configs, methods=methods, db_path=DB_PATH)
+
+# %%
+methods = {Method.EXPGA, Method.AEQUITAS, Method.BIASSCAN}
+configs = [ExperimentConfig(nb_groups=4, nb_attributes=3, min_granularity=1, max_granularity=1,
+                            prop_protected_attr=0.5144, max_group_size=300, min_group_size=100,
+                            min_number_of_classes=2, max_number_of_classes=3)]
+run_experiments(configs, methods=methods, db_path=DB_PATH, use_cache=False)
 
 # %%
 runner = ExperimentRunner(DB_PATH, FIGURES_PATH)

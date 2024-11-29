@@ -297,6 +297,11 @@ class DiscriminationData:
     def ydf(self):
         return self.dataframe[self.outcome_column]
 
+    @property
+    def schema(self):
+        return '|'.join(
+            [''.join(list(map(str, e))).replace('-1', '') for e in self.attr_possible_values.values()])
+
     def __post_init__(self):
         self.input_bounds = []
         for col in list(self.attributes):
@@ -305,8 +310,7 @@ class DiscriminationData:
             self.input_bounds.append([min_val, max_val])
 
     @staticmethod
-    def generate_individual_synth_combinations(df: pd.DataFrame,
-                                               drop_duplicates=False) -> pd.DataFrame:
+    def generate_individual_synth_combinations(df: pd.DataFrame) -> pd.DataFrame:
         feature_cols = list(filter(lambda x: 'Attr' in x, df.columns))
 
         all_combinations = []
@@ -363,14 +367,12 @@ class DiscriminationData:
         column_order = ['group_key', 'subgroup1_key', 'subgroup2_key',
                         'indv_key_1', 'indv_key_2', 'couple_key']
 
-        for feature in feature_cols:
-            column_order.extend([f'{feature}_1', f'{feature}_2'])
+        column_order.extend([f'{feature}_1' for feature in feature_cols])
+        column_order.extend([f'{feature}_2' for feature in feature_cols])
 
         res = result_df[column_order]
 
-        if drop_duplicates:
-            res.drop_duplicates(inplace=True)
-        return res
+        return res.drop_duplicates()
 
 
 def generate_subgroup2_probabilities(subgroup1_sample, subgroup_sets, similarity, sets_attr):
@@ -920,10 +922,14 @@ def generate_data(
         max_frequency=1.0,
         min_diff_subgroup_size=0.0,
         max_diff_subgroup_size=0.5,
+        min_granularity=1,
+        max_granularity=None,
+        min_intersectionality=1,
+        max_intersectionality=None,
         categorical_outcome: bool = True,
         nb_categories_outcome: int = 6,
         use_cache: bool = True,
-):
+) -> DiscriminationData:
     # Validate min_group_size
     if min_group_size >= max_group_size:
         raise ValueError("min_group_size must be less than max_group_size")
@@ -935,8 +941,8 @@ def generate_data(
 
     # Create parameters dictionary for cache key generation
     params = locals()
-    params.pop('cache')  # Remove cache object from params
-
+    params = {k: v for k, v in params.items() if
+              ((v is None or isinstance(v, (int, float, str, bool))) and '_debug_' not in k)}
     # Try to load from cache if use_cache is True
     if use_cache:
         cached_data = cache.load(params)
@@ -968,6 +974,16 @@ def generate_data(
     protected_indexes = [index for index, value in enumerate(sets_attr) if value]
     unprotected_indexes = [index for index, value in enumerate(sets_attr) if not value]
 
+    max_granularity = max(1, len(unprotected_indexes)) if (max_granularity is None) or (
+            max_granularity > len(unprotected_indexes)) else max_granularity
+    max_intersectionality = max(1, len(protected_indexes)) if (max_intersectionality is None) or (
+            max_intersectionality > len(protected_indexes)) else max_intersectionality
+
+    assert 0 < min_granularity <= max_granularity <= len(
+        unprotected_indexes), 'min_granularity must be between 0 and max_granularity'
+    assert 0 < min_intersectionality <= max_intersectionality <= len(
+        protected_indexes), 'min_intersectionality must be between 0 and max_intersectionality'
+
     collision_tracker = CollisionTracker(nb_attributes)
 
     results = []
@@ -975,8 +991,8 @@ def generate_data(
 
     with tqdm(total=nb_groups, desc="Generating data") as pbar:
         while len(results) < nb_groups:
-            granularity = random.randint(1, max(1, len(unprotected_indexes)))
-            intersectionality = random.randint(1, max(1, len(protected_indexes)))
+            granularity = random.randint(min_granularity, max_granularity)
+            intersectionality = random.randint(min_intersectionality, max_intersectionality)
 
             subgroup_bias = random.uniform(0.1, 0.5)
 
@@ -1042,5 +1058,8 @@ def generate_data(
     )
 
     data = calculate_actual_metrics_and_relevance(data)
+
+    if use_cache:
+        cache.save(data, params)
 
     return data
