@@ -435,7 +435,7 @@ class OutcomeGenerator:
 
 class IndividualsGenerator:
     def __init__(self, schema, graph, gen_order, outcome_weights, outcome_bias, subgroup_bias,
-                 epis_uncertainty, alea_uncertainty, n_estimators=50):
+                 epis_uncertainty, alea_uncertainty, corr_matrix_randomness=1.0, n_estimators=50):
         self.schema = schema
         self.graph = np.array(graph)
         self.gen_order = [i - 1 for i in gen_order]
@@ -446,6 +446,7 @@ class IndividualsGenerator:
         self.epis_uncertainty = epis_uncertainty  # Will be used differently
         self.alea_uncertainty = alea_uncertainty  # Will be used differently
         self.n_estimators = n_estimators
+        self.corr_matrix_randomness = np.clip(corr_matrix_randomness, 0.0, 1.0)
 
     def _compute_support_degrees_vectorized(self, ns, ps):
         """Vectorized version of support degrees computation"""
@@ -466,7 +467,6 @@ class IndividualsGenerator:
     def generate_dataset_with_outcome(self, n_samples: int,
                                       predetermined_values: List[int],
                                       is_subgroup1: bool) -> List[Tuple[List[int], float, float, float]]:
-        # Step 1: Generate attribute samples
         samples = np.zeros((n_samples, self.n_attributes), dtype=int)
 
         # Fill in predetermined values
@@ -474,7 +474,7 @@ class IndividualsGenerator:
             mask = np.array(predetermined_values) != -1
             samples[:, mask] = np.array(predetermined_values)[mask][None, :]
 
-        # Generate remaining values based on correlation matrix
+        # Generate remaining values with flexibility
         for attr in self.gen_order:
             mask = samples[:, attr] == 0
             if not np.any(mask):
@@ -482,7 +482,12 @@ class IndividualsGenerator:
 
             n_to_generate = np.sum(mask)
             n_values = len(self.schema[attr])
-            probabilities = np.ones((n_to_generate, n_values))
+
+            # Initialize with uniform probabilities
+            uniform_probs = np.ones((n_to_generate, n_values)) / n_values
+
+            # Calculate correlation-based probabilities
+            corr_probs = np.ones((n_to_generate, n_values))
 
             # Calculate probabilities based on correlations
             other_attrs = np.arange(self.n_attributes) != attr
@@ -497,49 +502,41 @@ class IndividualsGenerator:
                     attr_values = other_values[:, i]
                     matches = (attr_values == value)
                     prob_multipliers *= np.where(matches, corr, (1 - corr) / (n_values - 1))
-                probabilities[:, value] = prob_multipliers
+                corr_probs[:, value] = prob_multipliers
 
-            # Normalize and generate values
-            probabilities /= probabilities.sum(axis=1, keepdims=True)
-            samples[mask, attr] = np.array([np.random.choice(n_values, p=p) for p in probabilities])
+            # Normalize correlation-based probabilities
+            corr_probs /= corr_probs.sum(axis=1, keepdims=True)
 
-        # Step 2: Prepare features
+            # Blend probabilities based on flexibility parameter
+            final_probs = self.corr_matrix_randomness * corr_probs + (1 - self.corr_matrix_randomness) * uniform_probs
+
+            # Add small noise to prevent identical outcomes
+            noise = np.random.normal(0, 0.01, final_probs.shape)
+            final_probs = np.abs(final_probs + noise)
+            final_probs /= final_probs.sum(axis=1, keepdims=True)
+
+            # Generate values
+            samples[mask, attr] = np.array([np.random.choice(n_values, p=p) for p in final_probs])
+
+        # Prepare features and generate outcomes
         X = (samples - np.mean(samples, axis=0)) / (np.std(samples, axis=0) + 1e-8)
 
-        # Step 3: Generate ensemble predictions with uncertainties
+        # Generate ensemble predictions with uncertainties
         ensemble_preds = []
-
         for i in range(self.n_estimators):
-            # 3a: Add epistemic uncertainty through weight perturbation
             weight_noise = np.random.normal(0, self.epis_uncertainty, size=self.outcome_weights.shape)
             perturbed_weights = self.outcome_weights * (1 + weight_noise)
-
-            # 3b: Calculate base predictions
             base_pred = np.dot(X, perturbed_weights) + self.outcome_bias
-
-            # 3c: Add subgroup bias
             base_pred += self.subgroup_bias if is_subgroup1 else -self.subgroup_bias
-
-            # 3d: Add aleatoric uncertainty
             noisy_pred = base_pred + np.random.normal(0, self.alea_uncertainty, size=n_samples)
-
-            # 3e: Convert to probabilities
             probs = 1 / (1 + np.exp(-noisy_pred))
             ensemble_preds.append(probs)
 
-        # Step 4: Convert to array for calculations
-        ensemble_preds = np.array(ensemble_preds).T  # Shape: (n_samples, n_estimators)
-
-        # Step 5: Calculate final predictions and uncertainties
+        ensemble_preds = np.array(ensemble_preds).T
         final_predictions = np.mean(ensemble_preds, axis=1)
-
-        # Epistemic uncertainty: variance between models
         epistemic_uncertainty = np.var(ensemble_preds, axis=1)
-
-        # Aleatoric uncertainty: average prediction variance
         aleatoric_uncertainty = np.mean(ensemble_preds * (1 - ensemble_preds), axis=1)
 
-        # Step 6: Return results
         return [(samples[i].tolist(),
                  final_predictions[i],
                  epistemic_uncertainty[i],
@@ -621,10 +618,12 @@ def calculate_actual_uncertainties(data):
     data.dataframe['calculated_epistemic'] = epistemic
     data.dataframe['calculated_aleatoric'] = aleatoric
 
-    return data.dataframe.groupby('group_key').agg({
+    res = data.dataframe.groupby('group_key').agg({
         'calculated_epistemic': 'mean',
         'calculated_aleatoric': 'mean'
     })
+
+    return res
 
 
 def calculate_actual_mean_diff_outcome(data):
@@ -641,7 +640,7 @@ def calculate_actual_mean_diff_outcome(data):
     return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_diff)
 
 
-def calculate_actual_metrics_and_relevance(data):
+def calculate_actual_metrics(data):
     """
     Calculate the actual metrics and relevance for each group.
     """
@@ -650,95 +649,22 @@ def calculate_actual_metrics_and_relevance(data):
     actual_mean_diff_outcome = calculate_actual_mean_diff_outcome(data)
 
     # Merge these metrics into the main dataframe
-    data.dataframe['actual_similarity'] = data.dataframe['group_key'].map(actual_similarity)
-    data.dataframe['actual_epis_uncertainty'] = data.dataframe['group_key'].map(
+    data.dataframe['calculated_similarity'] = data.dataframe['group_key'].map(actual_similarity)
+    data.dataframe['calculated_epistemic_group'] = data.dataframe['group_key'].map(
         actual_uncertainties['calculated_epistemic'])
-    data.dataframe['actual_alea_uncertainty'] = data.dataframe['group_key'].map(
+    data.dataframe['calculated_aleatoric_group'] = data.dataframe['group_key'].map(
         actual_uncertainties['calculated_aleatoric'])
-    data.dataframe['actual_mean_diff_outcome'] = data.dataframe['group_key'].map(actual_mean_diff_outcome)
+    data.dataframe['calculated_magnitude'] = data.dataframe['group_key'].map(actual_mean_diff_outcome)
+    data.dataframe['calculated_uncertainty_group'] = data.dataframe.apply(
+        lambda x: (x['calculated_epistemic_group'] + x['calculated_aleatoric_group']) / 2, axis=1)
 
-    # Calculate the new relevance metric
-    relevance = calculate_relevance(data)
-
-    # Merge the relevance metrics back into the dataframe, avoiding duplicates
-    existing_columns = set(data.dataframe.columns)
-    new_columns = [col for col in relevance.columns if col not in existing_columns]
-    data.dataframe = data.dataframe.merge(relevance[new_columns], left_on='group_key', right_index=True, how='left')
-
-    # Store the relevance metrics in the DiscriminationData object
-    data.relevance_metrics = relevance
-
-    # Clean up any remaining duplicate columns
+    data.dataframe['calculated_intersectionality'] = data.dataframe['intersectionality_param'].copy()
+    data.dataframe['calculated_granularity'] = data.dataframe['granularity_param'].copy()
+    data.dataframe['calculated_group_size'] = data.dataframe['group_size'].copy()
+    data.dataframe['calculated_subgroup_ratio'] = data.dataframe['diff_subgroup_size'].copy()
     data.dataframe = data.dataframe.loc[:, ~data.dataframe.columns.duplicated()]
 
     return data
-
-
-def calculate_relevance(data):
-    """
-    Calculate the relevance metric for each group based on the updated formula.
-    """
-
-    def calculate_group_relevance(group_data):
-        subgroup_keys = group_data['subgroup_key'].unique()
-        if len(subgroup_keys) != 2:
-            return pd.Series({
-                'relevance': np.nan,
-                'calculated_magnitude': np.nan,
-                'calculated_group_size': np.nan,
-                'calculated_granularity': np.nan,
-                'calculated_intersectionality': np.nan,
-                'calculated_uncertainty': np.nan,
-                'calculated_similarity': np.nan,
-                'calculated_subgroup_ratio': np.nan
-            })
-
-        S1 = group_data[group_data['subgroup_key'] == subgroup_keys[0]]
-        S2 = group_data[group_data['subgroup_key'] == subgroup_keys[1]]
-
-        # Calculate magnitude
-        mu1 = S1[data.outcome_column].mean()
-        mu2 = S2[data.outcome_column].mean()
-        magnitude = abs(mu1 - mu2) / max(mu1, mu2) if max(mu1, mu2) != 0 else 0
-
-        # Calculate other factors
-        group_size = len(group_data) / len(data.dataframe)
-        granularity = group_data['granularity'].iloc[0] / (len(data.attributes) - len(data.protected_attributes))
-        intersectionality = group_data['intersectionality'].iloc[0] / len(data.protected_attributes)
-        uncertainty = (group_data['actual_epis_uncertainty'].mean() + group_data['actual_alea_uncertainty'].mean()) / 2
-        similarity = group_data['actual_similarity'].iloc[0]
-        subgroup_ratio = max(len(S1), len(S2)) / min(len(S1), len(S2))
-
-        if intersectionality == 0 or granularity == 0:
-            print('sss')
-
-        # Define weights (you may want to adjust these)
-        w_f, w_g, w_i, w_u, w_s, w_r = 1, 1, 1, 1, 1, 1
-        Z = w_f + w_g + w_i + w_u + w_s + w_r
-
-        # Calculate OtherFactors
-        other_factors = (w_f * group_size + w_g * granularity + w_i * intersectionality +
-                         w_u * uncertainty + w_s * similarity + w_r * (1 / subgroup_ratio)) / Z
-
-        # Calculate relevance (you may want to adjust alpha)
-        alpha = 1
-        relevance = magnitude * (1 + alpha * other_factors)
-
-        if group_size == 0 or intersectionality == 0 or granularity == 0:
-            print('ddd')
-
-        return pd.Series({
-            'relevance': relevance,
-            'calculated_magnitude': magnitude,
-            'calculated_group_size': group_size,
-            'calculated_granularity': granularity,
-            'calculated_intersectionality': intersectionality,
-            'calculated_uncertainty': uncertainty,
-            'calculated_similarity': similarity,
-            'calculated_subgroup_ratio': subgroup_ratio
-        })
-
-    return data.dataframe.groupby('group_key').apply(calculate_group_relevance)
 
 
 def calculate_weights(n):
@@ -756,11 +682,10 @@ def safe_normalize(p):
 
 def create_group(granularity, intersectionality,
                  possibility, attr_categories, sets_attr, correlation_matrix, gen_order, W,
-                 subgroup_bias,
+                 subgroup_bias, corr_matrix_randomness,
                  min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
                  min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
-                 min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size, attr_names
-                 ):
+                 min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size, attr_names):
     # Separate non-protected and protected attributes and reorder them
     non_protected_columns = [attr for attr, protected in zip(attr_names, sets_attr) if not protected]
     protected_columns = [attr for attr, protected in zip(attr_names, sets_attr) if protected]
@@ -821,7 +746,8 @@ def create_group(granularity, intersectionality,
         outcome_bias=0,
         subgroup_bias=subgroup_bias,
         epis_uncertainty=epis_uncertainty,
-        alea_uncertainty=alea_uncertainty
+        alea_uncertainty=alea_uncertainty,
+        corr_matrix_randomness=corr_matrix_randomness
     )
 
     # Generate dataset for subgroup 1 and subgroup 2
@@ -856,12 +782,12 @@ def create_group(granularity, intersectionality,
     result_df = pd.concat([subgroup1_individuals_df, subgroup2_individuals_df])
 
     result_df['group_key'] = group_key
-    result_df['granularity'] = granularity
-    result_df['intersectionality'] = intersectionality
-    result_df['similarity'] = similarity
-    result_df['epis_uncertainty'] = epis_uncertainty
-    result_df['alea_uncertainty'] = alea_uncertainty
-    result_df['frequency'] = frequency
+    result_df['granularity_param'] = granularity
+    result_df['intersectionality_param'] = intersectionality
+    result_df['similarity_param'] = similarity
+    result_df['epis_uncertainty_param'] = epis_uncertainty
+    result_df['alea_uncertainty_param'] = alea_uncertainty
+    result_df['frequency_param'] = frequency
     result_df['group_size'] = len(subgroup1_individuals + subgroup2_individuals)
     result_df['diff_subgroup_size'] = diff_percentage
 
@@ -929,6 +855,7 @@ def generate_data(
         categorical_outcome: bool = True,
         nb_categories_outcome: int = 6,
         use_cache: bool = True,
+        corr_matrix_randomness=0.5
 ) -> DiscriminationData:
     # Validate min_group_size
     if min_group_size >= max_group_size:
@@ -940,7 +867,7 @@ def generate_data(
     cache = DataCache()
 
     # Create parameters dictionary for cache key generation
-    params = locals()
+    params = copy.deepcopy(locals())
     params = {k: v for k, v in params.items() if
               ((v is None or isinstance(v, (int, float, str, bool))) and '_debug_' not in k)}
     # Try to load from cache if use_cache is True
@@ -1006,8 +933,8 @@ def generate_data(
                 group = create_group(
                     granularity, intersectionality,
                     possibility, attr_categories, sets_attr, correlation_matrix, gen_order, W,
-                    subgroup_bias,
-                    min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
+                    subgroup_bias, corr_matrix_randomness, min_similarity, max_similarity, min_alea_uncertainty,
+                    max_alea_uncertainty,
                     min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
                     min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size, attr_names
                 )
@@ -1057,7 +984,7 @@ def generate_data(
         attr_possible_values=attr_possible_values
     )
 
-    data = calculate_actual_metrics_and_relevance(data)
+    data = calculate_actual_metrics(data)
 
     if use_cache:
         cache.save(data, params)

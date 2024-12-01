@@ -83,53 +83,6 @@ def train_uncertainty_forest(synthetic_data, feature_names, outcome_column):
     return urf
 
 
-def calculate_actual_uncertainties(data, feature_names, urf):
-    X = data[feature_names]
-
-    _, epistemic, aleatoric = urf.predict_with_uncertainty(X)
-
-    data['calculated_epistemic'] = epistemic
-    data['calculated_aleatoric'] = aleatoric
-
-    return data
-
-
-def calculate_relevance(data, feature_names, protected_attributes, outcome_column):
-    # Calculate magnitude
-    magnitude = abs(data['diff_outcome']) / max(data[outcome_column].max(), 1)
-
-    # Calculate other factors
-    group_size = 0  # Assuming each row is a unique instance
-    granularity = 0
-    intersectionality = 0
-    uncertainty = 1 - (data['calculated_epistemic'] + data['calculated_aleatoric']) / 2
-    similarity = 0  # As per your instruction
-    subgroup_ratio = 1  # Assuming no subgroups in Aequitas output
-
-    # Define weights (you may want to adjust these)
-    w_f, w_g, w_i, w_u, w_s, w_r = 1, 1, 1, 1, 1, 1
-    Z = w_f + w_g + w_i + w_u + w_s + w_r
-
-    # Calculate OtherFactors
-    other_factors = (w_f * group_size + w_g * granularity + w_i * intersectionality +
-                     w_u * uncertainty + w_s * similarity + w_r * (1 / subgroup_ratio)) / Z
-
-    # Calculate relevance (you may want to adjust alpha)
-    alpha = 1
-    relevance = magnitude * (1 + alpha * other_factors)
-
-    return pd.DataFrame({
-        'relevance': relevance,
-        'calculated_magnitude': magnitude,
-        'calculated_group_size': group_size,
-        'calculated_granularity': granularity,
-        'calculated_intersectionality': intersectionality,
-        'calculated_uncertainty': uncertainty,
-        'calculated_similarity': similarity,
-        'calculated_subgroup_ratio': subgroup_ratio
-    })
-
-
 def chunks(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
@@ -553,8 +506,6 @@ def run_aequitas(df: DataFrame,
     results: List[AequitasResultDF] = []
     dataset = Dataset(df, col_to_be_predicted=col_to_be_predicted, sensitive_param_name_list=sensitive_param_name_list)
     model, model_scores = generate_sklearn_classifier(dataset, model_type)
-
-    urf = train_uncertainty_forest(dataset.df, dataset.feature_names, dataset.col_to_be_predicted)
 
     for sensitive_param_id, sensitive_attribute in zip(dataset.sensitive_param_idx_list, sensitive_param_name_list):
         result = aequitas_fully_directed_sklearn(dataset, perturbation_unit, threshold, global_iteration_limit,

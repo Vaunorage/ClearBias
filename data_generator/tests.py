@@ -11,9 +11,9 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score, f1_score, recall_score
 
-# %%
 nb_attributes = 10
 correlation_matrix = generate_valid_correlation_matrix(nb_attributes)
+
 
 data = generate_data(
     nb_attributes=nb_attributes,
@@ -21,24 +21,21 @@ data = generate_data(
     min_number_of_classes=2,
     max_number_of_classes=9,
     prop_protected_attr=0.4,
-    nb_groups=1,
+    nb_groups=10,
     max_group_size=400,
+    max_granularity=2,
+    max_intersectionality=2,
     categorical_outcome=True,
-    nb_categories_outcome=4)
+    nb_categories_outcome=4,
+    use_cache=False,
+    corr_matrix_randomness=0.6)
 
 print(f"Generated {len(data.dataframe)} samples in {data.nb_groups} groups")
 print(f"Collisions: {data.collisions}")
 
-# %%
-
-data.train_embedding_model()
-
-data.plot_embedding()
-
-
 #
 # %%
-#
+
 def unique_individuals_ratio(data: pd.DataFrame, individual_col: str, attr_possible_values: Dict[str, List[int]]):
     unique_individuals_count = data[individual_col].nunique()
 
@@ -53,7 +50,7 @@ def unique_individuals_ratio(data: pd.DataFrame, individual_col: str, attr_possi
     duplicates_count = total_individuals - unique_individuals_count
 
     # Calculate the ratio
-    ratio = unique_individuals_count / possible_unique_individuals
+    ratio = unique_individuals_count / total_individuals
 
     return ratio, duplicates_count, total_individuals
 

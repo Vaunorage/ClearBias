@@ -1,2 +1,4 @@
-Correct the checking of in group to see if the predicted value is within the bounds
 make mlcheck finding values that are within the bound
+make CATE analysis for model f1-score
+make correlation graph between f1-score and uncertainty
+make graph showing the groups and the findings round them where groups are colored depending on their uncertainty

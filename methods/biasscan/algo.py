@@ -14,7 +14,6 @@ from sklearn.metrics import accuracy_score, classification_report
 
 class ResultRow(TypedDict, total=False):
     group_id: int
-    val: float
     outcome: int
     diff_outcome: int
     indv_key: str
@@ -32,106 +31,132 @@ def run_bias_scan(ge,
                   bias_scan_scoring='Poisson',
                   bias_scan_favorable_value='high',
                   bias_scan_mode='ordinal') -> Tuple[pd.DataFrame, dict]:
+    def format_mdss_results(subsets1, subsets2, all_attributes, ge) -> pd.DataFrame:
+        """
+        Format MDSS results with memory-efficient processing
+        """
 
-    def format_mdss_results(subsets1, subsets2, all_attributes) -> pd.DataFrame:
-        def make_products_df(subsets):
-            product_dfs = []
-            for subset, val in subsets:
-                product_lists = product(*subset.values())
-                columns = subset.keys()
-                product_df = pd.DataFrame(product_lists, columns=columns)
-                print(f"Shape after creating DataFrame: {product_df.shape}")
+        def make_products_df(subsets, all_attributes, chunk_size=10000):
+            """
+            Create product DataFrame in memory-efficient chunks
+            """
+
+            def process_subset_chunk(subset, outcome, chunk_start, chunk_size):
+                # Get all possible combinations
+                product_lists = list(product(*subset.values()))
+                total_products = len(product_lists)
+
+                # Process only the current chunk
+                chunk_end = min(chunk_start + chunk_size, total_products)
+                chunk_products = product_lists[chunk_start:chunk_end]
+
+                if not chunk_products:
+                    return pd.DataFrame(columns=all_attributes + [ge.outcome_column])
+
+                # Create DataFrame for this chunk
+                chunk_df = pd.DataFrame(chunk_products, columns=subset.keys())
+
+                # Add missing attributes
                 for attr in all_attributes:
-                    if attr not in product_df.columns:
-                        product_df[attr] = None
-                    product_df['val'] = val
-                    product_dfs.append(product_df)
+                    if attr not in chunk_df.columns:
+                        chunk_df[attr] = None
 
-                if not product_dfs:
-                    print("Warning: product_dfs is empty")
-                    return pd.DataFrame(columns=all_attributes + ['val'])
+                chunk_df[ge.outcome_column] = outcome
 
-                product_dfs = pd.concat(product_dfs, axis=0)
-                print(f"Shape after concatenation: {product_dfs.shape}")
+                # Clean up the chunk
+                chunk_df = chunk_df.drop_duplicates()
+                chunk_df = chunk_df.dropna()
 
-                product_dfs = product_dfs.drop_duplicates()
-                print(f"Shape after drop_duplicates: {product_dfs.shape}")
+                return chunk_df
 
-                product_dfs = product_dfs.dropna()
-                print(f"Shape after dropna: {product_dfs.shape}")
+            all_dfs = []
 
-                if product_dfs.empty:
-                    print("Warning: product_dfs is empty after preprocessing")
-                    return pd.DataFrame(columns=all_attributes + ['val'])  # Ensure consistent columns
+            for subset, outcome in subsets:
+                # Calculate total number of combinations
+                total_combinations = 1
+                for values in subset.values():
+                    total_combinations *= len(values)
 
-                product_dfs[ge.outcome_column] = model.predict(product_dfs[list(ge.attributes)])
-                return product_dfs
+                # Process in chunks
+                for chunk_start in range(0, total_combinations, chunk_size):
+                    chunk_df = process_subset_chunk(subset, outcome, chunk_start, chunk_size)
+                    if not chunk_df.empty:
+                        all_dfs.append(chunk_df)
 
-        product_dfs1 = make_products_df(subsets1)
-        product_dfs2 = make_products_df(subsets2)
+            if not all_dfs:
+                return pd.DataFrame(columns=all_attributes + [ge.outcome_column])
+
+            return pd.concat(all_dfs, ignore_index=True)
+
+        # Process each subset group separately
+        product_dfs1 = make_products_df(subsets1, all_attributes)
+        product_dfs2 = make_products_df(subsets2, all_attributes)
 
         if product_dfs1.empty and product_dfs2.empty:
             print("Warning: Both product_dfs1 and product_dfs2 are empty")
-            return pd.DataFrame(columns=all_attributes + ['val', ge.outcome_column])
+            return pd.DataFrame(columns=all_attributes + [ge.outcome_column])
 
-        product_dfs = pd.concat([product_dfs1, product_dfs2])
+        product_dfs = pd.concat([product_dfs1, product_dfs2], ignore_index=True)
 
         def select_min_max(group):
-            min_val = group[ge.outcome_column].min()
-            max_val = group[ge.outcome_column].max()
-            if min_val != max_val:
-                min_rows = group[group[ge.outcome_column] == min_val]
-                max_rows = group[group[ge.outcome_column] == max_val]
-                min_row = min_rows.sample(n=1)
-                max_row = max_rows.sample(n=1)
-                return pd.concat([min_row, max_row])
-            else:
+            if len(group) < 2:
                 return pd.DataFrame()
 
-        product_dfs[ge.outcome_column] = model.predict(product_dfs[list(ge.attributes)])
+            min_val = group[ge.outcome_column].min()
+            max_val = group[ge.outcome_column].max()
+
+
+            if min_val == max_val:
+                return pd.DataFrame()
+
+            min_rows = group[group[ge.outcome_column] == min_val]
+            max_rows = group[group[ge.outcome_column] == max_val]
+            return pd.concat([min_rows.iloc[0:1], max_rows.iloc[0:1]])
+
+        # Group and process results
         grouping_cols = [k for k, v in ge.attributes.items() if not v]
-        grouped = product_dfs.groupby(grouping_cols)
-        filtered_groups = grouped.filter(lambda x: len(x) >= 2)
-        result = filtered_groups.groupby(grouping_cols).apply(select_min_max).reset_index(drop=True)
+        result = product_dfs.groupby(grouping_cols, group_keys=True).apply(select_min_max).reset_index(drop=True)
 
         if result.empty:
             print("Warning: result DataFrame is empty")
             return pd.DataFrame(columns=[
-                'group_id', *grouping_cols, *[col for col in all_attributes if col not in grouping_cols],
-                'val', ge.outcome_column, 'indv_key', 'couple_key', 'diff_outcome'
+                'group_id', *grouping_cols,
+                *[col for col in all_attributes if col not in grouping_cols],
+                ge.outcome_column, 'indv_key', 'couple_key', 'diff_outcome'
             ])
 
+        # Add required columns
         result['group_id'] = result.groupby(grouping_cols).ngroup()
-        other_cols = [col for col in result.columns if
-                      col not in grouping_cols and col != 'group_id' and col != ge.outcome_column]
+        other_cols = [col for col in result.columns
+                      if col not in grouping_cols + ['group_id', ge.outcome_column]]
         result = result[['group_id'] + grouping_cols + other_cols + [ge.outcome_column]]
-        result = result.sort_values(['group_id', ge.outcome_column])
-        result = result.reset_index(drop=True)
 
-        result['indv_key'] = result.apply(lambda row: '|'.join(str(int(row[col])) for col in list(ge.attributes)),
-                                          axis=1)
+        # Sort and process pairs
+        result = result.sort_values(['group_id', ge.outcome_column]).reset_index(drop=True)
+        result['indv_key'] = result.apply(
+            lambda row: '|'.join(str(int(row[col])) for col in list(ge.attributes)),
+            axis=1
+        )
         result['couple_key'] = result.groupby(result.index // 2)['indv_key'].transform('-'.join)
 
-        # Add a check to ensure we have pairs
-        if any(result.groupby('couple_key').size() != 2):
-            print("Warning: Not all couple_keys have exactly two individuals")
+        # Calculate outcome differences
+        result['diff_outcome'] = result.groupby('couple_key')[ge.outcome_column].transform(
+            lambda x: abs(x.diff().iloc[-1])
+        )
 
-        result['diff_outcome'] = result.groupby('couple_key')['outcome'].transform(lambda x: abs(x.diff().iloc[-1]))
-
-        # Ensure the result matches the ResultDF type
-        result: ResultDF = result.astype({
+        # Set correct types
+        result = result.astype({
             'group_id': 'int',
-            'val': 'float',  # or 'int' depending on actual type
             'outcome': 'int',
             'diff_outcome': 'int',
             'indv_key': 'str',
             'couple_key': 'str'
         })
 
-        # Dynamically set types for attribute columns
+        # Set types for attribute columns
         for attr in ge.attributes:
             if attr in result.columns:
-                result[attr] = result[attr].astype('float')  # Adjust based on your data
+                result[attr] = result[attr].astype('float')
 
         return result
 
@@ -158,26 +183,26 @@ def run_bias_scan(ge,
 
     # Perform bias scan
     l1, l2, subsets1 = bias_scan(data=ge.dataframe[list(ge.attributes)],
-                               observations=observations,
-                               expectations=expectations,
-                               verbose=True,
-                               num_iters=bias_scan_num_iters,
-                               scoring=bias_scan_scoring,
-                               favorable_value=bias_scan_favorable_value,
-                               overpredicted=True,
-                               mode=bias_scan_mode)
+                                 observations=observations,
+                                 expectations=expectations,
+                                 verbose=True,
+                                 num_iters=bias_scan_num_iters,
+                                 scoring=bias_scan_scoring,
+                                 favorable_value=bias_scan_favorable_value,
+                                 overpredicted=True,
+                                 mode=bias_scan_mode)
 
     d1, d2, subsets2 = bias_scan(data=ge.dataframe[list(ge.attributes)],
-                               observations=observations,
-                               expectations=expectations,
-                               verbose=True,
-                               num_iters=bias_scan_num_iters,
-                               scoring=bias_scan_scoring,
-                               favorable_value=bias_scan_favorable_value,
-                               overpredicted=False,
-                               mode=bias_scan_mode)
+                                 observations=observations,
+                                 expectations=expectations,
+                                 verbose=True,
+                                 num_iters=bias_scan_num_iters,
+                                 scoring=bias_scan_scoring,
+                                 favorable_value=bias_scan_favorable_value,
+                                 overpredicted=False,
+                                 mode=bias_scan_mode)
 
     # Format results
-    result_df = format_mdss_results(subsets1, subsets2, list(ge.attributes))
+    result_df = format_mdss_results(subsets1, subsets2, list(ge.attributes), ge)
 
     return result_df, {'accuracy': accuracy, 'report': report}

@@ -104,12 +104,6 @@ def save_dataset(dataset: DiscriminationData, params: Dict[str, Any]):
     }
     pd.DataFrame([metadata]).to_sql('datasets_metadata', conn, if_exists='append', index=False)
 
-    # Save relevance metrics if available
-    if hasattr(dataset, 'relevance_metrics') and isinstance(dataset.relevance_metrics, pd.DataFrame):
-        relevance_table_name = f"relevance_{param_hash(params)}"
-        dataset.relevance_metrics.to_sql(relevance_table_name, conn, if_exists='replace', index=True)
-        metadata['relevance_table_name'] = relevance_table_name
-
     conn.close()
     logger.debug(f"Dataset saved with parameters: {params}")
 
@@ -130,12 +124,6 @@ def load_all_datasets() -> List[Tuple[DiscriminationData, Dict[str, Any]]]:
         protected_attributes = json.loads(metadata['protected_attributes'])
         categorical_columns = json.loads(metadata['categorical_columns'])
 
-        # Load relevance metrics if available
-        relevance_metrics = None
-        if 'relevance_table_name' in metadata:
-            relevance_metrics = pd.read_sql(f"SELECT * FROM {metadata['relevance_table_name']}", conn,
-                                            index_col='group_key')
-
         # Create a DiscriminationData object
         dataset = DiscriminationData(
             dataframe=dataset_df,
@@ -147,9 +135,6 @@ def load_all_datasets() -> List[Tuple[DiscriminationData, Dict[str, Any]]]:
             hiddenlayers_depth=metadata['hiddenlayers_depth'],
             outcome_column=metadata['outcome_column']
         )
-
-        if relevance_metrics is not None:
-            dataset.relevance_metrics = relevance_metrics
 
         datasets.append((dataset, params))
 
