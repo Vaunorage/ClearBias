@@ -1,22 +1,9 @@
-from typing import Dict, List
-import matplotlib.pyplot as plt
-from matplotlib.cm import ScalarMappable
-import pandas as pd
-import numpy as np
-import seaborn as sns
-from matplotlib.colors import LinearSegmentedColormap, Normalize
-from data_generator.main import generate_data, generate_valid_correlation_matrix
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score, f1_score, recall_score
 from ucimlrepo import fetch_ucirepo
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Union
 import pandas as pd
 import numpy as np
 from scipy.stats import spearmanr, gaussian_kde
-from sklearn.preprocessing import LabelEncoder
 from data_generator.main import generate_data
 from sklearn.preprocessing import LabelEncoder
 
@@ -71,9 +58,6 @@ class DataSchema:
     attr_categories: List[List[Union[int, float]]]  # Now starts from 0
     protected_attr: List[str]
     attr_names: List[str]
-    binning_info: Dict[str, Dict[str, Union[List[float], str]]]
-    kde_distributions: Dict[str, gaussian_kde]
-    label_encoders: Dict[str, LabelEncoder]
     category_maps: Dict[str, Dict[Union[int, float], str]]
 
 
@@ -223,9 +207,6 @@ def generate_schema_from_dataframe(
         attr_categories=attr_categories,
         protected_attr=protected_attr,
         attr_names=attr_columns,
-        binning_info=binning_info,
-        kde_distributions=kde_distributions,
-        label_encoders=label_encoders,
         category_maps=category_maps
     )
 

@@ -584,21 +584,33 @@ class IndividualsGenerator:
             other_values = samples[mask][:, other_attrs]
             correlations = self.graph[attr][other_attrs]
 
+            # Add small epsilon to correlations to avoid extreme values
+            correlations = np.clip(correlations, 0.001, 0.999)
+
             for value in range(n_values):
                 prob_multipliers = np.ones(n_to_generate)
                 for i, other_attr_idx in enumerate(other_attrs_indices):
-                    corr = np.clip(correlations[i], 0.001, 0.999)  # Avoid extreme values
+                    corr = correlations[i]
                     attr_values = other_values[:, i]
                     matches = (attr_values == value)
-                    # Add small epsilon to avoid division by zero
+
+                    # Add small epsilon to denominator to avoid division by zero
                     divisor = max(n_values - 1, 1e-10)
                     prob_multipliers *= np.where(matches, corr, (1 - corr) / divisor)
+
                 corr_probs[:, value] = prob_multipliers
 
+            # Handle any remaining NaN values
             corr_probs = np.nan_to_num(corr_probs, nan=1.0 / n_values)
 
+            # Ensure no zero rows
+            zero_rows = np.all(corr_probs == 0, axis=1)
+            corr_probs[zero_rows] = uniform_probs[zero_rows]
+
             # Normalize correlation-based probabilities
-            corr_probs /= corr_probs.sum(axis=1, keepdims=True)
+            row_sums = corr_probs.sum(axis=1, keepdims=True)
+            row_sums = np.where(row_sums == 0, 1, row_sums)  # Avoid division by zero
+            corr_probs /= row_sums
 
             # Blend probabilities based on flexibility parameter
             final_probs = self.corr_matrix_randomness * corr_probs + (1 - self.corr_matrix_randomness) * uniform_probs
@@ -606,13 +618,15 @@ class IndividualsGenerator:
             # Add small noise to prevent identical outcomes
             noise = np.random.normal(0, 0.01, final_probs.shape)
             final_probs = np.abs(final_probs + noise)
-            final_probs /= final_probs.sum(axis=1, keepdims=True)
+
+            # Ensure valid probabilities
+            final_probs = np.maximum(final_probs, 0)
+            row_sums = final_probs.sum(axis=1, keepdims=True)
+            row_sums = np.where(row_sums == 0, 1, row_sums)
+            final_probs /= row_sums
 
             # Generate values
-            try:
-                samples[mask, attr] = np.array([np.random.choice(n_values, p=p) for p in final_probs])
-            except:
-                pass
+            samples[mask, attr] = np.array([np.random.choice(n_values, p=p) for p in final_probs])
 
         # Prepare features and generate outcomes
         X = (samples - np.mean(samples, axis=0)) / (np.std(samples, axis=0) + 1e-8)
