@@ -16,3 +16,4 @@ statsmodels
 doubleml
 seaborn
 hdbscan
+ucimlrepo

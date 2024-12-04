@@ -15,7 +15,7 @@ from tqdm import tqdm
 from dataclasses import dataclass, field
 from pandas import DataFrame
 from typing import Literal, TypeVar, Any, List, Dict, Tuple, Union, Optional
-from scipy.stats import norm, multivariate_normal, beta, stats, gaussian_kde
+from scipy.stats import norm, multivariate_normal, beta, stats, gaussian_kde, spearmanr
 import itertools
 import pandas as pd
 from scipy.optimize import minimize_scalar
@@ -168,7 +168,91 @@ def coefficient_of_variation(data):
     return cv
 
 
-def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attributes, prop_protected_attr):
+@dataclass
+class DataSchema:
+    attr_categories: List[List[str]]
+    protected_attr: List[str]
+    attr_names: List[str]
+
+
+def generate_schema_from_dataframe(
+        df: pd.DataFrame,
+        protected_columns: List[str] = None,
+        attr_prefix: str = "Attr",
+        ensure_positive_definite: bool = True
+) -> Tuple[DataSchema, np.ndarray]:
+    # Filter columns that start with the attribute prefix
+    attr_columns = list(df.columns)
+
+    if not attr_columns:
+        raise ValueError(f"No columns found starting with '{attr_prefix}'")
+
+    # If protected_columns not provided, infer from '_T' suffix
+    if protected_columns is None:
+        protected_columns = [col for col in attr_columns if col.endswith('_T')]
+
+    # Generate attr_categories
+    attr_categories = []
+    for col in attr_columns:
+        # Get unique values excluding NaN
+        unique_vals = sorted(df[col].dropna().unique())
+        # Convert to int if possible
+        try:
+            unique_vals = [int(x) for x in unique_vals]
+        except (ValueError, TypeError):
+            pass
+        # Ensure -1 is first if present
+        if -1 in unique_vals:
+            unique_vals.remove(-1)
+            unique_vals = [-1] + sorted(unique_vals)
+        attr_categories.append(unique_vals)
+
+    # Generate protected_attr flags
+    protected_attr = [col in protected_columns for col in attr_columns]
+
+    # Calculate correlation matrix using Spearman correlation
+    correlation_matrix = np.zeros((len(attr_columns), len(attr_columns)))
+    for i, col1 in enumerate(attr_columns):
+        for j, col2 in enumerate(attr_columns):
+            # Handle the case where we have constant columns
+            if df[col1].nunique() == 1 or df[col2].nunique() == 1:
+                correlation_matrix[i, j] = 1.0 if i == j else 0.0
+            else:
+                # Calculate Spearman correlation, ignoring -1 values
+                mask = (df[col1] != -1) & (df[col2] != -1)
+                if mask.any():
+                    corr, _ = spearmanr(df[col1][mask], df[col2][mask], nan_policy='omit')
+                    correlation_matrix[i, j] = corr if not np.isnan(corr) else 0.0
+                else:
+                    correlation_matrix[i, j] = 1.0 if i == j else 0.0
+
+    # Ensure the matrix is symmetric
+    correlation_matrix = (correlation_matrix + correlation_matrix.T) / 2
+
+    if ensure_positive_definite:
+        # Make the correlation matrix positive definite if needed
+        eigenvalues, eigenvectors = np.linalg.eigh(correlation_matrix)
+        if np.any(eigenvalues < 0):
+            # Replace negative eigenvalues with small positive values
+            eigenvalues[eigenvalues < 0] = 1e-6
+            correlation_matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+
+            # Rescale to ensure diagonal elements are 1
+            scaling = np.sqrt(np.diag(correlation_matrix))
+            correlation_matrix = correlation_matrix / scaling[:, None] / scaling[None, :]
+
+    # Create DataSchema
+    schema = DataSchema(
+        attr_categories=attr_categories,
+        protected_attr=protected_attr,
+        attr_names=attr_columns
+    )
+
+    return schema, correlation_matrix
+
+
+def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attributes,
+                         prop_protected_attr) -> DataSchema:
     attr_categories = []
     attr_names = []
 
@@ -197,7 +281,8 @@ def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attrib
             attr_names.append(f"Attr{i_x}_X")
             i_x += 1
 
-    return attr_categories, protected_attr, attr_names
+    res = DataSchema(attr_categories=attr_categories, protected_attr=protected_attr, attr_names=attr_names)
+    return res
 
 
 def bin_array_values(array, num_bins):
@@ -276,6 +361,10 @@ class DiscriminationData:
     @property
     def protected_attributes(self):
         return [k for k, v in self.attributes.items() if v]
+
+    @property
+    def non_protected_attributes(self):
+        return [k for k, v in self.attributes.items() if not v]
 
     @property
     def feature_names(self):
@@ -498,11 +587,15 @@ class IndividualsGenerator:
             for value in range(n_values):
                 prob_multipliers = np.ones(n_to_generate)
                 for i, other_attr_idx in enumerate(other_attrs_indices):
-                    corr = correlations[i]
+                    corr = np.clip(correlations[i], 0.001, 0.999)  # Avoid extreme values
                     attr_values = other_values[:, i]
                     matches = (attr_values == value)
-                    prob_multipliers *= np.where(matches, corr, (1 - corr) / (n_values - 1))
+                    # Add small epsilon to avoid division by zero
+                    divisor = max(n_values - 1, 1e-10)
+                    prob_multipliers *= np.where(matches, corr, (1 - corr) / divisor)
                 corr_probs[:, value] = prob_multipliers
+
+            corr_probs = np.nan_to_num(corr_probs, nan=1.0 / n_values)
 
             # Normalize correlation-based probabilities
             corr_probs /= corr_probs.sum(axis=1, keepdims=True)
@@ -516,7 +609,10 @@ class IndividualsGenerator:
             final_probs /= final_probs.sum(axis=1, keepdims=True)
 
             # Generate values
-            samples[mask, attr] = np.array([np.random.choice(n_values, p=p) for p in final_probs])
+            try:
+                samples[mask, attr] = np.array([np.random.choice(n_values, p=p) for p in final_probs])
+            except:
+                pass
 
         # Prepare features and generate outcomes
         X = (samples - np.mean(samples, axis=0)) / (np.std(samples, axis=0) + 1e-8)
@@ -658,8 +754,10 @@ def calculate_actual_metrics(data):
     data.dataframe['calculated_uncertainty_group'] = data.dataframe.apply(
         lambda x: (x['calculated_epistemic_group'] + x['calculated_aleatoric_group']) / 2, axis=1)
 
-    data.dataframe['calculated_intersectionality'] = data.dataframe['intersectionality_param'].copy()
-    data.dataframe['calculated_granularity'] = data.dataframe['granularity_param'].copy()
+    data.dataframe['calculated_intersectionality'] = data.dataframe['intersectionality_param'].copy() / len(
+        data.protected_attributes)
+    data.dataframe['calculated_granularity'] = data.dataframe['granularity_param'].copy() / len(
+        data.non_protected_attributes)
     data.dataframe['calculated_group_size'] = data.dataframe['group_size'].copy()
     data.dataframe['calculated_subgroup_ratio'] = data.dataframe['diff_subgroup_size'].copy()
     data.dataframe = data.dataframe.loc[:, ~data.dataframe.columns.duplicated()]
@@ -836,7 +934,7 @@ def generate_data(
         min_number_of_classes=None,
         max_number_of_classes=None,
         prop_protected_attr=0.2,
-        min_group_size=10,  # Added minimum group size parameter
+        min_group_size=10,
         max_group_size=100,
         min_similarity=0.0,
         max_similarity=1.0,
@@ -855,7 +953,8 @@ def generate_data(
         categorical_outcome: bool = True,
         nb_categories_outcome: int = 6,
         use_cache: bool = True,
-        corr_matrix_randomness=0.5
+        corr_matrix_randomness=0.5,
+        data_schema=None
 ) -> DiscriminationData:
     # Validate min_group_size
     if min_group_size >= max_group_size:
@@ -870,6 +969,7 @@ def generate_data(
     params = copy.deepcopy(locals())
     params = {k: v for k, v in params.items() if
               ((v is None or isinstance(v, (int, float, str, bool))) and '_debug_' not in k)}
+
     # Try to load from cache if use_cache is True
     if use_cache:
         cached_data = cache.load(params)
@@ -879,33 +979,59 @@ def generate_data(
 
     outcome_column = 'outcome'
 
+    # Handle data_schema-derived attributes
+    if data_schema is not None:
+        # Update nb_attributes based on schema
+        nb_attributes = len(data_schema.attr_categories)
+
+        # Extract attributes from schema
+        attr_categories = data_schema.attr_categories
+        sets_attr = data_schema.protected_attr
+        attr_names = data_schema.attr_names
+
+        # Update proportion of protected attributes
+        prop_protected_attr = sum(sets_attr) / len(sets_attr)
+
+        # Update min/max number of classes based on schema
+        if min_number_of_classes is None:
+            min_number_of_classes = min(len(cats) for cats in attr_categories)
+        if max_number_of_classes is None:
+            max_number_of_classes = max(len(cats) for cats in attr_categories)
+    else:
+        if min_number_of_classes is None or max_number_of_classes is None:
+            min_number_of_classes, max_number_of_classes = estimate_min_attributes_and_classes(nb_groups)
+            max_number_of_classes = int(min_number_of_classes * 1.5)
+
+        data_schema = generate_data_schema(
+            min_number_of_classes, max_number_of_classes, nb_attributes, prop_protected_attr
+        )
+        attr_categories, sets_attr, attr_names = data_schema.attr_categories, data_schema.protected_attr, data_schema.attr_names
+
+    # Generate correlation matrix if not provided
     if correlation_matrix is None:
         correlation_matrix = generate_valid_correlation_matrix(nb_attributes)
 
-    if min_number_of_classes is None or max_number_of_classes is None:
-        min_number_of_classes, max_number_of_classes = estimate_min_attributes_and_classes(nb_groups)
-        max_number_of_classes = int(min_number_of_classes * 1.5)
-
+    # Generate generation order if not provided
     if gen_order is None:
         gen_order = list(range(1, nb_attributes + 1))
         random.shuffle(gen_order)
 
+    # Generate weights if not provided
     if W is None:
         hiddenlayers_depth = 3
         W = np.random.uniform(low=0.0, high=1.0, size=(hiddenlayers_depth, nb_attributes))
 
-    attr_categories, sets_attr, attr_names = generate_data_schema(
-        min_number_of_classes, max_number_of_classes, nb_attributes, prop_protected_attr
-    )
-
+    # Get protected and unprotected indices
     protected_indexes = [index for index, value in enumerate(sets_attr) if value]
     unprotected_indexes = [index for index, value in enumerate(sets_attr) if not value]
 
+    # Update max_granularity and max_intersectionality based on available attributes
     max_granularity = max(1, len(unprotected_indexes)) if (max_granularity is None) or (
             max_granularity > len(unprotected_indexes)) else max_granularity
     max_intersectionality = max(1, len(protected_indexes)) if (max_intersectionality is None) or (
             max_intersectionality > len(protected_indexes)) else max_intersectionality
 
+    # Validate granularity and intersectionality constraints
     assert 0 < min_granularity <= max_granularity <= len(
         unprotected_indexes), 'min_granularity must be between 0 and max_granularity'
     assert 0 < min_intersectionality <= max_intersectionality <= len(
