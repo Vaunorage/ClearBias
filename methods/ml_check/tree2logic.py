@@ -51,7 +51,8 @@ def tree_to_code(tree, feature_names):
             f += "\n"
 
         else:
-            f += "{}return {}".format(indent, np.argmax(tree_.value[node][0]))
+            return_val = np.argmax(tree_.value[node][0])
+            f += "{}return {}".format(indent, return_val)
             f += "\n"
 
     recurse(0, 1)
@@ -150,6 +151,7 @@ def gen_tree_smt_fairness(tree, dfT, no_of_instances, outcome_class_name):
     feName_type = local_load('feNameType')
 
     f = ''
+    # First declare all variables
     for j in range(0, no_of_instances):
         for col in dfT.columns.tolist():
             fe_type = feName_type[col]
@@ -165,6 +167,24 @@ def gen_tree_smt_fairness(tree, dfT, no_of_instances, outcome_class_name):
         f += "; " + str(j) + "th element"
         f += '\n'
 
+    # Add range constraints based on min and max values
+    for j in range(0, no_of_instances):
+        f += f";-----------Range constraints for instance {j}--------------\n"
+        for col in dfT.columns.tolist():
+            col_min = dfT[col].min()
+            col_max = dfT[col].max()
+            fe_type = feName_type[col]
+
+            if 'int' in fe_type:
+                # For integer types, round min and max
+                col_min = int(np.floor(col_min))
+                col_max = int(np.ceil(col_max))
+                f += f"(assert (and (>= {col}{j} {col_min}) (<= {col}{j} {col_max})))\n"
+            elif 'float' in fe_type:
+                # For float types, use the exact values
+                f += f"(assert (and (>= {col}{j} {col_min}) (<= {col}{j} {col_max})))\n"
+        f += "\n"
+
     f += '(define-fun absoluteInt ((x Int)) Int \n'
     f += '  (ite (>= x 0) x (- x))) \n'
 
@@ -173,7 +193,7 @@ def gen_tree_smt_fairness(tree, dfT, no_of_instances, outcome_class_name):
 
     local_save(f, 'DecSmt', force_rewrite=True)
 
-    # Calling function to get the branch and convert it to z3 form,  creating alias
+    # Calling function to get the branch and convert it to z3 form, creating alias
     for i in range(0, no_of_instances):
         f = local_load('DecSmt')
         f += '\n;-----------' + str(i) + '-----------number instance-------------- \n'

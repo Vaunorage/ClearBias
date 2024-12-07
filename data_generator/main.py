@@ -14,25 +14,14 @@ from scipy.linalg import eigh
 from tqdm import tqdm
 from dataclasses import dataclass, field
 from pandas import DataFrame
-from typing import Literal, TypeVar, Any, List, Dict, Tuple, Union, Optional
-from scipy.stats import norm, multivariate_normal, beta, stats, gaussian_kde, spearmanr
-import itertools
+from typing import Literal, TypeVar, Any, List, Dict, Tuple, Optional
+from scipy.stats import norm, multivariate_normal, spearmanr
 import pandas as pd
-from scipy.optimize import minimize_scalar
-from scipy.stats import bernoulli
-from matplotlib.colors import Normalize
-from matplotlib.cm import ScalarMappable
 import warnings
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, f1_score, recall_score
-from sklearn.preprocessing import LabelEncoder
-import matplotlib.pyplot as plt
-import seaborn as sns
-from matplotlib.colors import LinearSegmentedColormap
 
 from data_generator.main_old import DiscriminationData
 from path import HERE
+from uncertainty_quantification.main import UncertaintyRandomForest, AleatoricUncertainty, EpistemicUncertainty
 
 warnings.filterwarnings("ignore")
 # Ignore specific warnings
@@ -683,58 +672,73 @@ def calculate_actual_similarity(data):
     return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_similarity)
 
 
-class UncertaintyRandomForest(RandomForestClassifier):
-    def __init__(self, n_estimators=100, max_depth=10, **kwargs):
-        super().__init__(n_estimators=n_estimators, max_depth=max_depth, **kwargs)
-
-    def predict_with_uncertainty(self, X):
-        # Remove feature names before prediction
-        X_array = X.values if hasattr(X, 'values') else X
-
-        # Get predictions from all trees
-        predictions = []
-        for tree in self.estimators_:
-            # Get probabilistic predictions
-            leaf_id = tree.apply(X_array)
-            tree_pred = tree.tree_.value[leaf_id].reshape(-1, self.n_classes_)
-            # Normalize predictions
-            tree_pred = tree_pred / np.sum(tree_pred, axis=1, keepdims=True)
-            predictions.append(tree_pred[:, 1])  # Get probability of positive class
-
-        predictions = np.array(predictions).T  # Shape: (n_samples, n_estimators)
-
-        # Calculate mean predictions
-        mean_pred = np.mean(predictions, axis=1)
-
-        # Calculate uncertainties
-        epistemic = np.var(predictions, axis=1)  # Between-model variance
-        aleatoric = np.mean(predictions * (1 - predictions), axis=1)  # Within-model variance
-
-        return mean_pred.reshape(-1, 1), epistemic, aleatoric
-
-
 def calculate_actual_uncertainties(data):
-    """
-    Calculate the actual epistemic and aleatoric uncertainties for each group.
-    """
-    X = data.dataframe[data.feature_names]
-    y = data.dataframe[data.outcome_column]
+    X = data.dataframe[data.feature_names].values  # Convert to numpy array
+    y = data.dataframe[data.outcome_column].values  # Convert to numpy array
 
+    # Initialize base random forest for comparison
     urf = UncertaintyRandomForest(n_estimators=50, random_state=42)
     urf.fit(X, y)
+    mean_pred, base_epistemic, base_aleatoric = urf.predict_with_uncertainty(X)
 
-    mean_pred, epistemic, aleatoric = urf.predict_with_uncertainty(X)
+    # Initialize result columns
+    data.dataframe['calculated_epistemic_random_forest'] = base_epistemic
+    data.dataframe['calculated_aleatoric_random_forest'] = base_aleatoric
 
-    data.dataframe['calculated_epistemic'] = epistemic
-    data.dataframe['calculated_aleatoric'] = aleatoric
+    # Calculate all Aleatoric Uncertainties
+    aleatoric_methods = ['entropy', 'probability_margin', 'label_smoothing']
+    for method in aleatoric_methods:
+        aleatoric_model = AleatoricUncertainty(
+            method=method,
+            temperature=1.0
+        )
+        aleatoric_model.fit(X, y)
+        probs, aleatoric_uncertainty = aleatoric_model.predict_uncertainty(X)
+        data.dataframe[f'calculated_aleatoric_{method}'] = aleatoric_uncertainty
 
-    res = data.dataframe.groupby('group_key').agg({
-        'calculated_epistemic': 'mean',
-        'calculated_aleatoric': 'mean'
-    })
+    # Calculate all Epistemic Uncertainties
+    epistemic_methods = ['ensemble', 'mc_dropout', 'evidential']
+    epistemic_params = {
+        'ensemble': {'n_estimators': 5, 'dropout_rate': None, 'n_forward_passes': None},
+        'mc_dropout': {'n_estimators': None, 'dropout_rate': 0.5, 'n_forward_passes': 30},
+        'evidential': {'n_estimators': None, 'dropout_rate': None, 'n_forward_passes': None}
+    }
 
+    for method in epistemic_methods:
+        params = epistemic_params[method]
+        epistemic_model = EpistemicUncertainty(
+            method=method,
+            n_estimators=params['n_estimators'],
+            dropout_rate=params['dropout_rate'],
+            n_forward_passes=params['n_forward_passes']
+        )
+        epistemic_model.fit(X, y)
+        probs, epistemic_uncertainty = epistemic_model.predict_uncertainty(X)
+        data.dataframe[f'calculated_epistemic_{method}'] = epistemic_uncertainty
+
+    # Aggregate results by group
+    uncertainty_columns = [col for col in data.dataframe.columns
+                           if col.startswith('calculated_')]
+
+    res = data.dataframe.groupby('group_key')[uncertainty_columns].agg('mean')
+
+    # Add combined uncertainty metrics for all combinations
+    for epistemic_method in epistemic_methods:
+        for aleatoric_method in aleatoric_methods:
+            combined_col = f'combined_{epistemic_method}_{aleatoric_method}'
+            res[combined_col] = (
+                    res[f'calculated_epistemic_{epistemic_method}'] +
+                    res[f'calculated_aleatoric_{aleatoric_method}']
+            )
+
+    # Add summary statistics
+    res['calculated_epistemic'] = res[[col for col in res.columns
+                                 if col.startswith('calculated_epistemic')]].mean(axis=1)
+    res['calculated_aleatoric'] = res[[col for col in res.columns
+                                 if col.startswith('calculated_aleatoric')]].mean(axis=1)
+    res['calculated_combined'] = res[[col for col in res.columns
+                                if col.startswith('combined')]].mean(axis=1)
     return res
-
 
 def calculate_actual_mean_diff_outcome(data):
     def calculate_group_diff(group_data):
