@@ -123,12 +123,13 @@ class DataCache:
 
 
 class GaussianCopulaCategorical:
-    def __init__(self, marginals, correlation_matrix, excluded_combinations=None):
+    def __init__(self, marginals, correlation_matrix, excluded_combinations=None, corr_matrix_randomness=1.0):
         self.marginals = [np.array(m) for m in marginals]
         self.correlation_matrix = np.array(correlation_matrix)
         self.dim = len(marginals)
         self.excluded_combinations = set(map(tuple, excluded_combinations or []))
         self.cum_probabilities = [np.cumsum(m[:-1]) for m in self.marginals]
+        self.corr_matrix_randomness = corr_matrix_randomness
 
     def is_excluded(self, sample):
         return tuple(sample) in self.excluded_combinations
@@ -136,9 +137,17 @@ class GaussianCopulaCategorical:
     def generate_samples(self, n_samples):
         samples = []
         while len(samples) < n_samples:
-            gaussian_samples = multivariate_normal.rvs(mean=np.zeros(self.dim),
-                                                       cov=self.correlation_matrix,
-                                                       size=1).flatten()
+            if self.corr_matrix_randomness > 0:
+                # Use correlation matrix with specified randomness
+                effective_corr = (self.correlation_matrix * self.corr_matrix_randomness +
+                                  np.eye(self.dim) * (1 - self.corr_matrix_randomness))
+                gaussian_samples = multivariate_normal.rvs(mean=np.zeros(self.dim),
+                                                           cov=effective_corr,
+                                                           size=1).flatten()
+            else:
+                # Generate independent samples when Scorr_matrix_randomness = 0
+                gaussian_samples = np.random.normal(0, 1, self.dim)
+
             uniform_samples = norm.cdf(gaussian_samples)
             categorical_sample = np.zeros(self.dim, dtype=int)
             for i in range(self.dim):
@@ -733,12 +742,13 @@ def calculate_actual_uncertainties(data):
 
     # Add summary statistics
     res['calculated_epistemic'] = res[[col for col in res.columns
-                                 if col.startswith('calculated_epistemic')]].mean(axis=1)
+                                       if col.startswith('calculated_epistemic')]].mean(axis=1)
     res['calculated_aleatoric'] = res[[col for col in res.columns
-                                 if col.startswith('calculated_aleatoric')]].mean(axis=1)
+                                       if col.startswith('calculated_aleatoric')]].mean(axis=1)
     res['calculated_combined'] = res[[col for col in res.columns
-                                if col.startswith('combined')]].mean(axis=1)
+                                      if col.startswith('combined')]].mean(axis=1)
     return res
+
 
 def calculate_actual_mean_diff_outcome(data):
     def calculate_group_diff(group_data):
@@ -835,12 +845,14 @@ def create_group(granularity, intersectionality,
     # Generate samples based on the new ordered attributes
     subgroup1_p_vals = [random.choices(list(range(len(e))), k=len(e)) for e in subgroup_sets]
     subgroup1_p_vals = [safe_normalize(p) for p in subgroup1_p_vals]
-    subgroup1_sample = GaussianCopulaCategorical(subgroup1_p_vals, correlation_matrix).generate_samples(1)
+    subgroup1_sample = GaussianCopulaCategorical(
+        subgroup1_p_vals, correlation_matrix, corr_matrix_randomness=corr_matrix_randomness).generate_samples(1)
     subgroup1_vals = [subgroup_sets[i][e] for i, e in enumerate(subgroup1_sample[0])]
 
     subgroup2_p_vals = generate_subgroup2_probabilities(subgroup1_vals, subgroup_sets, similarity, sets_attr)
     subgroup2_sample = GaussianCopulaCategorical(subgroup2_p_vals, correlation_matrix,
-                                                 list(subgroup1_sample)).generate_samples(1)
+                                                 list(subgroup1_sample),
+                                                 corr_matrix_randomness=corr_matrix_randomness).generate_samples(1)
     subgroup2_vals = [subgroup_sets[i][e] for i, e in enumerate(subgroup2_sample[0])]
 
     # Calculate total group size based on frequency while respecting min and max constraints
