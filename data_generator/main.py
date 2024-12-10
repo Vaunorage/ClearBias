@@ -610,8 +610,9 @@ class IndividualsGenerator:
             row_sums = np.where(row_sums == 0, 1, row_sums)  # Avoid division by zero
             corr_probs /= row_sums
 
+
             # Blend probabilities based on flexibility parameter
-            final_probs = self.corr_matrix_randomness * corr_probs + (1 - self.corr_matrix_randomness) * uniform_probs
+            final_probs = (1 - self.corr_matrix_randomness) * corr_probs + self.corr_matrix_randomness * uniform_probs
 
             # Add small noise to prevent identical outcomes
             noise = np.random.normal(0, 0.01, final_probs.shape)
