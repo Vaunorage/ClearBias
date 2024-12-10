@@ -13,6 +13,7 @@ data = generate_data(
     nb_groups=100,
     max_group_size=100,
     categorical_outcome=True,
-    nb_categories_outcome=4)
+    nb_categories_outcome=4,
+    corr_matrix_randomness=1)
 
 print(f"Generated {len(data.dataframe)} samples in {data.nb_groups} groups")

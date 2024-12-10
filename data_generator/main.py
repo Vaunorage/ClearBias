@@ -128,34 +128,73 @@ class GaussianCopulaCategorical:
         self.correlation_matrix = np.array(correlation_matrix)
         self.dim = len(marginals)
         self.excluded_combinations = set(map(tuple, excluded_combinations or []))
-        self.cum_probabilities = [np.cumsum(m[:-1]) for m in self.marginals]
-        self.corr_matrix_randomness = corr_matrix_randomness
+        self.corr_matrix_randomness = np.clip(corr_matrix_randomness, 0.0, 1.0)
+
+        # Convert marginal probabilities to cumulative probabilities
+        self.cum_probabilities = []
+        for m in self.marginals:
+            cum_prob = np.cumsum(m)
+            # Ensure last probability is exactly 1
+            cum_prob = cum_prob / cum_prob[-1]
+            self.cum_probabilities.append(cum_prob[:-1])
 
     def is_excluded(self, sample):
         return tuple(sample) in self.excluded_combinations
 
     def generate_samples(self, n_samples):
         samples = []
-        while len(samples) < n_samples:
-            if self.corr_matrix_randomness > 0:
-                # Use correlation matrix with specified randomness
-                effective_corr = (self.correlation_matrix * self.corr_matrix_randomness +
-                                  np.eye(self.dim) * (1 - self.corr_matrix_randomness))
-                gaussian_samples = multivariate_normal.rvs(mean=np.zeros(self.dim),
-                                                           cov=effective_corr,
-                                                           size=1).flatten()
-            else:
-                # Generate independent samples when Scorr_matrix_randomness = 0
-                gaussian_samples = np.random.normal(0, 1, self.dim)
+        attempts = 0
+        max_attempts = n_samples * 10
 
-            uniform_samples = norm.cdf(gaussian_samples)
-            categorical_sample = np.zeros(self.dim, dtype=int)
-            for i in range(self.dim):
-                categorical_sample[i] = np.searchsorted(self.cum_probabilities[i], uniform_samples[i])
+        while len(samples) < n_samples and attempts < max_attempts:
+            if self.corr_matrix_randomness == 1.0:
+                # Completely random sampling
+                categorical_sample = np.array([
+                    np.random.choice(len(m), p=m)
+                    for m in self.marginals
+                ])
+            elif self.corr_matrix_randomness == 0.0:
+                # Strict correlation-based sampling
+                gaussian_samples = np.random.multivariate_normal(
+                    mean=np.zeros(self.dim),
+                    cov=self.correlation_matrix,
+                    size=1
+                ).flatten()
+                uniform_samples = norm.cdf(gaussian_samples)
+                categorical_sample = np.array([
+                    np.searchsorted(cum_prob, u)
+                    for cum_prob, u in zip(self.cum_probabilities, uniform_samples)
+                ])
+            else:
+                # Blend between random and correlated sampling
+                if np.random.random() < self.corr_matrix_randomness:
+                    # Random sampling
+                    categorical_sample = np.array([
+                        np.random.choice(len(m), p=m)
+                        for m in self.marginals
+                    ])
+                else:
+                    # Correlation-based sampling
+                    gaussian_samples = np.random.multivariate_normal(
+                        mean=np.zeros(self.dim),
+                        cov=self.correlation_matrix,
+                        size=1
+                    ).flatten()
+                    uniform_samples = norm.cdf(gaussian_samples)
+                    categorical_sample = np.array([
+                        np.searchsorted(cum_prob, u)
+                        for cum_prob, u in zip(self.cum_probabilities, uniform_samples)
+                    ])
+
             if not self.is_excluded(categorical_sample):
                 samples.append(categorical_sample)
-        return np.array(samples)
 
+            attempts += 1
+
+        if len(samples) < n_samples:
+            raise RuntimeError(f"Could only generate {len(samples)} valid samples out of {n_samples} requested")
+
+        return np.array(samples)
 
 def coefficient_of_variation(data):
     mean = np.mean(data)
