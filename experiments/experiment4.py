@@ -157,9 +157,12 @@ def evaluate_discrimination_detection(
     """
     synthetic_data = ge.dataframe
 
-    # Pre-compute frequently used values
+    # Update calculated properties to match new column names
     calculated_properties = [
-        'calculated_epistemic', 'calculated_aleatoric',
+        'calculated_epistemic_random_forest', 'calculated_aleatoric_random_forest',
+        'calculated_aleatoric_entropy', 'calculated_aleatoric_probability_margin',
+        'calculated_aleatoric_label_smoothing', 'calculated_epistemic_ensemble',
+        'calculated_epistemic_mc_dropout', 'calculated_epistemic_evidential',
         'calculated_epistemic_group', 'calculated_aleatoric_group', 'calculated_magnitude',
         'calculated_group_size', 'calculated_granularity', 'calculated_intersectionality',
         'calculated_uncertainty_group', 'calculated_similarity', 'calculated_subgroup_ratio'
@@ -171,9 +174,12 @@ def evaluate_discrimination_detection(
         synthetic_data[['indv_key', 'group_key', 'subgroup_key']].astype(str)
     )
 
+    # Update attribute column detection
+    attr_columns = [col for col in synthetic_data.columns if
+                    col.startswith(('Attr1_', 'Attr2_', 'Attr3_', 'Attr4_', 'Attr5_', 'Attr6_', 'Attr7_'))]
+
     if ge.attr_possible_values is None:
-        data_schema = get_column_values(
-            synthetic_data[list(filter(lambda x: 'Attr' in x, synthetic_data.columns))].drop_duplicates())
+        data_schema = get_column_values(synthetic_data[attr_columns].drop_duplicates())
         data_schema = '|'.join([''.join(list(map(str, e))) for e in data_schema])
     else:
         data_schema = ge.schema
@@ -209,7 +215,7 @@ def evaluate_discrimination_detection(
                 **{prop: calc_stats.loc['mean', prop] for prop in calculated_properties},
                 **{
                     f"{prop}_{stat}": calc_stats.loc[stat, prop]
-                    for prop in ['calculated_epistemic', 'calculated_aleatoric']
+                    for prop in ['calculated_epistemic_random_forest', 'calculated_aleatoric_random_forest']
                     for stat in ['min', 'max', 'median']
                 }
             }
@@ -303,7 +309,7 @@ def evaluate_discrimination_detection(
             **{prop: calc_stats.loc['mean', prop] for prop in calculated_properties},
             **{
                 f"{prop}_{stat}": calc_stats.loc[stat, prop]
-                for prop in ['calculated_epistemic', 'calculated_aleatoric']
+                for prop in ['calculated_epistemic_random_forest', 'calculated_aleatoric_random_forest']
                 for stat in ['min', 'max', 'median']
             }
         }
@@ -322,7 +328,8 @@ def evaluate_discrimination_detection(
         # Use cached pattern matching
         matching_groups = [
             group_key for group_key, patterns in group_patterns.items()
-            if matches_pattern(group_key, couple_key, data_schema)
+            if
+            matches_pattern(patterns[0], indv_key, data_schema) or matches_pattern(patterns[1], indv_key, data_schema)
         ]
 
         return pd.Series({
@@ -351,7 +358,6 @@ def evaluate_discrimination_detection(
 
     return group_analysis_df, results_df, metrics_df
 
-
 class ExperimentRunner:
     def __init__(self, db_path: str = "experiments.db", output_dir: str = "output_dir"):
         self.db_path = Path(db_path)
@@ -360,7 +366,7 @@ class ExperimentRunner:
         self.setup_database()
 
     def setup_database(self):
-        """Setup database tables with attribute and outcome data stored as JSON"""
+        """Setup database tables with updated schema for new uncertainty metrics"""
         # Create empty DataFrames with base schema
         experiments_df = pd.DataFrame(columns=[
             'experiment_id', 'config', 'methods', 'status',
@@ -376,29 +382,52 @@ class ExperimentRunner:
             'analysis_id', 'experiment_id', 'method_name', 'created_at'
         ])
 
-        # Add all possible attribute columns to augmented_results schema
         augmented_results_df = pd.DataFrame(columns=[
             'analysis_id', 'indv_key', 'couple_key', 'is_original_data',
             'is_couple_part_of_a_group',
             'matching_groups', 'data'
         ])
 
+        # Updated schema for evaluated_results with new uncertainty metrics
         evaluated_results_df = pd.DataFrame(columns=[
             'analysis_id',
-            'group_key', 'synthetic_group_size', 'nb_unique_indv',
-            'individuals_part_of_original_data', 'couples_part_of_original_data',
+            'group_key',
+            'synthetic_group_size',
+            'nb_unique_indv',
+            'individuals_part_of_original_data',
+            'couples_part_of_original_data',
             'new_individuals_part_of_a_group_regex',
-            'new_couples_part_of_a_group_regex', 'num_exact_individual_matches',
-            'num_exact_couple_matches', 'num_new_group_individuals',
-            'num_new_group_couples', 'calculated_epistemic', 'calculated_aleatoric',
-            'calculated_epistemic_group', 'calculated_aleatoric_group',
-            'calculated_magnitude', 'calculated_group_size',
-            'calculated_granularity', 'calculated_intersectionality',
-            'calculated_uncertainty_group', 'calculated_similarity',
-            'calculated_subgroup_ratio', 'calculated_epistemic_min',
-            'calculated_epistemic_max', 'calculated_epistemic_median',
-            'calculated_aleatoric_min', 'calculated_aleatoric_max',
-            'calculated_aleatoric_median'])
+            'new_couples_part_of_a_group_regex',
+            'num_exact_individual_matches',
+            'num_exact_couple_matches',
+            'num_new_group_individuals',
+            'num_new_group_couples',
+            # New uncertainty metrics
+            'calculated_epistemic_random_forest',
+            'calculated_aleatoric_random_forest',
+            'calculated_aleatoric_entropy',
+            'calculated_aleatoric_probability_margin',
+            'calculated_aleatoric_label_smoothing',
+            'calculated_epistemic_ensemble',
+            'calculated_epistemic_mc_dropout',
+            'calculated_epistemic_evidential',
+            'calculated_epistemic_group',
+            'calculated_aleatoric_group',
+            'calculated_magnitude',
+            'calculated_uncertainty_group',
+            'calculated_intersectionality',
+            'calculated_granularity',
+            'calculated_group_size',
+            'calculated_similarity',
+            'calculated_subgroup_ratio',
+            # Min/max/median for main uncertainties
+            'calculated_epistemic_random_forest_min',
+            'calculated_epistemic_random_forest_max',
+            'calculated_epistemic_random_forest_median',
+            'calculated_aleatoric_random_forest_min',
+            'calculated_aleatoric_random_forest_max',
+            'calculated_aleatoric_random_forest_median'
+        ])
 
         synthetic_data_df = pd.DataFrame(columns=[
             'synthetic_data_id', 'experiment_id',
@@ -1154,11 +1183,11 @@ def run_experiments(configs: List[ExperimentConfig], methods: Set[Method] = None
 
 
 # %%
-DB_PATH = HERE.joinpath("experiments/discrimination_detection_results8.db").as_posix()
+DB_PATH = HERE.joinpath("experiments/discrimination_detection_results11.db").as_posix()
 FIGURES_PATH = HERE.joinpath("experiments/figures").as_posix()
 
 # %%
-for meth in [Method.AEQUITAS, Method.EXPGA, Method.BIASSCAN]:
+for meth in [Method.AEQUITAS, Method.EXPGA, Method.MLCHECK, Method.BIASSCAN]:
     methods = {meth}
     configs = create_method_configurations(methods=methods)
     run_experiments(configs, methods=methods, db_path=DB_PATH)
