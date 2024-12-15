@@ -1,3 +1,5 @@
+import math
+
 import pandas as pd
 import numpy as np
 import random as rd
@@ -162,7 +164,7 @@ class OracleDataGenerator:
 
 class PropertyChecker:
     def __init__(self, output_class_name, all_attributes, categorical_columns, max_samples=1000,
-                 deadline=500000, model=None,
+                 deadline=300, model=None,
                  no_of_params=None, mul_cex=False, white_box_model="Decision tree", no_of_class=None,
                  no_EPOCHS=100, train_data_available=False, train_data_loc="", multi_label=False,
                  model_path="", no_of_train=1000, train_ratio=100):
@@ -228,6 +230,7 @@ class RunChecker:
         self._initialize_model()
         self._save_initial_data()
         self.discriminatory_cases = []
+        self.total_candidates = 0
 
     def _initialize_data(self):
         self.df = local_load('OracleData')
@@ -313,36 +316,48 @@ class RunChecker:
         return False
 
     def run_prop_check(self):
+        print("\n=== Starting Property Check ===")
         self.initialize_parameters()
 
+        iteration = 0
         while self.count < self.max_samples and not self.is_timeout():
-            # print(f'count is: {self.count}')
+            print(f"\n--- Iteration {iteration} ---")
+            print(f"Current count: {self.count}")
+            print(f"Max samples: {self.max_samples}")
 
             tree = self.train_and_prepare_tree()
 
             if not self.check_satisfiability():
+                print("Satisfiability check failed")
                 return self.handle_unsatisfiable_case()
 
             self.process_candidate_set(tree)
 
             if not self.process_pruned_candidates():
+                print("Pruned candidates check failed")
                 continue
 
             self.update_count()
+            print(f"Count after update: {self.count}")
 
             if self.process_counterexamples():
                 if not self.mul_cex:
+                    print("Found counter example, saving and returning")
                     self.save_discriminatory_cases()
                     return 1
 
             if self.retrain_flag:
                 self.create_oracle()
 
+            iteration += 1
+
+        print("\n=== Property Check Complete ===")
         result = self.finalize_results()
         self.save_discriminatory_cases()
         return result
 
     def initialize_parameters(self):
+        print("\n--- Initializing Parameters ---")
         self.retrain_flag = False
         self.MAX_CAND_ZERO = 5
         self.count_cand_zero = 0
@@ -352,6 +367,10 @@ class RunChecker:
         self.mul_cex = self.paramDict['mul_cex_opt']
         self.deadline = int(self.paramDict['deadlines'])
         self.start_time = time.time()
+        self.total_candidates = 0
+        print(f"Initial count: {self.count}")
+        print(f"Max samples: {self.max_samples}")
+        print(f"Number of params: {self.no_of_params}")
 
     def is_timeout(self):
         return (time.time() - self.start_time) > self.deadline
@@ -394,7 +413,10 @@ class RunChecker:
         return cex_count
 
     def process_candidate_set(self, tree):
+        print("\n--- Processing Candidate Set ---")
         df = local_load('formatted_z3_output')
+        print(f"Initial Z3 output shape: {df.shape}")
+
         local_save(df, 'CandidateSet', force_rewrite=True)
         local_save(df, 'TestDataSMTMain', force_rewrite=True)
 
@@ -404,24 +426,35 @@ class RunChecker:
 
         df_smt_inst = local_load('CandidateSetInst')
         df_smt_branch = local_load('CandidateSetBranch')
+        print(f"Instance pruning results shape: {df_smt_inst.shape}")
+        print(f"Branch pruning results shape: {df_smt_branch.shape}")
 
         pruned_candidates_result = pd.concat([df_smt_inst, df_smt_branch])
         local_save(pruned_candidates_result, 'CandidateSet')
 
         dfCandidate = local_load('CandidateSet')
-
         testMatrix = self.remove_duplicates_from_candidate_set(dfCandidate)
+        print(f"Test matrix shape after removing duplicates: {testMatrix.shape}")
 
+        # Convert to DataFrame
         testMatrix = pd.DataFrame(testMatrix, columns=dfCandidate.columns)
-        testMatrix = testMatrix[(testMatrix.T != 0).any()]
+
+        # Only remove rows where ALL values are zero (changed from any to all)
+        non_zero_mask = ~(testMatrix == 0).all(axis=1)
+        testMatrix = testMatrix[non_zero_mask]
+        print(f"Test matrix shape after removing all-zero rows: {testMatrix.shape}")
 
         local_save(testMatrix, 'TestSet')
         if not testMatrix.empty:
+            new_candidates = len(testMatrix)
+            self.total_candidates += new_candidates
+            print(f"Added {new_candidates} new candidates. Total candidates now: {self.total_candidates}")
+
             testMatrix['indv_key'] = testMatrix.apply(
                 lambda row: '|'.join(str(int(row[col])) for col in self.paramDict['attributes']), axis=1)
             testMatrix['couple_key'] = testMatrix.groupby(testMatrix.index // 2)['indv_key'].transform('-'.join)
-
         else:
+            print("No valid candidates found in this iteration")
             testMatrix['indv_key'] = ''
             testMatrix['couple_key'] = ''
 
@@ -471,8 +504,12 @@ class RunChecker:
         return cex_count + 1
 
     def update_count(self):
-        dfCand = local_load('Cand-Set')
-        self.count += round(dfCand.shape[0] / self.no_of_params)
+        old_count = self.count
+        self.count = math.ceil(self.total_candidates / self.no_of_params)
+        print(f"\n--- Updating Count ---")
+        print(f"Total candidates: {self.total_candidates}")
+        print(f"Number of params: {self.no_of_params}")
+        print(f"Count updated from {old_count} to {self.count}")
 
     def convert_data_instance(self, X, df, index):
         param_dict = local_load('param_dict')

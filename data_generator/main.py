@@ -130,6 +130,9 @@ class GaussianCopulaCategorical:
         self.excluded_combinations = set(map(tuple, excluded_combinations or []))
         self.corr_matrix_randomness = np.clip(corr_matrix_randomness, 0.0, 1.0)
 
+        # Validate and normalize probability distributions
+        self.validate_and_normalize_marginals()
+
         # Convert marginal probabilities to cumulative probabilities
         self.cum_probabilities = []
         for m in self.marginals:
@@ -137,6 +140,26 @@ class GaussianCopulaCategorical:
             # Ensure last probability is exactly 1
             cum_prob = cum_prob / cum_prob[-1]
             self.cum_probabilities.append(cum_prob[:-1])
+
+    def validate_and_normalize_marginals(self):
+        """Validate and normalize probability distributions, handling edge cases."""
+        for i in range(len(self.marginals)):
+            m = self.marginals[i]
+
+            # Replace any NaN values with 0
+            m = np.nan_to_num(m, nan=0.0)
+
+            # Ensure all probabilities are non-negative
+            m = np.maximum(m, 0.0)
+
+            # If sum is 0, create uniform distribution
+            if np.sum(m) == 0:
+                m = np.ones_like(m) / len(m)
+            else:
+                # Normalize to sum to 1
+                m = m / np.sum(m)
+
+            self.marginals[i] = m
 
     def is_excluded(self, sample):
         return tuple(sample) in self.excluded_combinations
@@ -147,34 +170,15 @@ class GaussianCopulaCategorical:
         max_attempts = n_samples * 10
 
         while len(samples) < n_samples and attempts < max_attempts:
-            if self.corr_matrix_randomness == 1.0:
-                # Completely random sampling
-                categorical_sample = np.array([
-                    np.random.choice(len(m), p=m)
-                    for m in self.marginals
-                ])
-            elif self.corr_matrix_randomness == 0.0:
-                # Strict correlation-based sampling
-                gaussian_samples = np.random.multivariate_normal(
-                    mean=np.zeros(self.dim),
-                    cov=self.correlation_matrix,
-                    size=1
-                ).flatten()
-                uniform_samples = norm.cdf(gaussian_samples)
-                categorical_sample = np.array([
-                    np.searchsorted(cum_prob, u)
-                    for cum_prob, u in zip(self.cum_probabilities, uniform_samples)
-                ])
-            else:
-                # Blend between random and correlated sampling
-                if np.random.random() < self.corr_matrix_randomness:
-                    # Random sampling
+            try:
+                if self.corr_matrix_randomness == 1.0:
+                    # Completely random sampling
                     categorical_sample = np.array([
                         np.random.choice(len(m), p=m)
                         for m in self.marginals
                     ])
-                else:
-                    # Correlation-based sampling
+                elif self.corr_matrix_randomness == 0.0:
+                    # Strict correlation-based sampling
                     gaussian_samples = np.random.multivariate_normal(
                         mean=np.zeros(self.dim),
                         cov=self.correlation_matrix,
@@ -185,9 +189,34 @@ class GaussianCopulaCategorical:
                         np.searchsorted(cum_prob, u)
                         for cum_prob, u in zip(self.cum_probabilities, uniform_samples)
                     ])
+                else:
+                    # Blend between random and correlated sampling
+                    if np.random.random() < self.corr_matrix_randomness:
+                        # Random sampling
+                        categorical_sample = np.array([
+                            np.random.choice(len(m), p=m)
+                            for m in self.marginals
+                        ])
+                    else:
+                        # Correlation-based sampling
+                        gaussian_samples = np.random.multivariate_normal(
+                            mean=np.zeros(self.dim),
+                            cov=self.correlation_matrix,
+                            size=1
+                        ).flatten()
+                        uniform_samples = norm.cdf(gaussian_samples)
+                        categorical_sample = np.array([
+                            np.searchsorted(cum_prob, u)
+                            for cum_prob, u in zip(self.cum_probabilities, uniform_samples)
+                        ])
 
-            if not self.is_excluded(categorical_sample):
-                samples.append(categorical_sample)
+                if not self.is_excluded(categorical_sample):
+                    samples.append(categorical_sample)
+
+            except (ValueError, IndexError) as e:
+                print(f"Warning: Caught error during sample generation: {str(e)}")
+                # Re-normalize probabilities and try again
+                self.validate_and_normalize_marginals()
 
             attempts += 1
 
@@ -195,6 +224,7 @@ class GaussianCopulaCategorical:
             raise RuntimeError(f"Could only generate {len(samples)} valid samples out of {n_samples} requested")
 
         return np.array(samples)
+
 
 def coefficient_of_variation(data):
     mean = np.mean(data)
@@ -210,6 +240,9 @@ class DataSchema:
     attr_categories: List[List[str]]
     protected_attr: List[str]
     attr_names: List[str]
+    categorical_distribution: Dict[str, List[float]]
+    correlation_matrix: np.ndarray
+    gen_order: List[str]
 
 
 def generate_schema_from_dataframe(
@@ -278,11 +311,28 @@ def generate_schema_from_dataframe(
             scaling = np.sqrt(np.diag(correlation_matrix))
             correlation_matrix = correlation_matrix / scaling[:, None] / scaling[None, :]
 
+    # Calculate categorical distribution
+    categorical_distribution = {}
+    for i, col in enumerate(attr_columns):
+        # Calculate probabilities for each category, excluding -1
+        value_counts = df[col][df[col] != -1].value_counts(normalize=True)
+        # Convert to dictionary and ensure all categories are present
+        probs = {cat: 0.0 for cat in attr_categories[i] if cat != -1}
+        probs.update(value_counts.to_dict())
+        categorical_distribution[col] = probs
+
+    # Generate generation order if not provided (random order)
+    gen_order = list(range(1, len(attr_columns) + 1))
+    random.shuffle(gen_order)
+
     # Create DataSchema
     schema = DataSchema(
         attr_categories=attr_categories,
         protected_attr=protected_attr,
-        attr_names=attr_columns
+        attr_names=attr_columns,
+        categorical_distribution=categorical_distribution,
+        correlation_matrix=correlation_matrix,
+        gen_order=gen_order
     )
 
     return schema, correlation_matrix
@@ -318,7 +368,17 @@ def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attrib
             attr_names.append(f"Attr{i_x}_X")
             i_x += 1
 
-    res = DataSchema(attr_categories=attr_categories, protected_attr=protected_attr, attr_names=attr_names)
+    correlation_matrix = generate_valid_correlation_matrix(nb_attributes)
+
+    categorical_distribution = generate_categorical_distribution(attr_categories, attr_names)
+
+    # Generate generation order if not provided
+    gen_order = list(range(1, nb_attributes + 1))
+    random.shuffle(gen_order)
+
+    res = DataSchema(attr_categories=attr_categories, protected_attr=protected_attr, attr_names=attr_names,
+                     categorical_distribution=categorical_distribution, correlation_matrix=correlation_matrix,
+                     gen_order=gen_order)
     return res
 
 
@@ -560,39 +620,40 @@ class OutcomeGenerator:
 
 
 class IndividualsGenerator:
-    def __init__(self, schema, graph, gen_order, outcome_weights, outcome_bias, subgroup_bias,
-                 epis_uncertainty, alea_uncertainty, corr_matrix_randomness=1.0, n_estimators=50):
+    def __init__(self, schema: DataSchema, graph, gen_order, outcome_weights, outcome_bias, subgroup_bias,
+                 epis_uncertainty, alea_uncertainty, corr_matrix_randomness=1.0, n_estimators=50,
+                 categorical_distribution=None, categorical_influence=0.5):
         self.schema = schema
         self.graph = np.array(graph)
         self.gen_order = [i - 1 for i in gen_order]
-        self.n_attributes = len(schema)
+        self.n_attributes = len(schema.attr_names)
         self.outcome_weights = outcome_weights
         self.outcome_bias = outcome_bias
         self.subgroup_bias = subgroup_bias
-        self.epis_uncertainty = epis_uncertainty  # Will be used differently
-        self.alea_uncertainty = alea_uncertainty  # Will be used differently
+        self.epis_uncertainty = epis_uncertainty
+        self.alea_uncertainty = alea_uncertainty
         self.n_estimators = n_estimators
         self.corr_matrix_randomness = np.clip(corr_matrix_randomness, 0.0, 1.0)
+        self.categorical_distribution = categorical_distribution or {}
+        self.categorical_influence = np.clip(categorical_influence, 0.0, 1.0)
 
-    def _compute_support_degrees_vectorized(self, ns, ps):
-        """Vectorized version of support degrees computation"""
+    def _get_attribute_probabilities(self, attr_idx, n_values):
+        """
+        Get the probability distribution for a specific attribute.
 
-        def objective_batch(thetas, ns, ps):
-            ratio = (thetas ** ps[:, None] * (1 - thetas) ** ns[:, None]) / \
-                    ((ps[:, None] / (ns[:, None] + ps[:, None])) ** ps[:, None] * \
-                     (ns[:, None] / (ns[:, None] + ps[:, None])) ** ns[:, None])
+        Args:
+            attr_idx (int): Index of the attribute
+            n_values (int): Number of possible values for the attribute
 
-            positive_case = np.minimum(ratio, 2 * thetas - 1)
-            negative_case = np.minimum(ratio, 1 - 2 * thetas)
-            return np.column_stack((-np.max(positive_case, axis=1), -np.max(negative_case, axis=1)))
+        Returns:
+            np.ndarray: Probability distribution for the attribute
+        """
+        attr_name = self.schema.attr_names[attr_idx]
+        if attr_name in self.categorical_distribution:
+            return np.array(self.categorical_distribution[attr_name])
+        return np.ones(n_values) / n_values  # Uniform distribution if not specified
 
-        theta_grid = np.linspace(0.001, 0.999, 1000)
-        results = objective_batch(theta_grid, ns, ps)
-        return -results
-
-    def generate_dataset_with_outcome(self, n_samples: int,
-                                      predetermined_values: List[int],
-                                      is_subgroup1: bool) -> List[Tuple[List[int], float, float, float]]:
+    def generate_dataset_with_outcome(self, n_samples, predetermined_values, is_subgroup1):
         samples = np.zeros((n_samples, self.n_attributes), dtype=int)
 
         # Fill in predetermined values
@@ -600,76 +661,73 @@ class IndividualsGenerator:
             mask = np.array(predetermined_values) != -1
             samples[:, mask] = np.array(predetermined_values)[mask][None, :]
 
-        # Generate remaining values with flexibility
+        # Generate remaining values
         for attr in self.gen_order:
             mask = samples[:, attr] == 0
             if not np.any(mask):
                 continue
 
             n_to_generate = np.sum(mask)
-            n_values = len(self.schema[attr])
+            n_values = len(self.schema.attr_categories[attr]) - 1
 
-            # Initialize with uniform probabilities
-            uniform_probs = np.ones((n_to_generate, n_values)) / n_values
+            # Get categorical probabilities
+            base_categorical_probs = self._get_attribute_probabilities(attr, n_values)
+            categorical_probs = np.tile(base_categorical_probs, (n_to_generate, 1))
 
             # Calculate correlation-based probabilities
-            corr_probs = np.ones((n_to_generate, n_values))
-
-            # Calculate probabilities based on correlations
             other_attrs = np.arange(self.n_attributes) != attr
             other_attrs_indices = np.where(other_attrs)[0]
             other_values = samples[mask][:, other_attrs]
             correlations = self.graph[attr][other_attrs]
+            correlations = np.clip(correlations, 0.001, 0.999)  # Avoid extreme values
 
-            # Add small epsilon to correlations to avoid extreme values
-            correlations = np.clip(correlations, 0.001, 0.999)
-
+            # Initialize correlation probabilities
+            corr_probs = np.ones((n_to_generate, n_values))
             for value in range(n_values):
                 prob_multipliers = np.ones(n_to_generate)
                 for i, other_attr_idx in enumerate(other_attrs_indices):
                     corr = correlations[i]
                     attr_values = other_values[:, i]
                     matches = (attr_values == value)
-
-                    # Add small epsilon to denominator to avoid division by zero
                     divisor = max(n_values - 1, 1e-10)
                     prob_multipliers *= np.where(matches, corr, (1 - corr) / divisor)
-
                 corr_probs[:, value] = prob_multipliers
 
-            # Handle any remaining NaN values
+            # Handle NaN and zero values in correlation probabilities
             corr_probs = np.nan_to_num(corr_probs, nan=1.0 / n_values)
-
-            # Ensure no zero rows
             zero_rows = np.all(corr_probs == 0, axis=1)
-            corr_probs[zero_rows] = uniform_probs[zero_rows]
+            corr_probs[zero_rows] = 1.0 / n_values
 
-            # Normalize correlation-based probabilities
+            # Normalize correlation probabilities
             row_sums = corr_probs.sum(axis=1, keepdims=True)
-            row_sums = np.where(row_sums == 0, 1, row_sums)  # Avoid division by zero
+            row_sums = np.where(row_sums == 0, 1, row_sums)
             corr_probs /= row_sums
 
+            uniform_probs = np.ones((n_to_generate, n_values)) / n_values
 
-            # Blend probabilities based on flexibility parameter
-            final_probs = (1 - self.corr_matrix_randomness) * corr_probs + self.corr_matrix_randomness * uniform_probs
+            # Step 1: Blend correlation matrix with uniform distribution
+            correlation_blend = (1 - self.corr_matrix_randomness) * corr_probs + \
+                                self.corr_matrix_randomness * uniform_probs
+
+            # Step 2: Blend the result with categorical distribution
+            final_probs = ((1 - self.categorical_influence) * uniform_probs
+                           + self.categorical_influence + categorical_probs)
 
             # Add small noise to prevent identical outcomes
-            noise = np.random.normal(0, 0.01, final_probs.shape)
-            final_probs = np.abs(final_probs + noise)
+            # noise = np.random.normal(0, 0.01, final_probs.shape)
+            # final_probs = np.abs(final_probs + noise)
 
             # Ensure valid probabilities
             final_probs = np.maximum(final_probs, 0)
             row_sums = final_probs.sum(axis=1, keepdims=True)
-            row_sums = np.where(row_sums == 0, 1, row_sums)
             final_probs /= row_sums
 
             # Generate values
             samples[mask, attr] = np.array([np.random.choice(n_values, p=p) for p in final_probs])
 
-        # Prepare features and generate outcomes
+        # Generate outcomes
         X = (samples - np.mean(samples, axis=0)) / (np.std(samples, axis=0) + 1e-8)
 
-        # Generate ensemble predictions with uncertainties
         ensemble_preds = []
         for i in range(self.n_estimators):
             weight_noise = np.random.normal(0, self.epis_uncertainty, size=self.outcome_weights.shape)
@@ -804,6 +862,19 @@ def calculate_actual_mean_diff_outcome(data):
     return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_diff)
 
 
+def calculate_actual_diff_outcome_from_avg(data):
+    avg_outcome = data.dataframe[data.outcome_column].mean()
+
+    def calculate_group_diff(group_data):
+        unique_subgroups = group_data['subgroup_key'].unique()
+        subgroup1_outcome = group_data[group_data['subgroup_key'] == unique_subgroups[0]][data.outcome_column]
+        subgroup2_outcome = group_data[group_data['subgroup_key'] == unique_subgroups[1]][data.outcome_column]
+        res = (abs(avg_outcome - subgroup1_outcome.mean()) + abs(avg_outcome - subgroup2_outcome.mean())) / 2
+        return res
+
+    return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_diff)
+
+
 def calculate_actual_metrics(data):
     """
     Calculate the actual metrics and relevance for each group.
@@ -811,6 +882,7 @@ def calculate_actual_metrics(data):
     actual_similarity = calculate_actual_similarity(data)
     actual_uncertainties = calculate_actual_uncertainties(data)
     actual_mean_diff_outcome = calculate_actual_mean_diff_outcome(data)
+    actual_diff_outcome_from_avg = calculate_actual_diff_outcome_from_avg(data)
 
     # Merge these metrics into the main dataframe
     data.dataframe['calculated_similarity'] = data.dataframe['group_key'].map(actual_similarity)
@@ -819,6 +891,8 @@ def calculate_actual_metrics(data):
     data.dataframe['calculated_aleatoric_group'] = data.dataframe['group_key'].map(
         actual_uncertainties['calculated_aleatoric'])
     data.dataframe['calculated_magnitude'] = data.dataframe['group_key'].map(actual_mean_diff_outcome)
+    data.dataframe['calculated_mean_demographic_disparity'] = data.dataframe['group_key'].map(
+        actual_diff_outcome_from_avg)
     data.dataframe['calculated_uncertainty_group'] = data.dataframe.apply(
         lambda x: (x['calculated_epistemic_group'] + x['calculated_aleatoric_group']) / 2, axis=1)
 
@@ -843,15 +917,27 @@ def safe_normalize(p):
     if sum_p == 0:
         # If all probabilities are zero, return a uniform distribution
         return np.ones_like(p) / len(p)
-    return np.array(p) / sum_p
+    elif np.isnan(sum_p):
+        # If the sum is NaN, replace NaNs with 0 and normalize
+        p = np.nan_to_num(p)
+        sum_p = np.sum(p)
+        if sum_p == 0:
+            return np.ones_like(p) / len(p)
+        return p / sum_p
+    return p / sum_p
 
 
 def create_group(granularity, intersectionality,
-                 possibility, attr_categories, sets_attr, correlation_matrix, gen_order, W,
+                 possibility, data_schema, attr_categories, W,
                  subgroup_bias, corr_matrix_randomness,
+                 categorical_influence,
                  min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
                  min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
-                 min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size, attr_names):
+                 min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size):
+    attr_categories, sets_attr, correlation_matrix, gen_order, categorical_distribution, attr_names = (
+        data_schema.attr_categories, data_schema.protected_attr, data_schema.correlation_matrix, data_schema.gen_order,
+        data_schema.categorical_distribution, data_schema.attr_names)
+
     # Separate non-protected and protected attributes and reorder them
     non_protected_columns = [attr for attr, protected in zip(attr_names, sets_attr) if not protected]
     protected_columns = [attr for attr, protected in zip(attr_names, sets_attr) if protected]
@@ -907,7 +993,7 @@ def create_group(granularity, intersectionality,
     subgroup2_size = max(min_group_size // 2, total_group_size - subgroup1_size)
 
     generator = IndividualsGenerator(
-        schema=attr_categories,
+        schema=data_schema,
         graph=correlation_matrix,
         gen_order=gen_order,
         outcome_weights=W[-1],
@@ -915,7 +1001,9 @@ def create_group(granularity, intersectionality,
         subgroup_bias=subgroup_bias,
         epis_uncertainty=epis_uncertainty,
         alea_uncertainty=alea_uncertainty,
-        corr_matrix_randomness=corr_matrix_randomness
+        corr_matrix_randomness=corr_matrix_randomness,
+        categorical_distribution=categorical_distribution,
+        categorical_influence=categorical_influence
     )
 
     # Generate dataset for subgroup 1 and subgroup 2
@@ -960,6 +1048,45 @@ def create_group(granularity, intersectionality,
     result_df['diff_subgroup_size'] = diff_percentage
 
     return result_df
+
+
+def generate_categorical_distribution(attr_categories, attr_names, bias_strength=0.5):
+    """
+    Generates a categorical distribution for attributes with controlled randomness.
+
+    Args:
+        attr_categories (List[List[int]]): List of possible values for each attribute
+        attr_names (List[str]): List of attribute names
+        bias_strength (float): Controls how biased the distributions are (0.0 to 1.0)
+                             0.0 = nearly uniform, 1.0 = strongly biased to one category
+
+    Returns:
+        Dict[str, List[float]]: Dictionary mapping attribute names to probability distributions
+    """
+    distribution = {}
+
+    for attr_name, categories in zip(attr_names, attr_categories):
+        n_categories = len(categories) - 1
+
+        # Generate random probabilities
+        if bias_strength > 0:
+            # Generate biased probabilities
+            probs = np.random.dirichlet([1 - bias_strength] * n_categories)
+
+            # Make one category dominant based on bias_strength
+            dominant_idx = np.random.randint(n_categories)
+            probs = (1 - bias_strength) * probs + bias_strength * np.eye(n_categories)[dominant_idx]
+        else:
+            # Generate nearly uniform probabilities
+            probs = np.ones(n_categories) / n_categories
+            probs += np.random.uniform(-0.1, 0.1, n_categories)
+
+        # Ensure probabilities sum to 1
+        probs = probs / np.sum(probs)
+
+        distribution[attr_name] = probs.tolist()
+
+    return distribution
 
 
 def generate_valid_correlation_matrix(n):
@@ -1024,7 +1151,9 @@ def generate_data(
         nb_categories_outcome: int = 6,
         use_cache: bool = True,
         corr_matrix_randomness=0.5,
-        data_schema=None
+        categorical_distribution: Dict[str, List[float]] = None,
+        categorical_influence: float = 0.5,
+        data_schema: DataSchema = None
 ) -> DiscriminationData:
     # Validate min_group_size
     if min_group_size >= max_group_size:
@@ -1067,6 +1196,16 @@ def generate_data(
             min_number_of_classes = min(len(cats) for cats in attr_categories)
         if max_number_of_classes is None:
             max_number_of_classes = max(len(cats) for cats in attr_categories)
+
+        if correlation_matrix is None:
+            correlation_matrix = data_schema.correlation_matrix
+
+        if categorical_distribution is None:
+            categorical_distribution = data_schema.categorical_distribution
+
+        if gen_order is None:
+            gen_order = data_schema.gen_order
+
     else:
         if min_number_of_classes is None or max_number_of_classes is None:
             min_number_of_classes, max_number_of_classes = estimate_min_attributes_and_classes(nb_groups)
@@ -1077,14 +1216,9 @@ def generate_data(
         )
         attr_categories, sets_attr, attr_names = data_schema.attr_categories, data_schema.protected_attr, data_schema.attr_names
 
-    # Generate correlation matrix if not provided
-    if correlation_matrix is None:
-        correlation_matrix = generate_valid_correlation_matrix(nb_attributes)
-
-    # Generate generation order if not provided
-    if gen_order is None:
-        gen_order = list(range(1, nb_attributes + 1))
-        random.shuffle(gen_order)
+        correlation_matrix = data_schema.correlation_matrix
+        categorical_distribution = data_schema.categorical_distribution
+        gen_order = data_schema.gen_order
 
     # Generate weights if not provided
     if W is None:
@@ -1128,11 +1262,12 @@ def generate_data(
                 collision_tracker.add_combination(possibility)
                 group = create_group(
                     granularity, intersectionality,
-                    possibility, attr_categories, sets_attr, correlation_matrix, gen_order, W,
-                    subgroup_bias, corr_matrix_randomness, min_similarity, max_similarity, min_alea_uncertainty,
-                    max_alea_uncertainty,
+                    possibility, data_schema, attr_categories, W,
+                    subgroup_bias, corr_matrix_randomness,
+                    categorical_influence,
+                    min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
                     min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
-                    min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size, attr_names
+                    min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size
                 )
                 results.append(group)
                 pbar.update(1)

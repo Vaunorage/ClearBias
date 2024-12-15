@@ -19,70 +19,6 @@ from sklearn.metrics import f1_score
 from typing import List, Dict, Union, Tuple
 
 
-class UncertaintyRandomForest(RandomForestClassifier):
-    def __init__(self, n_estimators=100, max_depth=10, **kwargs):
-        super().__init__(n_estimators=n_estimators, max_depth=max_depth, **kwargs)
-
-    def _compute_support_degrees(self, n, p):
-        if n + p == 0:
-            return 0, 0
-
-        def objective_positive(theta):
-            if theta == 0 or n + p == 0:
-                return 0
-            return -min(
-                (theta ** p * (1 - theta) ** n) / ((p / (n + p)) ** p * (n / (n + p)) ** n),
-                2 * theta - 1
-            )
-
-        def objective_negative(theta):
-            if theta == 1 or n + p == 0:
-                return 0
-            return -min(
-                (theta ** p * (1 - theta) ** n) / ((p / (n + p)) ** p * (n / (n + p)) ** n),
-                1 - 2 * theta
-            )
-
-        res_pos = minimize_scalar(objective_positive, bounds=(0, 1), method='bounded')
-        res_neg = minimize_scalar(objective_negative, bounds=(0, 1), method='bounded')
-
-        return -res_pos.fun, -res_neg.fun
-
-    def predict_with_uncertainty(self, X):
-        X_array = X.values if hasattr(X, 'values') else X
-
-        predictions = []
-        for tree in self.estimators_:
-            leaf_id = tree.apply(X_array)
-            predictions.append(tree.tree_.value[leaf_id].reshape(-1, self.n_classes_))
-
-        predictions = np.array(predictions)
-        mean_pred = np.mean(predictions, axis=0)
-
-        epistemic = np.zeros(X_array.shape[0])
-        aleatoric = np.zeros(X_array.shape[0])
-
-        for i in range(X_array.shape[0]):
-            n = np.sum(predictions[:, i, 0])
-            p = np.sum(predictions[:, i, 1])
-            pi_1, pi_0 = self._compute_support_degrees(n, p)
-
-            epistemic[i] = min(pi_1, pi_0)
-            aleatoric[i] = 1 - max(pi_1, pi_0)
-
-        return mean_pred, epistemic, aleatoric
-
-
-def train_uncertainty_forest(synthetic_data, feature_names, outcome_column):
-    X = synthetic_data[feature_names]
-    y = synthetic_data[outcome_column]
-
-    urf = UncertaintyRandomForest(n_estimators=50, random_state=42)
-    urf.fit(X, y)
-
-    return urf
-
-
 def chunks(lst, n):
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
@@ -419,28 +355,6 @@ def generate_sklearn_classifier(dataset: Dataset, model_type: str):
     return model, scores
 
 
-def collect_results(fully_direct, sensitive_attribute):
-    # Calculate percentage of discriminatory inputs
-    total_disc_inputs = len(fully_direct.global_disc_inputs_list["discr_input"]) + len(
-        fully_direct.local_disc_inputs_list["discr_input"])
-    percentage_disc_inputs = total_disc_inputs / len(fully_direct.tot_inputs) * 100 if fully_direct.tot_inputs else 0
-
-    # Collect results in a dictionary, now including the sensitive attribute and detailed lists of discriminatory inputs
-    results = {
-        "Sensitive Attribute": sensitive_attribute,
-        "Total Inputs": len(fully_direct.tot_inputs),
-        "Discriminatory Inputs": total_disc_inputs,
-        "Percentage Discriminatory Inputs": percentage_disc_inputs,
-        "Global Discriminatory Inputs": fully_direct.global_disc_inputs_list["discr_input"],
-        "Global Counter Discriminatory Inputs": fully_direct.global_disc_inputs_list["counter_discr_input"],
-        "Global Magnitude": fully_direct.global_disc_inputs_list["magnitude"],
-        "Local Discriminatory Inputs": fully_direct.local_disc_inputs_list["discr_input"],
-        "Local Counter Discriminatory Inputs": fully_direct.local_disc_inputs_list["counter_discr_input"],
-        "Local Magnitude": fully_direct.local_disc_inputs_list["magnitude"],
-    }
-    return results
-
-
 class AequitasResultRow(TypedDict, total=False):
     outcome: Union[int, float]
     diff_outcome: float
@@ -457,9 +371,36 @@ class AequitasResultRow(TypedDict, total=False):
 AequitasResultDF = DataFrame
 
 
+def collect_results(fully_direct, sensitive_attribute, start_time):
+    # Calculate percentage of discriminatory inputs
+    total_disc_inputs = len(fully_direct.global_disc_inputs_list["discr_input"]) + len(
+        fully_direct.local_disc_inputs_list["discr_input"])
+    percentage_disc_inputs = total_disc_inputs / len(fully_direct.tot_inputs) * 100 if fully_direct.tot_inputs else 0
+
+    # Calculate additional metrics
+    performance_metrics = calculate_metrics(fully_direct, start_time)
+
+    # Collect results in a dictionary
+    results = {
+        "Sensitive Attribute": sensitive_attribute,
+        "Total Inputs": len(fully_direct.tot_inputs),
+        "Discriminatory Inputs": total_disc_inputs,
+        "Percentage Discriminatory Inputs": percentage_disc_inputs,
+        "Global Discriminatory Inputs": fully_direct.global_disc_inputs_list["discr_input"],
+        "Global Counter Discriminatory Inputs": fully_direct.global_disc_inputs_list["counter_discr_input"],
+        "Global Magnitude": fully_direct.global_disc_inputs_list["magnitude"],
+        "Local Discriminatory Inputs": fully_direct.local_disc_inputs_list["discr_input"],
+        "Local Counter Discriminatory Inputs": fully_direct.local_disc_inputs_list["counter_discr_input"],
+        "Local Magnitude": fully_direct.local_disc_inputs_list["magnitude"],
+        **performance_metrics  # Add the new metrics
+    }
+    return results
+
+
 def aequitas_fully_directed_sklearn(dataset, perturbation_unit, threshold, global_iteration_limit,
                                     local_iteration_limit, sensitive_param_id, model, sensitive_attribute):
     print(f"Aequitas Fully Directed Started for {sensitive_attribute}...\n")
+    start_time = time.time()  # Track start time
     initial_input = [random.randint(low, high) for [low, high] in dataset.input_bounds]
     minimizer = {"method": "L-BFGS-B"}
 
@@ -469,16 +410,16 @@ def aequitas_fully_directed_sklearn(dataset, perturbation_unit, threshold, globa
     basinhopping(fully_direct.evaluate_global, initial_input, stepsize=1.0, take_step=fully_direct.global_discovery,
                  minimizer_kwargs=minimizer, niter=global_iteration_limit)
     print("Finished Global Search")
-    results = collect_results(fully_direct, sensitive_attribute)
 
     fully_direct = mp_basinhopping(fully_direct, minimizer, local_iteration_limit)
     print("Local Search Finished")
-    results = collect_results(fully_direct, sensitive_attribute)
 
+    results = collect_results(fully_direct, sensitive_attribute, start_time)
+
+    # Create DataFrames with the results
     res_global = pd.DataFrame({k: results[k] for k in
                                ['Global Discriminatory Inputs', 'Global Counter Discriminatory Inputs',
                                 'Global Magnitude']})
-
     res_global['type'] = 'global'
 
     res_local = pd.DataFrame({k: results[k] for k in
@@ -489,10 +430,49 @@ def aequitas_fully_directed_sklearn(dataset, perturbation_unit, threshold, globa
     res = pd.DataFrame(np.concatenate([res_global.values, res_local.values]),
                        columns=['discrimination', 'counter_discrimination', 'magnitude', 'type'])
 
-    for e in ['Sensitive Attribute', 'Total Inputs', 'Discriminatory Inputs', 'Percentage Discriminatory Inputs']:
-        res[e] = results[e]
+    # Add all metrics to the results DataFrame
+    metric_columns = ['Sensitive Attribute', 'Total Inputs', 'Discriminatory Inputs',
+                      'Percentage Discriminatory Inputs', 'TSN', 'DSN', 'DSS', 'SUR']
+    for column in metric_columns:
+        res[column] = results[column]
 
     return res
+
+
+def calculate_metrics(fully_direct, start_time) -> Dict[str, float]:
+    """
+    Calculate key performance metrics for Aequitas
+
+    Parameters:
+    fully_direct: Fully_Direct object containing results
+    start_time: float, the start time of the search process
+
+    Returns:
+    Dict containing TSN, DSN, DSS, and SUR metrics
+    """
+    # Calculate Total Sample Number (TSN)
+    tsn = len(fully_direct.tot_inputs)
+
+    # Calculate Discriminatory Sample Number (DSN)
+    global_dsn = len(fully_direct.global_disc_inputs_list["discr_input"])
+    local_dsn = len(fully_direct.local_disc_inputs_list["discr_input"])
+    total_dsn = global_dsn + local_dsn
+
+    # Calculate execution time
+    execution_time = time.time() - start_time
+
+    # Calculate Discriminatory Sample Search (DSS) - average time per discriminatory sample
+    dss = execution_time / total_dsn if total_dsn > 0 else 0
+
+    # Calculate Success Rate (SUR) - percentage of discriminatory samples
+    sur = (total_dsn / tsn * 100) if tsn > 0 else 0
+
+    return {
+        "TSN": tsn,
+        "DSN": total_dsn,
+        "DSS": round(dss, 2),  # seconds
+        "SUR": round(sur, 2)  # percentage
+    }
 
 
 def run_aequitas(df: DataFrame,
@@ -513,46 +493,80 @@ def run_aequitas(df: DataFrame,
         results.append(result)
 
     res: AequitasResultDF = pd.concat(results)
-
     res['case_id'] = np.arange(res.shape[0])
 
-    res1: AequitasResultDF = pd.DataFrame(np.concatenate(
-        [res.drop(columns=['discrimination']).values, res.drop(columns=['counter_discrimination']).values]),
-        columns=['discrimination', 'diff_outcome', 'type', 'Sensitive Attribute', 'Total Inputs',
-                 'Discriminatory Inputs',
-                 'Percentage Discriminatory Inputs', 'case_id'])
+    # Rename 'magnitude' to 'diff_outcome'
+    res = res.rename(columns={'magnitude': 'diff_outcome'})
 
-    disc_df: DataFrame = pd.DataFrame(res1['discrimination'].tolist(), columns=dataset.column_names)
+    # Create two separate dataframes
+    df1 = res.drop(columns=['discrimination']).copy()
+    df2 = res.drop(columns=['counter_discrimination']).copy()
 
-    res2: AequitasResultDF = pd.concat([disc_df, res1.drop(columns=['discrimination'])], axis=1)
+    # Make sure all required columns are present
+    required_columns = ['discrimination', 'diff_outcome', 'type', 'Sensitive Attribute',
+                        'Total Inputs', 'Discriminatory Inputs', 'Percentage Discriminatory Inputs',
+                        'TSN', 'DSN', 'DSS', 'SUR', 'case_id']
+
+    # Add any missing columns with None values
+    for col in required_columns:
+        if col not in df1.columns and col != 'discrimination':
+            df1[col] = None
+        if col not in df2.columns and col != 'counter_discrimination':
+            df2[col] = None
+
+    # Concatenate vertically
+    res1: AequitasResultDF = pd.concat([df1, df2], ignore_index=True)
 
     if res.shape[0] > 0:
-        res2['outcome'] = model.predict(res2[dataset.column_names].drop(columns=[dataset.col_to_be_predicted]))
+        try:
+            # Convert discrimination data to proper format
+            discrimination_data = []
+            for disc in res1['discrimination']:
+                if isinstance(disc, (list, np.ndarray)):
+                    discrimination_data.append(disc)
+                else:
+                    # If single value, create a list matching the number of columns
+                    discrimination_data.append([disc] * len(dataset.column_names))
 
-        res2['diff_outcome'] = res2['diff_outcome'].apply(lambda x: x[0])
+            # Create DataFrame from discrimination column with proper shape
+            disc_df: DataFrame = pd.DataFrame(discrimination_data, columns=dataset.column_names)
 
-        res2.sort_values(by=['case_id'], inplace=True)
+            # Combine with rest of the data
+            res2: AequitasResultDF = pd.concat([disc_df, res1.drop(columns=['discrimination'])], axis=1)
 
-        attr = list(df.columns)
-        attr.remove(col_to_be_predicted)
-        res2['indv_key'] = res2.apply(lambda x: '|'.join(list(map(str, x[attr].values.tolist()))), axis=1)
+            # Predict outcomes
+            prediction_columns = [col for col in dataset.column_names if col != dataset.col_to_be_predicted]
+            res2['outcome'] = model.predict(res2[prediction_columns])
 
-        def transform_subgroup(x):
-            res = x['indv_key'].tolist()
-            res = ["-".join(res), "-".join(res[::-1])]
-            return pd.Series(res, index=x.index)
+            # Process diff_outcome
+            res2['diff_outcome'] = res2['diff_outcome'].apply(
+                lambda x: x[0] if isinstance(x, (list, np.ndarray)) else x)
 
-        ress = res2.groupby(['case_id']).apply(lambda x: transform_subgroup(x))
-        if ress.shape[0] > 0:
-            res2['couple_key'] = ress.reset_index(level=0, drop=True)
-        else:
-            res2['couple_key'] = None
+            # Sort by case_id
+            res2.sort_values(by=['case_id'], inplace=True)
 
-        # res2 = calculate_actual_uncertainties(res2, dataset.feature_names, urf)
-        # relevance_metrics = calculate_relevance(res2, dataset.feature_names, dataset.protected_attributes,
-        #                                         dataset.col_to_be_predicted)
-        # res2 = pd.concat([res2, relevance_metrics], axis=1)
+            # Generate individual keys
+            attr = list(df.columns)
+            attr.remove(col_to_be_predicted)
+            res2['indv_key'] = res2.apply(lambda x: '|'.join(list(map(str, x[attr].values.tolist()))), axis=1)
 
-        return res2, model_scores[0]
+            # Generate couple keys
+            def transform_subgroup(x):
+                res = x['indv_key'].tolist()
+                res = ["-".join(res), "-".join(res[::-1])]
+                return pd.Series(res, index=x.index)
+
+            ress = res2.groupby(['case_id']).apply(lambda x: transform_subgroup(x))
+            if ress.shape[0] > 0:
+                res2['couple_key'] = ress.reset_index(level=0, drop=True)
+            else:
+                res2['couple_key'] = None
+
+            return res2, model_scores[0]
+        except Exception as e:
+            print(f"Error processing results: {str(e)}")
+            print(f"Shape of discrimination data: {len(discrimination_data)} rows")
+            print(f"Number of columns expected: {len(dataset.column_names)}")
+            raise e
 
     return pd.DataFrame(), {}

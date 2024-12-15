@@ -1,3 +1,4 @@
+import time
 from typing import TypedDict, List, Tuple, Dict, Any, Union, Set
 import math
 import uuid
@@ -9,6 +10,10 @@ import pandas as pd
 from pandas import DataFrame
 from tqdm import tqdm
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.svm import SVC
+from sklearn.base import BaseEstimator
 from lime.lime_tabular import LimeTabularExplainer
 
 from data_generator.main import DiscriminationData
@@ -29,7 +34,49 @@ class ExpGAResultRow(TypedDict, total=False):
     couple_key: str
 
 
+class Metrics(TypedDict):
+    TSN: int  # Total Sample Number
+    DSN: int  # Discriminatory Sample Number
+    DSS: float  # Discriminatory Sample Search (avg time)
+    SUR: float  # Success Rate
+
+
 ExpGAResultDF = DataFrame
+
+
+def get_model(model_type: str, **kwargs) -> BaseEstimator:
+    """
+    Factory function to create different types of models with specified parameters.
+
+    Args:
+        model_type: One of 'rf' (Random Forest), 'dt' (Decision Tree),
+                   'mlp' (Multi-layer Perceptron), or 'svm' (Support Vector Machine)
+        **kwargs: Model-specific parameters
+    """
+    models = {
+        'rf': RandomForestClassifier(
+            n_estimators=kwargs.get('n_estimators', 10),
+            random_state=kwargs.get('random_state', 42)
+        ),
+        'dt': DecisionTreeClassifier(
+            random_state=kwargs.get('random_state', 42)
+        ),
+        'mlp': MLPClassifier(
+            hidden_layer_sizes=kwargs.get('hidden_layer_sizes', (100,)),
+            max_iter=kwargs.get('max_iter', 1000),
+            random_state=kwargs.get('random_state', 42)
+        ),
+        'svm': SVC(
+            kernel=kwargs.get('kernel', 'rbf'),
+            probability=True,  # Required for LIME
+            random_state=kwargs.get('random_state', 42)
+        )
+    }
+
+    if model_type not in models:
+        raise ValueError(f"Model type '{model_type}' not supported. Choose from: {list(models.keys())}")
+
+    return models[model_type]
 
 
 def construct_explainer(train_vectors: np.ndarray, feature_names: List[str],
@@ -39,7 +86,7 @@ def construct_explainer(train_vectors: np.ndarray, feature_names: List[str],
     )
 
 
-def search_seed(model: RandomForestClassifier, feature_names: List[str], sens_name: str,
+def search_seed(model: BaseEstimator, feature_names: List[str], sens_name: str,
                 explainer: LimeTabularExplainer, train_vectors: np.ndarray, num: int,
                 threshold_l: float) -> List[np.ndarray]:
     seed: List[np.ndarray] = []
@@ -71,11 +118,13 @@ class GlobalDiscovery:
 
 def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_rank: float,
                      sensitive_param: str, max_global: int, max_local: int,
-                     random_forest_n_estimators: int = 10,
-                     random_forest_random_state: int = 42) -> ExpGAResultDF:
+                     model_type: str = 'rf', **model_kwargs) -> Tuple[ExpGAResultDF, Metrics]:
+    start_time = time.time()
+    disc_times: List[float] = []
+
     # Load data and prepare model
     X, Y = dataset.xdf, dataset.ydf
-    model = RandomForestClassifier(n_estimators=random_forest_n_estimators, random_state=random_forest_random_state)
+    model = get_model(model_type, **model_kwargs)
     model.fit(X, Y)
 
     global_disc_inputs: Set[Tuple[float, ...]] = set()
@@ -104,6 +153,7 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
                         not in global_disc_inputs.union(local_disc_inputs)):
                     local_disc_inputs.add(tuple(input_array))
                     results.append((input_array, altered_input, output_original[0], output_altered[0]))
+                    disc_times.append(time.time() - start_time)
                     return 2 * abs(output_altered - output_original) + 1
 
         if output_altered is None:
@@ -121,7 +171,16 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
 
     if not seed:
         logger.info("No seeds found. Exiting...")
-        return pd.DataFrame()
+        metrics: Metrics = {
+            "TSN": 0,
+            "DSN": 0,
+            "DSS": 0.0,
+            "SUR": 0.0
+        }
+        empty_df = pd.DataFrame(columns=[
+                                            'group_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'
+                                        ] + list(dataset.feature_names))
+        return empty_df, metrics
 
     for input_sample in seed:
         input_array = np.array([int(i) for i in input_sample]).reshape(1, -1)
@@ -136,22 +195,33 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     for _ in tqdm(range(max_local), desc="Local search progress"):
         ga.evolve()
 
-    logger.info(f"Total Inputs: {len(total_inputs)}")
-    logger.info(f"Discriminatory inputs: {len(local_disc_inputs)}")
-    logger.info(
-        f"Percentage discriminatory inputs: {float(len(local_disc_inputs)) / float(len(total_inputs)) * 100:.2f}%"
-    )
+    # Calculate metrics
+    tsn = len(total_inputs)
+    dsn = len(local_disc_inputs)
+    dss = np.mean(np.diff(disc_times)) if len(disc_times) > 1 else 0.0
+    sur = (dsn / tsn * 100) if tsn > 0 else 0.0
+
+    metrics: Metrics = {
+        "TSN": tsn,
+        "DSN": dsn,
+        "DSS": dss,
+        "SUR": sur
+    }
+
+    logger.info(f"Total Inputs (TSN): {tsn}")
+    logger.info(f"Discriminatory inputs (DSN): {dsn}")
+    logger.info(f"Average time to find discriminatory sample (DSS): {dss:.2f} seconds")
+    logger.info(f"Success Rate (SUR): {sur:.2f}%")
 
     # Create DataFrame from results
     df: ExpGAResultDF = pd.DataFrame(results,
                                      columns=["Original Input", "Altered Input", "Original Outcome", "Altered Outcome"])
 
-    # If no results were found, return empty DataFrame with correct structure
     if df.empty:
         empty_df = pd.DataFrame(columns=[
                                             'group_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'
                                         ] + list(dataset.feature_names))
-        return empty_df
+        return empty_df, metrics
 
     df['Outcome Difference'] = df['Altered Outcome'] - df['Original Outcome']
     df['group_id'] = [str(uuid.uuid4())[:8] for _ in range(df.shape[0])]
@@ -172,7 +242,7 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     df.drop(columns=['input'], inplace=True)
     df.sort_values(by=['group_id'], inplace=True)
 
-    # Create indv_key only if DataFrame is not empty
+    # Create indv_key
     valid_attrs = [col for col in dataset.attributes if col in df.columns]
     df['indv_key'] = df[valid_attrs].apply(
         lambda row: '|'.join(str(int(x)) for x in row),
@@ -182,18 +252,19 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     # Create couple_key
     df['couple_key'] = df.groupby(df.index // 2)['indv_key'].transform(lambda x: '-'.join(x))
 
-    return df
+    return df, metrics
 
 
-def run_expga(dataset: DiscriminationData, threshold: float = 0.5, threshold_rank: float = 0.5,
-              max_global: int = 50, max_local: int = 50,
-              random_forest_n_estimators: int = 10,
-              random_forest_random_state: int = 42) -> Tuple[ExpGAResultDF, dict]:
+def run_expga(dataset: DiscriminationData, model_type: str = 'rf', threshold: float = 0.5,
+              threshold_rank: float = 0.5, max_global: int = 50, max_local: int = 50,
+              **model_kwargs) -> Tuple[ExpGAResultDF, Dict[str, Metrics]]:
     dfs: List[ExpGAResultDF] = []
+    all_metrics: Dict[str, Metrics] = {}
 
     for p_attr in dataset.protected_attributes:
-        df = xai_fair_testing(dataset, threshold, threshold_rank, p_attr, max_global, max_local,
-                              random_forest_n_estimators, random_forest_random_state)
+        df, metrics = xai_fair_testing(dataset, threshold, threshold_rank, p_attr, max_global, max_local,
+                                       model_type, **model_kwargs)
         dfs.append(df)
+        all_metrics[p_attr] = metrics
 
-    return pd.concat(dfs), {}
+    return pd.concat(dfs), all_metrics

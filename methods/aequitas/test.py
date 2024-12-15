@@ -9,7 +9,8 @@ ge = generate_data(
     nb_groups=100,
     max_group_size=100,
     categorical_outcome=True,
-    nb_categories_outcome=4)
+    nb_categories_outcome=4,
+    use_cache=True)
 
 # %%
 global_iteration_limit = 100
