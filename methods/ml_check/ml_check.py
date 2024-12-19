@@ -531,20 +531,52 @@ class RunChecker:
         return self.model.predict(X)[0]
 
     def process_counterexamples(self):
-        dfCand = local_load('Cand-Set')
-        X = dfCand[self.paramDict['attributes']].values
-        y = dfCand[self.paramDict['output_class_name']]
-
-        dfCand.rename(columns={self.paramDict['output_class_name']: 'z3_pred'}, inplace=True)
         try:
-            if not dfCand.empty:
-                dfCand['whitebox_pred'] = self.model.predict(X)
-        except:
-            pass
+            # Load candidate set
+            dfCand = local_load('Cand-Set')
+            if dfCand.empty:
+                print("Warning: Empty candidate set")
+                return False
 
-        self.discriminatory_cases.append(dfCand)
+            # Get features and ensure they exist
+            if not all(attr in dfCand.columns for attr in self.paramDict['attributes']):
+                print("Warning: Missing required attributes in candidate set")
+                print("Available columns:", dfCand.columns.tolist())
+                print("Required attributes:", self.paramDict['attributes'])
+                return False
 
-        return len(self.discriminatory_cases) > 0
+            # Extract features for prediction
+            X = dfCand[self.paramDict['attributes']].values
+
+            # Rename z3 predictions column
+            if self.paramDict['output_class_name'] in dfCand.columns:
+                dfCand.rename(columns={self.paramDict['output_class_name']: 'z3_pred'}, inplace=True)
+
+            # Make and store whitebox predictions
+            try:
+                predictions = self.model.predict(X)
+                dfCand['whitebox_pred'] = predictions
+                print(f"Generated {len(predictions)} whitebox predictions")
+            except Exception as e:
+                print(f"Error making predictions: {str(e)}")
+                return False
+
+            # Validate predictions exist before saving
+            if 'whitebox_pred' not in dfCand.columns:
+                print("Error: whitebox_pred column not created")
+                return False
+
+            # Add to discriminatory cases
+            self.discriminatory_cases.append(dfCand)
+
+            print(f"Processed candidate set with {len(dfCand)} rows")
+            print("Available columns after processing:", dfCand.columns.tolist())
+
+            return True
+
+        except Exception as e:
+            print(f"Error in process_counterexamples: {str(e)}")
+            return False
 
     def save_discriminatory_cases(self):
         if not self.discriminatory_cases:

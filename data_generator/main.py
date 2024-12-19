@@ -11,13 +11,16 @@ from pathlib import Path
 import numpy as np
 from numpy.linalg import norm
 from scipy.linalg import eigh
+from sklearn.preprocessing import LabelEncoder
 from tqdm import tqdm
 from dataclasses import dataclass, field
 from pandas import DataFrame
-from typing import Literal, TypeVar, Any, List, Dict, Tuple, Optional
-from scipy.stats import norm, multivariate_normal, spearmanr
+from typing import Literal, TypeVar, Any, List, Dict, Tuple, Optional, Union
+from scipy.stats import norm, multivariate_normal, spearmanr, gaussian_kde
 import pandas as pd
 import warnings
+
+from ucimlrepo import fetch_ucirepo
 
 from data_generator.main_old import DiscriminationData
 from path import HERE
@@ -235,6 +238,51 @@ def coefficient_of_variation(data):
     return cv
 
 
+def is_numeric_column(series: pd.Series) -> bool:
+    """
+    Check if a column should be treated as numeric for KDE.
+    """
+    if not np.issubdtype(series.dtype, np.number):
+        return False
+
+    n_unique = len(series.dropna().unique())
+    return n_unique >= 5
+
+
+def is_integer_column(series: pd.Series) -> bool:
+    """
+    Check if a numeric column contains only integers.
+    """
+    return np.all(series.dropna() == series.dropna().astype(int))
+
+
+def get_unique_samples(kde: gaussian_kde, n_samples: int, is_integer: bool = False,
+                       max_attempts: int = 1000) -> np.ndarray:
+    """
+    Get unique samples from KDE with appropriate type handling.
+    """
+    samples = kde.resample(min(n_samples * 2, max_attempts))[0]
+
+    if is_integer:
+        samples = np.round(samples).astype(int)
+
+    unique_samples = np.unique(samples)
+
+    attempts = 1
+    while len(unique_samples) < n_samples and attempts < max_attempts:
+        new_samples = kde.resample(n_samples)[0]
+        if is_integer:
+            new_samples = np.round(new_samples).astype(int)
+        unique_samples = np.unique(np.concatenate([unique_samples, new_samples]))
+        attempts += 1
+
+    if len(unique_samples) > n_samples:
+        indices = np.linspace(0, len(unique_samples) - 1, n_samples).astype(int)
+        unique_samples = np.sort(unique_samples)[indices]
+
+    return unique_samples
+
+
 @dataclass
 class DataSchema:
     attr_categories: List[List[str]]
@@ -243,99 +291,222 @@ class DataSchema:
     categorical_distribution: Dict[str, List[float]]
     correlation_matrix: np.ndarray
     gen_order: List[str]
+    category_maps: Dict[str, Dict[int, str]] = None  # Add category maps to store encoding/decoding mappings
+    column_mapping: Dict[str, str] = None
+
+
+def create_kde_encoding(series: pd.Series, n_samples: int = 100) -> Tuple[
+    np.ndarray, gaussian_kde, List[Union[int, float]], Dict[Union[int, float], str]]:
+    """
+    Create KDE from the series and sample fixed points from it.
+    """
+    non_nan_mask = pd.notna(series)
+    values = series[non_nan_mask].to_numpy()
+
+    if len(values) == 0:
+        return np.full(len(series), -1), None, [-1, 0], {-1: 'nan', 0: '0'}
+
+    kde = gaussian_kde(values)
+    is_integer = is_integer_column(series)
+    sampled_points = get_unique_samples(kde, n_samples, is_integer)
+
+    # Create categories starting from -1 (missing) then 0 to n-1
+    categories = [-1] + list(range(len(sampled_points)))
+
+    # Create mapping dictionary
+    if is_integer:
+        category_map = {-1: 'nan',
+                        **{i: str(int(point)) for i, point in zip(range(len(sampled_points)), sampled_points)}}
+    else:
+        category_map = {-1: 'nan',
+                        **{i: f"{point:.3f}" for i, point in zip(range(len(sampled_points)), sampled_points)}}
+
+    # Encode original values
+    encoded = np.full(len(series), -1)  # Default to -1 for missing values
+    for i, val in enumerate(series[non_nan_mask]):
+        nearest_idx = np.abs(sampled_points - val).argmin()
+        encoded[non_nan_mask][i] = nearest_idx  # Now starts from 0
+
+    return encoded, kde, categories, category_map
 
 
 def generate_schema_from_dataframe(
         df: pd.DataFrame,
         protected_columns: List[str] = None,
-        attr_prefix: str = "Attr",
-        ensure_positive_definite: bool = True
-) -> Tuple[DataSchema, np.ndarray]:
-    # Filter columns that start with the attribute prefix
-    attr_columns = list(df.columns)
+        attr_prefix: str = None,
+        outcome_column: str = 'outcome',
+        ensure_positive_definite: bool = True,
+        n_samples: int = 100,
+        use_attr_naming_pattern: bool = False
+) -> Tuple[DataSchema, np.ndarray, Dict[str, str]]:
+    """
+    Generate a DataSchema and correlation matrix from a pandas DataFrame using KDE for numeric columns.
+
+    Parameters:
+        df: Input DataFrame
+        protected_columns: List of protected attribute columns
+        attr_prefix: Prefix for attribute columns
+        outcome_column: Name of the outcome column
+        ensure_positive_definite: Whether to ensure correlation matrix is positive definite
+        n_samples: Number of samples for KDE
+        use_attr_naming_pattern: If True, automatically detect protected attributes using '_T' suffix
+                               and non-protected attributes using '_X' suffix
+    """
+    if outcome_column not in df.columns:
+        raise ValueError(f"Outcome column '{outcome_column}' not found in DataFrame")
+
+    new_cols = [f"Attr{k}" for k, v in enumerate(df.columns)]
+    new_cols = [f"{n}_{'T' if v in protected_columns else 'X'}" for n, v in zip(new_cols, df.columns)]
+
+    new_cols_mapping = {k: v for k, v in zip(new_cols, df.columns)}
+
+    if use_attr_naming_pattern:
+        df.columns = new_cols
+
+    # Handle attribute naming pattern
+    if use_attr_naming_pattern:
+        protected_columns = [col for col in df.columns if col.endswith('_T')]
+        attr_columns = [col for col in df.columns if col.endswith('_X') or col.endswith('_T')]
+    else:
+        if attr_prefix:
+            attr_columns = [col for col in df.columns if col.startswith(attr_prefix)]
+        else:
+            attr_columns = [col for col in df.columns if col != outcome_column]
 
     if not attr_columns:
-        raise ValueError(f"No columns found starting with '{attr_prefix}'")
+        raise ValueError("No attribute columns found")
 
-    # If protected_columns not provided, infer from '_T' suffix
-    if protected_columns is None:
-        protected_columns = [col for col in attr_columns if col.endswith('_T')]
-
-    # Generate attr_categories
     attr_categories = []
+    encoded_df = pd.DataFrame(index=df.index)
+    binning_info = {}
+    kde_distributions = {}
+    label_encoders = {}
+    category_maps = {}  # Store category maps for each column
+
     for col in attr_columns:
-        # Get unique values excluding NaN
-        unique_vals = sorted(df[col].dropna().unique())
-        # Convert to int if possible
-        try:
-            unique_vals = [int(x) for x in unique_vals]
-        except (ValueError, TypeError):
-            pass
-        # Ensure -1 is first if present
-        if -1 in unique_vals:
-            unique_vals.remove(-1)
-            unique_vals = [-1] + sorted(unique_vals)
-        attr_categories.append(unique_vals)
+        if is_numeric_column(df[col]):
+            encoded_vals, kde, categories, category_map = create_kde_encoding(df[col], n_samples)
 
-    # Generate protected_attr flags
-    protected_attr = [col in protected_columns for col in attr_columns]
+            encoded_df[col] = encoded_vals
+            attr_categories.append(categories)
+            category_maps[col] = category_map  # Store the category map
 
-    # Calculate correlation matrix using Spearman correlation
-    correlation_matrix = np.zeros((len(attr_columns), len(attr_columns)))
-    for i, col1 in enumerate(attr_columns):
-        for j, col2 in enumerate(attr_columns):
-            # Handle the case where we have constant columns
-            if df[col1].nunique() == 1 or df[col2].nunique() == 1:
-                correlation_matrix[i, j] = 1.0 if i == j else 0.0
-            else:
-                # Calculate Spearman correlation, ignoring -1 values
-                mask = (df[col1] != -1) & (df[col2] != -1)
+            if kde is not None:
+                kde_distributions[col] = kde
+                binning_info[col] = {
+                    'strategy': 'kde',
+                    'n_samples': n_samples,
+                    'is_integer': is_integer_column(df[col])
+                }
+        else:
+            le = LabelEncoder()
+            non_nan_vals = df[col].dropna().unique()
+
+            if len(non_nan_vals) > 0:
+                str_vals = [str(x) for x in non_nan_vals]
+                str_vals = list(dict.fromkeys(str_vals))
+
+                le.fit(str_vals)
+                encoded = np.full(len(df), -1)
+
+                mask = df[col].notna()
                 if mask.any():
-                    corr, _ = spearmanr(df[col1][mask], df[col2][mask], nan_policy='omit')
-                    correlation_matrix[i, j] = corr if not np.isnan(corr) else 0.0
-                else:
-                    correlation_matrix[i, j] = 1.0 if i == j else 0.0
+                    encoded[mask] = le.transform([str(x) for x in df[col][mask]])
 
-    # Ensure the matrix is symmetric
-    correlation_matrix = (correlation_matrix + correlation_matrix.T) / 2
+                categories = [-1] + list(range(len(str_vals)))
+                category_map = {-1: 'nan', **{i: val for i, val in enumerate(str_vals)}}
 
-    if ensure_positive_definite:
-        # Make the correlation matrix positive definite if needed
-        eigenvalues, eigenvectors = np.linalg.eigh(correlation_matrix)
-        if np.any(eigenvalues < 0):
-            # Replace negative eigenvalues with small positive values
-            eigenvalues[eigenvalues < 0] = 1e-6
-            correlation_matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+                label_encoders[col] = le
+                category_maps[col] = category_map  # Store the category map
+            else:
+                encoded = np.full(len(df), -1)
+                categories = [-1, 0]
+                category_map = {-1: 'nan', 0: 'empty'}
+                category_maps[col] = category_map  # Store the category map
 
-            # Rescale to ensure diagonal elements are 1
-            scaling = np.sqrt(np.diag(correlation_matrix))
-            correlation_matrix = correlation_matrix / scaling[:, None] / scaling[None, :]
+            encoded_df[col] = encoded
+            attr_categories.append(categories)
+
+    # Calculate correlation matrix
+    correlation_matrix = calculate_correlation_matrix(encoded_df, attr_columns, ensure_positive_definite)
 
     # Calculate categorical distribution
     categorical_distribution = {}
     for i, col in enumerate(attr_columns):
-        # Calculate probabilities for each category, excluding -1
-        value_counts = df[col][df[col] != -1].value_counts(normalize=True)
-        # Convert to dictionary and ensure all categories are present
-        probs = {cat: 0.0 for cat in attr_categories[i] if cat != -1}
-        probs.update(value_counts.to_dict())
-        categorical_distribution[col] = probs
+        if col in kde_distributions:
+            n_categories = len(attr_categories[i]) - 1
+            prob_per_category = 1.0 / n_categories if n_categories > 0 else 0.0
+            categorical_distribution[col] = [prob_per_category] * n_categories
+        else:
+            valid_counts = encoded_df[col][encoded_df[col] >= 0].value_counts().sort_index()
+            total_valid = valid_counts.sum()
+            probs = np.zeros(len(attr_categories[i]) - 1)
+            if total_valid > 0:
+                for idx, count in valid_counts.items():
+                    probs[int(idx)] = count / total_valid
+            categorical_distribution[col] = probs.tolist()
 
-    # Generate generation order if not provided (random order)
-    gen_order = list(range(1, len(attr_columns) + 1))
-    random.shuffle(gen_order)
-
-    # Create DataSchema
     schema = DataSchema(
         attr_categories=attr_categories,
-        protected_attr=protected_attr,
+        protected_attr=[col in protected_columns for col in attr_columns],
         attr_names=attr_columns,
         categorical_distribution=categorical_distribution,
         correlation_matrix=correlation_matrix,
-        gen_order=gen_order
+        gen_order=list(range(len(attr_columns))),
+        category_maps=category_maps,
+        column_mapping=new_cols_mapping
     )
 
-    return schema, correlation_matrix
+    return schema, correlation_matrix, new_cols_mapping
+
+
+def decode_dataframe(df: pd.DataFrame, schema: DataSchema) -> pd.DataFrame:
+    """
+    Decode a dataframe using the schema's category maps.
+    """
+    decoded_df = pd.DataFrame(index=df.index)
+
+    for col in schema.attr_names:
+        if col in df.columns:
+            category_map = schema.category_maps[col]
+            decoded_df[col] = df[col].map(
+                lambda x: category_map.get(int(x) if isinstance(x, (int, float)) else x, 'unknown'))
+
+    # Copy any columns that weren't in the schema
+    for col in df.columns:
+        if col not in schema.attr_names:
+            decoded_df[col] = df[col]
+
+    return decoded_df
+
+
+def calculate_correlation_matrix(encoded_df, attr_columns, ensure_positive_definite):
+    """Helper function to calculate the correlation matrix"""
+    correlation_matrix = np.zeros((len(attr_columns), len(attr_columns)))
+    for i, col1 in enumerate(attr_columns):
+        for j, col2 in enumerate(attr_columns):
+            if i == j:
+                correlation_matrix[i, j] = 1.0
+            else:
+                # Update mask to check for non-negative values (exclude missing values)
+                mask = (encoded_df[col1] >= 0) & (encoded_df[col2] >= 0)
+                if mask.any():
+                    corr, _ = spearmanr(encoded_df[col1][mask], encoded_df[col2][mask])
+                    correlation_matrix[i, j] = corr if not np.isnan(corr) else 0.0
+                    correlation_matrix[j, i] = correlation_matrix[i, j]
+                else:
+                    correlation_matrix[i, j] = 0.0
+                    correlation_matrix[j, i] = 0.0
+
+    if ensure_positive_definite:
+        eigenvalues, eigenvectors = np.linalg.eigh(correlation_matrix)
+        if np.any(eigenvalues < 0):
+            eigenvalues[eigenvalues < 0] = 1e-6
+            correlation_matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+            scaling = np.sqrt(np.diag(correlation_matrix))
+            correlation_matrix = correlation_matrix / scaling[:, None] / scaling[None, :]
+
+    return correlation_matrix
 
 
 def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attributes,
@@ -955,7 +1126,10 @@ def create_group(granularity, intersectionality,
         for ind in range(len(attr_categories)):
             if ind in possibility:
                 ss = copy.deepcopy(attr_categories[ind])
-                ss.remove(-1)
+                try:
+                    ss.remove(-1)
+                except:
+                    pass
                 ress_set.append(ss)
             else:
                 ress_set.append([-1])
@@ -1188,9 +1362,6 @@ def generate_data(
         sets_attr = data_schema.protected_attr
         attr_names = data_schema.attr_names
 
-        # Update proportion of protected attributes
-        prop_protected_attr = sum(sets_attr) / len(sets_attr)
-
         # Update min/max number of classes based on schema
         if min_number_of_classes is None:
             min_number_of_classes = min(len(cats) for cats in attr_categories)
@@ -1321,3 +1492,32 @@ def generate_data(
         cache.save(data, params)
 
     return data
+
+
+def generate_from_real_data(dataset_name, *args, **kwargs):
+    if dataset_name == 'adult':
+        adult = fetch_ucirepo(id=2)
+        df1 = adult['data']['original']
+        df1.drop(columns=['fnlwgt'], inplace=True)
+
+        schema, correlation_matrix, column_mapping = generate_schema_from_dataframe(df1,
+                                                                             protected_columns=['race', 'sex'],
+                                                                             outcome_column='income',
+                                                                             use_attr_naming_pattern=True)
+    elif dataset_name == 'credit':
+        df1 = fetch_ucirepo(id=144)
+        df1 = df1['data']['original']
+        schema, correlation_matrix, new_cols_mapping = generate_schema_from_dataframe(df1,
+                                                                                      protected_columns=['Attribute8',
+                                                                                                         'Attribute12'],
+                                                                                      outcome_column='Attribute20',
+                                                                                      use_attr_naming_pattern=True)
+    else:
+        raise NotImplementedError(f"Dataset {dataset_name} not implemented")
+
+    data = generate_data(
+        correlation_matrix=correlation_matrix,
+        data_schema=schema, *args, **kwargs)
+
+    # data = decode_dataframe(data.dataframe, schema)
+    return data, schema

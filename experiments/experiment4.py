@@ -19,6 +19,8 @@ import logging
 from enum import Enum
 import re
 from pathlib import Path
+
+from data_generator.main import generate_from_real_data, generate_data
 from path import HERE
 import sqlite3
 import json
@@ -113,6 +115,12 @@ class ExperimentConfig:
     min_intersectionality: int = 1
     max_intersectionality: int = None
 
+    # Real dataset parameters
+    use_real_data: bool = False
+    real_dataset_name: Optional[str] = None
+    correlation_matrix: Optional[np.ndarray] = None
+    data_schema: Optional[str] = None
+
     # Method specific parameters
     # Aequitas
     aequitas_global_iteration_limit: int = 100
@@ -144,6 +152,40 @@ class ExperimentConfig:
             self.methods = {Method.AEQUITAS, Method.BIASSCAN, Method.EXPGA, Method.MLCHECK}
         elif isinstance(self.methods, list):
             self.methods = set(self.methods)
+
+        # Validate real dataset configuration
+        if self.use_real_data:
+            if self.real_dataset_name is None:
+                raise ValueError("real_dataset_name must be specified when use_real_data is True")
+            if self.real_dataset_name not in ['adult', 'credit']:
+                raise ValueError(
+                    f"Unsupported dataset: {self.real_dataset_name}. Supported datasets are: 'adult', 'credit'")
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert config to dictionary, handling complex types"""
+        config_dict = {}
+        for field in self.__dataclass_fields__:
+            value = getattr(self, field)
+            if isinstance(value, np.ndarray):
+                config_dict[field] = value.tolist() if value is not None else None
+            elif isinstance(value, set) and field == 'methods':
+                config_dict[field] = [m.value for m in value] if value is not None else None
+            else:
+                config_dict[field] = value
+        return config_dict
+
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any]) -> 'ExperimentConfig':
+        """Create config from dictionary, handling complex types"""
+        # Convert lists back to numpy arrays for correlation matrix
+        if config_dict.get('correlation_matrix') is not None:
+            config_dict['correlation_matrix'] = np.array(config_dict['correlation_matrix'])
+
+        # Convert method list back to set
+        if config_dict.get('methods') is not None:
+            config_dict['methods'] = {Method(m) for m in config_dict['methods']}
+
+        return cls(**config_dict)
 
 
 def evaluate_discrimination_detection(
@@ -317,6 +359,26 @@ def evaluate_discrimination_detection(
 
     group_analysis_df = pd.DataFrame(group_analysis_data)
 
+    if 'TSN' in results_df.columns:
+        group_analysis_df['tsn'] = results_df.iloc[0]['TSN']
+    else:
+        group_analysis_df['tsn'] = 0
+
+    if 'DSN' in results_df.columns:
+        group_analysis_df['dsn'] = results_df.iloc[0]['DSN']
+    else:
+        group_analysis_df['dsn'] = 0
+
+    if 'DSS' in results_df.columns:
+        group_analysis_df['dss'] = results_df.iloc[0]['DSS']
+    else:
+        group_analysis_df['dss'] = 0
+
+    if 'SUR' in results_df.columns:
+        group_analysis_df['sur'] = results_df.iloc[0]['SUR']
+    else:
+        group_analysis_df['sur'] = 0
+
     # Optimize results processing using vectorized operations where possible
     def process_row(row):
         indv_key = row['indv_key']
@@ -350,13 +412,15 @@ def evaluate_discrimination_detection(
     # Create metrics DataFrame efficiently
     metrics_columns = [
         'group_key', 'synthetic_group_size', 'num_exact_individual_matches',
-        'num_exact_couple_matches', 'num_new_group_individuals', 'num_new_group_couples'
+        'num_exact_couple_matches', 'num_new_group_individuals', 'num_new_group_couples',
+        'tsn', 'dsn', 'dss', 'sur'
     ]
     metrics_df = group_analysis_df[metrics_columns].copy()
     metrics_df.insert(0, 'experiment_id', experiment_id)
     metrics_df.insert(1, 'method', method)
 
     return group_analysis_df, results_df, metrics_df
+
 
 class ExperimentRunner:
     def __init__(self, db_path: str = "experiments.db", output_dir: str = "output_dir"):
@@ -366,7 +430,7 @@ class ExperimentRunner:
         self.setup_database()
 
     def setup_database(self):
-        """Setup database tables with updated schema for new uncertainty metrics"""
+        """Setup database tables with updated schema for new discrimination metrics"""
         # Create empty DataFrames with base schema
         experiments_df = pd.DataFrame(columns=[
             'experiment_id', 'config', 'methods', 'status',
@@ -388,7 +452,7 @@ class ExperimentRunner:
             'matching_groups', 'data'
         ])
 
-        # Updated schema for evaluated_results with new uncertainty metrics
+        # Updated schema for evaluated_results with new discrimination metrics
         evaluated_results_df = pd.DataFrame(columns=[
             'analysis_id',
             'group_key',
@@ -402,7 +466,12 @@ class ExperimentRunner:
             'num_exact_couple_matches',
             'num_new_group_individuals',
             'num_new_group_couples',
-            # New uncertainty metrics
+            # New discrimination metrics
+            'tsn',  # Total Sample Number
+            'dsn',  # Discrimination Sample Number
+            'dss',  # Discrimination Sample Score
+            'dsr',  # Discrimination Sample Ratio
+            # Existing uncertainty metrics
             'calculated_epistemic_random_forest',
             'calculated_aleatoric_random_forest',
             'calculated_aleatoric_entropy',
@@ -440,24 +509,11 @@ class ExperimentRunner:
         with sqlite3.connect(self.db_path) as conn:
             experiments_df.to_sql('experiments', conn, if_exists='append', index=False)
             results_df.to_sql('results', conn, if_exists='append', index=False)
-            analysis_metadata_df.to_sql('analysis_metadata', conn, if_exists='append', index=False)
-            evaluated_results_df.to_sql('evaluated_results', conn, if_exists='append', index=False)
-            augmented_results_df.to_sql('augmented_results', conn, if_exists='append', index=False)
-            synthetic_data_df.to_sql('synthetic_data', conn, if_exists='append', index=False)
-
-        # Add indexing for better performance
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                'CREATE INDEX IF NOT EXISTS idx_augmented_results_analysis_id ON augmented_results(analysis_id)')
-            cursor.execute(
-                'CREATE INDEX IF NOT EXISTS idx_evaluated_results_analysis_id ON evaluated_results(analysis_id)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_experiments_id ON experiments(experiment_id)')
+            analysis_metadata_df.to_sql
 
     def experiment_exists(self, config: ExperimentConfig) -> Optional[str]:
-        """Check if an experiment with the same configuration exists using pandas"""
-        config_dict = vars(config).copy()
-        config_dict['methods'] = sorted([m.value for m in config_dict['methods']])
+        """Check if an experiment with the same configuration exists"""
+        config_dict = config.to_dict()  # Use the new to_dict method
         config_json = json.dumps(config_dict, sort_keys=True)
 
         query = "SELECT experiment_id FROM experiments WHERE config = ? AND status = 'completed'"
@@ -655,42 +711,44 @@ class ExperimentRunner:
 
         return results_df, metrics, execution_time
 
-    def run_experiment(self, config: ExperimentConfig, existing_id: str = None, use_cache=False):
+    def run_experiment(self, config: ExperimentConfig, use_cache: bool = True) -> str:
         """Run experiment with synthetic data storage"""
-        if existing_id is None:
-            existing_id = self.experiment_exists(config)
-            if existing_id:
-                logger.info(f"Experiment already completed with ID: {existing_id}")
-                return existing_id
+        if existing_id := self.experiment_exists(config):
+            logger.info(f"Experiment already completed with ID: {existing_id}")
+            return existing_id
 
-            experiment_id = str(uuid.uuid4())
-        else:
-            experiment_id = existing_id
+        experiment_id = str(uuid.uuid4())
+        config_dict = config.to_dict()  # Use the new to_dict method
 
-        config_dict = vars(config).copy()
-        config_dict['methods'] = [m.value for m in config_dict['methods']]
-
-        if existing_id is None:
-            self.save_experiment(experiment_id, config_dict, 'running')
+        self.save_experiment(experiment_id, config_dict, 'running')
 
         try:
-            from data_generator.main import generate_data
-
-            ge = generate_data(
-                nb_attributes=config.nb_attributes,
-                min_number_of_classes=config.min_number_of_classes,
-                max_number_of_classes=config.max_number_of_classes,
-                min_granularity=config.min_granularity,
-                max_granularity=config.max_granularity,
-                min_intersectionality=config.min_intersectionality,
-                max_intersectionality=config.max_intersectionality,
-                prop_protected_attr=config.prop_protected_attr,
-                nb_groups=config.nb_groups,
-                max_group_size=config.max_group_size,
-                categorical_outcome=True,
-                nb_categories_outcome=config.nb_categories_outcome,
-                use_cache=use_cache
-            )
+            # Generate data based on configuration
+            if config.use_real_data:
+                ge, schema = generate_from_real_data(
+                    config.real_dataset_name,
+                    nb_groups=config.nb_groups,
+                    max_group_size=config.max_group_size,
+                    min_number_of_classes=config.min_number_of_classes,
+                    max_number_of_classes=config.max_number_of_classes,
+                    use_cache=use_cache
+                )
+            else:
+                ge = generate_data(
+                    nb_attributes=config.nb_attributes,
+                    min_number_of_classes=config.min_number_of_classes,
+                    max_number_of_classes=config.max_number_of_classes,
+                    min_granularity=config.min_granularity,
+                    max_granularity=config.max_granularity,
+                    min_intersectionality=config.min_intersectionality,
+                    max_intersectionality=config.max_intersectionality,
+                    prop_protected_attr=config.prop_protected_attr,
+                    nb_groups=config.nb_groups,
+                    max_group_size=config.max_group_size,
+                    categorical_outcome=True,
+                    nb_categories_outcome=config.nb_categories_outcome,
+                    use_cache=use_cache
+                )
 
             # Save synthetic data
             self.save_synthetic_data(experiment_id, ge)
@@ -710,7 +768,6 @@ class ExperimentRunner:
             logger.info(f"Experiment completed successfully: {experiment_id}")
 
             logger.info(f"Analyzing results for experiment: {experiment_id}")
-            # Pass config to evaluate_discrimination_detection
             self.analyze_experiment_results(experiment_id, ge, config)
 
             logger.info(f"Experiment and analysis completed successfully: {experiment_id}")
@@ -727,7 +784,7 @@ class ExperimentRunner:
         experiment_data = pd.DataFrame([{
             'experiment_id': experiment_id,
             'config': json.dumps(config, sort_keys=True),
-            'methods': json.dumps([m for m in config['methods']]),
+            'methods': json.dumps([m for m in config['methods']]),  # methods are already strings from to_dict()
             'status': status,
             'start_time': datetime.now(),
             'end_time': None,
@@ -910,7 +967,7 @@ class ExperimentRunner:
             synthetic_data.to_sql('synthetic_data', conn, if_exists='append', index=False)
 
 
-def create_method_configurations(methods: Set[Method] = None) -> List[ExperimentConfig]:
+def create_method_configurations(methods: Set[Method] = None, include_real_data: bool = True) -> List[ExperimentConfig]:
     """
     Creates comprehensive test configurations optimized for specific discrimination detection methods.
 
@@ -1091,6 +1148,31 @@ def create_method_configurations(methods: Set[Method] = None) -> List[Experiment
         }
     ]
 
+    real_dataset_configs = {
+        'adult': {
+            'real_dataset_name': 'adult',  # Changed from dataset_name to real_dataset_name
+            'use_real_data': True,  # Added use_real_data flag
+            'nb_attributes': 14,  # Adult dataset attributes minus fnlwgt
+            'prop_protected_attr': 0.14,  # 2 protected attributes out of 14
+            'nb_groups': 10,  # Default group size for real data
+            'max_group_size': 1000,  # Can be adjusted based on dataset size
+            'min_number_of_classes': 2,
+            'max_number_of_classes': 2,
+            'nb_categories_outcome': 2  # Binary income classification
+        },
+        'credit': {
+            'real_dataset_name': 'credit',  # Changed from dataset_name to real_dataset_name
+            'use_real_data': True,  # Added use_real_data flag
+            'nb_attributes': 20,  # Credit dataset attributes
+            'prop_protected_attr': 0.1,  # 2 protected attributes out of 20
+            'nb_groups': 10,
+            'max_group_size': 1000,
+            'min_number_of_classes': 2,
+            'max_number_of_classes': 2,
+            'nb_categories_outcome': 2  # Binary credit classification
+        }
+    }
+
     # Method mapping
     method_map = {
         'aequitas': Method.AEQUITAS,
@@ -1155,12 +1237,29 @@ def create_method_configurations(methods: Set[Method] = None) -> List[Experiment
                     }
                     configurations.append(ExperimentConfig(**config))
 
+    if include_real_data:
+        for dataset_name, dataset_config in real_dataset_configs.items():
+            for method_name, method_enum in method_map.items():
+                if method_enum not in methods:
+                    continue
+
+                method_params = param_ranges[method_name]
+
+                # Generate configurations for each intensity level
+                for intensity in method_params['configs'].keys():
+                    config = {
+                        **dataset_config,
+                        **method_params['configs'][intensity],
+                        'methods': {method_enum}
+                    }
+                    configurations.append(ExperimentConfig(**config))
+
     return configurations
 
 
 def run_experiments(configs: List[ExperimentConfig], methods: Set[Method] = None,
                     db_path: str = "experiments.db", use_cache=True):
-    """Run experiments with duplicate prevention"""
+    """Run experiments with duplicate prevention and support for real datasets"""
     runner = ExperimentRunner(db_path)
 
     # Set methods for each config if specified
@@ -1178,136 +1277,21 @@ def run_experiments(configs: List[ExperimentConfig], methods: Set[Method] = None
             logger.info(f"Skipping duplicate experiment (ID: {existing_id})")
             continue
 
-        experiment_id = runner.run_experiment(config, use_cache=use_cache)
-        logger.info(f"Completed experiment: {experiment_id}")
+        try:
+            experiment_id = runner.run_experiment(config, use_cache=use_cache)
+            logger.info(f"Completed experiment: {experiment_id}")
+        except Exception as e:
+            logger.error(f"Failed to run experiment with config: {config}")
+            logger.error(f"Error: {str(e)}")
+            raise e
 
 
 # %%
-DB_PATH = HERE.joinpath("experiments/discrimination_detection_results11.db").as_posix()
+DB_PATH = HERE.joinpath("experiments/discrimination_detection_results16.db").as_posix()
 FIGURES_PATH = HERE.joinpath("experiments/figures").as_posix()
 
 # %%
 for meth in [Method.AEQUITAS, Method.EXPGA, Method.MLCHECK, Method.BIASSCAN]:
     methods = {meth}
     configs = create_method_configurations(methods=methods)
-    run_experiments(configs, methods=methods, db_path=DB_PATH)
-
-# %%
-# methods = {Method.EXPGA, Method.AEQUITAS, Method.BIASSCAN}
-# configs = [ExperimentConfig(nb_groups=4, nb_attributes=3, min_granularity=1, max_granularity=1,
-#                             prop_protected_attr=0.5144, max_group_size=300, min_group_size=100,
-#                             min_number_of_classes=2, max_number_of_classes=3)]
-# run_experiments(configs, methods=methods, db_path=DB_PATH, use_cache=False)
-
-# %%
-# runner = ExperimentRunner(DB_PATH, FIGURES_PATH)
-# res = runner.get_experiment_data('8201735c-d54a-4438-935c-f36a76b319d3')
-# re2s = runner.consolidate_group_detections()
-# re3s = runner.summarize_method_performance()
-# runner.visualize_detection_rates()
-
-print('ddd')
-
-# %%
-# Run analysis
-# metric_results = runner.analyze_discrimination_metrics_cate(methods=['aequitas'])
-
-# %%
-# runner.plot_discriminatory_individuals('45bafd30-7c65-4c9c-b7c4-17b9d7cfc705')
-
-# %%
-# class ParallelExperimentRunner(ExperimentRunner):
-#     def __init__(self, db_path: str = "experiments.db", max_workers: Optional[int] = None):
-#         super().__init__(db_path)
-#         self.max_workers = max_workers or multiprocessing.cpu_count()
-#
-#     def _run_single_experiment(self, config: ExperimentConfig) -> Optional[str]:
-#         """Run a single experiment with proper error handling"""
-#         try:
-#             return self.run_experiment(config)
-#         except Exception as e:
-#             logger.error(f"Error running experiment: {str(e)}\n{traceback.format_exc()}")
-#             return None
-#
-#     def run_experiments_parallel(self, configs: List[ExperimentConfig], methods: Set[Method] = None):
-#         """Run multiple experiments in parallel"""
-#         if methods:
-#             for config in configs:
-#                 config.methods = methods
-#
-#         # Filter out configs that already have completed experiments
-#         new_configs = []
-#         for config in configs:
-#             existing_id = self.experiment_exists(config)
-#             if existing_id:
-#                 logger.info(f"Skipping duplicate experiment (ID: {existing_id})")
-#             else:
-#                 new_configs.append(config)
-#
-#         if not new_configs:
-#             logger.info("No new experiments to run")
-#             return
-#
-#         logger.info(f"Running {len(new_configs)} experiments with {self.max_workers} workers")
-#
-#         # Create a process pool and run experiments
-#         with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
-#             # Submit all experiments
-#             future_to_config = {
-#                 executor.submit(self._run_single_experiment, config): config
-#                 for config in new_configs
-#             }
-#
-#             # Process completed experiments
-#             for future in future_to_config:
-#                 config = future_to_config[future]
-#                 try:
-#                     experiment_id = future.result()
-#                     if experiment_id:
-#                         logger.info(f"Completed experiment {experiment_id} for config: {config}")
-#                     else:
-#                         logger.error(f"Failed to complete experiment for config: {config}")
-#                 except Exception as e:
-#                     logger.error(f"Exception running experiment: {str(e)}")
-#
-#
-# def run_parallel_experiments(configs: List[ExperimentConfig],
-#                              methods: Set[Method] = None,
-#                              db_path: str = "experiments.db",
-#                              max_workers: Optional[int] = None):
-#     """Main function to run experiments in parallel"""
-#     runner = ParallelExperimentRunner(db_path, max_workers)
-#
-#     # Resume any incomplete experiments first
-#     runner.resume_experiments()
-#
-#     # Run new experiments in parallel
-#     runner.run_experiments_parallel(configs, methods)
-#
-#
-# # %%
-# def main():
-#     DB_PATH = HERE.joinpath("experiments/discrimination_detection_results5.db").as_posix()
-#
-#     # Get optimized configurations
-#     configs = create_test_configurations()
-#
-#     # Set number of parallel workers (optional, defaults to CPU count)
-#     max_workers = multiprocessing.cpu_count() - 1  # Leave one CPU free
-#
-#     # Run experiments in parallel
-#     methods = {Method.MLCHECK, Method.BIASSCAN, Method.EXPGA, Method.AEQUITAS}
-#     run_parallel_experiments(
-#         configs,
-#         methods=methods,
-#         db_path=DB_PATH,
-#         max_workers=max_workers
-#     )
-#
-#
-# if __name__ == '__main__':
-#     freeze_support()  # Required for Windows
-#     main()
-# %%
-
-# %%
+    run_experiments(configs, methods=methods, db_path=DB_PATH, use_cache=False)

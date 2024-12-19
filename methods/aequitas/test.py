@@ -21,3 +21,4 @@ results_df, model_scores = run_aequitas(ge.training_dataframe, col_to_be_predict
                                         perturbation_unit=1, model_type=model_type, threshold=0,
                                         global_iteration_limit=global_iteration_limit,
                                         local_iteration_limit=local_iteration_limit)
+print('helo')

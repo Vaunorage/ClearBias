@@ -483,90 +483,116 @@ def run_aequitas(df: DataFrame,
                  threshold: float = 0,
                  global_iteration_limit: int = 1000,
                  local_iteration_limit: int = 100) -> Tuple[AequitasResultDF, Dict[str, Union[str, float]]]:
-    results: List[AequitasResultDF] = []
-    dataset = Dataset(df, col_to_be_predicted=col_to_be_predicted, sensitive_param_name_list=sensitive_param_name_list)
+    """
+    Run Aequitas analysis on the provided dataset.
+
+    Args:
+        df: Input DataFrame
+        col_to_be_predicted: Target column name
+        sensitive_param_name_list: List of sensitive parameter names
+        perturbation_unit: Size of perturbation steps
+        model_type: Type of model to use
+        threshold: Discrimination threshold
+        global_iteration_limit: Maximum global iterations
+        local_iteration_limit: Maximum local iterations
+
+    Returns:
+        Tuple containing results DataFrame and model scores
+    """
+    # Initialize dataset and model
+    dataset = Dataset(df, col_to_be_predicted=col_to_be_predicted,
+                      sensitive_param_name_list=sensitive_param_name_list)
     model, model_scores = generate_sklearn_classifier(dataset, model_type)
 
-    for sensitive_param_id, sensitive_attribute in zip(dataset.sensitive_param_idx_list, sensitive_param_name_list):
-        result = aequitas_fully_directed_sklearn(dataset, perturbation_unit, threshold, global_iteration_limit,
-                                                 local_iteration_limit, sensitive_param_id, model, sensitive_attribute)
+    # Run analysis for each sensitive parameter
+    results = []
+    for sensitive_param_id, sensitive_attribute in zip(dataset.sensitive_param_idx_list,
+                                                       sensitive_param_name_list):
+        result = aequitas_fully_directed_sklearn(
+            dataset,
+            perturbation_unit,
+            threshold,
+            global_iteration_limit,
+            local_iteration_limit,
+            sensitive_param_id,
+            model,
+            sensitive_attribute
+        )
         results.append(result)
 
-    res: AequitasResultDF = pd.concat(results)
-    res['case_id'] = np.arange(res.shape[0])
+    # If no results, return empty
+    if not results:
+        return pd.DataFrame(), {}
 
-    # Rename 'magnitude' to 'diff_outcome'
-    res = res.rename(columns={'magnitude': 'diff_outcome'})
+    # Combine all results
+    combined_results: AequitasResultDF = pd.concat(results)
+    combined_results['case_id'] = np.arange(combined_results.shape[0])
 
-    # Create two separate dataframes
-    df1 = res.drop(columns=['discrimination']).copy()
-    df2 = res.drop(columns=['counter_discrimination']).copy()
+    # Rename magnitude to diff_outcome for clarity
+    combined_results = combined_results.rename(columns={'magnitude': 'diff_outcome'})
 
-    # Make sure all required columns are present
-    required_columns = ['discrimination', 'diff_outcome', 'type', 'Sensitive Attribute',
-                        'Total Inputs', 'Discriminatory Inputs', 'Percentage Discriminatory Inputs',
-                        'TSN', 'DSN', 'DSS', 'SUR', 'case_id']
+    # Process discriminatory and counter-discriminatory cases
+    discriminatory_cases = combined_results.copy()
+    discriminatory_cases['discrimination'] = discriminatory_cases['counter_discrimination']
+    discriminatory_cases = discriminatory_cases.drop(columns=['counter_discrimination'])
 
-    # Add any missing columns with None values
-    for col in required_columns:
-        if col not in df1.columns and col != 'discrimination':
-            df1[col] = None
-        if col not in df2.columns and col != 'counter_discrimination':
-            df2[col] = None
+    counter_cases = combined_results.drop(columns=['counter_discrimination'])
 
-    # Concatenate vertically
-    res1: AequitasResultDF = pd.concat([df1, df2], ignore_index=True)
+    # Combine all cases
+    all_cases: AequitasResultDF = pd.concat([discriminatory_cases, counter_cases],
+                                            ignore_index=True)
+    all_cases.sort_values(by=['case_id'], inplace=True)
 
-    if res.shape[0] > 0:
-        try:
-            # Convert discrimination data to proper format
-            discrimination_data = []
-            for disc in res1['discrimination']:
-                if isinstance(disc, (list, np.ndarray)):
-                    discrimination_data.append(disc)
-                else:
-                    # If single value, create a list matching the number of columns
-                    discrimination_data.append([disc] * len(dataset.column_names))
-
-            # Create DataFrame from discrimination column with proper shape
-            disc_df: DataFrame = pd.DataFrame(discrimination_data, columns=dataset.column_names)
-
-            # Combine with rest of the data
-            res2: AequitasResultDF = pd.concat([disc_df, res1.drop(columns=['discrimination'])], axis=1)
-
-            # Predict outcomes
-            prediction_columns = [col for col in dataset.column_names if col != dataset.col_to_be_predicted]
-            res2['outcome'] = model.predict(res2[prediction_columns])
-
-            # Process diff_outcome
-            res2['diff_outcome'] = res2['diff_outcome'].apply(
-                lambda x: x[0] if isinstance(x, (list, np.ndarray)) else x)
-
-            # Sort by case_id
-            res2.sort_values(by=['case_id'], inplace=True)
-
-            # Generate individual keys
-            attr = list(df.columns)
-            attr.remove(col_to_be_predicted)
-            res2['indv_key'] = res2.apply(lambda x: '|'.join(list(map(str, x[attr].values.tolist()))), axis=1)
-
-            # Generate couple keys
-            def transform_subgroup(x):
-                res = x['indv_key'].tolist()
-                res = ["-".join(res), "-".join(res[::-1])]
-                return pd.Series(res, index=x.index)
-
-            ress = res2.groupby(['case_id']).apply(lambda x: transform_subgroup(x))
-            if ress.shape[0] > 0:
-                res2['couple_key'] = ress.reset_index(level=0, drop=True)
+    try:
+        # Convert discrimination data to proper format
+        discrimination_data = []
+        for disc in all_cases['discrimination']:
+            if isinstance(disc, (list, np.ndarray)):
+                discrimination_data.append(disc)
             else:
-                res2['couple_key'] = None
+                discrimination_data.append([disc] * len(dataset.column_names))
 
-            return res2, model_scores[0]
-        except Exception as e:
-            print(f"Error processing results: {str(e)}")
-            print(f"Shape of discrimination data: {len(discrimination_data)} rows")
-            print(f"Number of columns expected: {len(dataset.column_names)}")
-            raise e
+        # Create final results DataFrame
+        disc_df = pd.DataFrame(discrimination_data, columns=dataset.column_names)
+        final_results: AequitasResultDF = pd.concat(
+            [disc_df, all_cases.drop(columns=['discrimination'])],
+            axis=1
+        )
 
-    return pd.DataFrame(), {}
+        # Predict outcomes
+        prediction_columns = [col for col in dataset.column_names
+                              if col != dataset.col_to_be_predicted]
+        final_results['outcome'] = model.predict(final_results[prediction_columns])
+
+        # Process diff_outcome to ensure consistent format
+        final_results['diff_outcome'] = final_results['diff_outcome'].apply(
+            lambda x: x[0] if isinstance(x, (list, np.ndarray)) else x
+        )
+
+        # Generate individual and couple keys
+        attributes = [col for col in df.columns if col != col_to_be_predicted]
+        final_results['indv_key'] = final_results.apply(
+            lambda x: '|'.join(map(str, x[attributes].values.tolist())),
+            axis=1
+        )
+
+        # Generate couple keys
+        couple_keys = final_results.groupby(['case_id']).apply(
+            lambda x: pd.Series([
+                '-'.join(x['indv_key'].tolist()),
+                '-'.join(x['indv_key'].tolist()[::-1])
+            ], index=x.index)
+        )
+
+        if not couple_keys.empty:
+            final_results['couple_key'] = couple_keys.reset_index(level=0, drop=True)
+        else:
+            final_results['couple_key'] = None
+
+        return final_results, model_scores[0]
+
+    except Exception as e:
+        print(f"Error processing results: {str(e)}")
+        print(f"Shape of discrimination data: {len(discrimination_data)} rows")
+        print(f"Number of columns expected: {len(dataset.column_names)}")
+        raise e
