@@ -252,6 +252,9 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     # Create couple_key
     df['couple_key'] = df.groupby(df.index // 2)['indv_key'].transform(lambda x: '-'.join(x))
 
+    for k,v in metrics.items():
+        df[k] = v
+
     return df, metrics
 
 

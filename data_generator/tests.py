@@ -1,6 +1,7 @@
-from data_generator.main import generate_data, generate_data_schema, generate_from_real_data
+from data_generator.main import generate_data, generate_data_schema, generate_from_real_data, get_real_data, \
+    is_numeric_column
 
-data, schema = generate_from_real_data('adult', use_cache=False)
+data, schema = get_real_data('adult')
 
 # %%
 # nb_attributes = 20
@@ -35,55 +36,73 @@ def plot_distribution_comparison(schema, data, figsize=(15, 10)):
     """
     Plot distribution comparison between schema and generated data.
     """
-    # Calculate number of rows needed for subplots
     n_attrs = len(schema.attr_names)
-    n_rows = (n_attrs + 2) // 3  # 3 plots per row
+    n_rows = (n_attrs + 2) // 3
 
-    # Create figure
     fig, axes = plt.subplots(n_rows, 3, figsize=figsize)
     axes = axes.flatten()
 
-    # For each attribute
     for idx, (attr_name, protected) in enumerate(zip(schema.attr_names, schema.protected_attr)):
         ax = axes[idx]
 
-        # Get theoretical distribution from schema
-        # Get possible values from attr_categories
-        # Create theoretical distribution (uniform for now - modify based on actual schema)
-        theo_values = [val for val in schema.attr_categories[idx] if val != -1]
-        theo_probs = schema.categorical_distribution[attr_name]
+        # Check if the column is numeric and has numeric categories
+        try:
+            # Try to convert first non-nan value to float to check if truly numeric
+            sample_val = next((float(v) for k, v in schema.category_maps[attr_name].items()
+                               if k != -1 and v != 'nan'), None)
+            is_numeric = sample_val is not None
+        except (ValueError, TypeError):
+            is_numeric = False
 
-        # Calculate actual distribution from data
-        if hasattr(data, 'dataframe'):
-            actual_dist = data.dataframe[attr_name].value_counts(normalize=True)
+        if is_numeric:
+            # For numeric columns, use KDE plots
+            sns.kdeplot(data=data.dataframe, x=attr_name, ax=ax, label='Generated', color='green')
+
+            # Get schema distribution
+            theo_probs = schema.categorical_distribution[attr_name]
+            category_map = schema.category_maps[attr_name]
+
+            # Create x values from category map, excluding 'nan'
+            x_values = []
+            y_values = []
+            for k, v in category_map.items():
+                if k != -1 and v != 'nan':
+                    try:
+                        x_values.append(float(v))
+                        y_values.append(theo_probs[k])
+                    except (ValueError, IndexError):
+                        continue
+
+            # Sort points by x value for proper line plotting
+            points = sorted(zip(x_values, y_values))
+            if points:
+                x_values, y_values = zip(*points)
+                ax.plot(x_values, y_values, label='Schema', color='blue')
         else:
-            actual_dist = data[attr_name].value_counts(normalize=True)
-        for k, v in zip(theo_values, theo_probs):
-            if k not in actual_dist:
-                actual_dist[k] = 0
+            # Original categorical plotting code
+            theo_values = [val for val in schema.attr_categories[idx] if val != -1]
+            theo_probs = schema.categorical_distribution[attr_name]
 
-        # Plot bars
-        x = np.arange(len(theo_values))
-        width = 0.35
+            actual_dist = data.dataframe[attr_name].value_counts(normalize=True)
+            x = np.arange(len(theo_values))
+            width = 0.35
 
-        ax.bar(x - width / 2, theo_probs, width, label='Schema', alpha=0.6, color='blue')
-        ax.bar(x + width / 2, [actual_dist.get(val, 0) for val in theo_values],
-               width, label='Generated', alpha=0.6, color='green')
+            ax.bar(x - width / 2, theo_probs, width, label='Schema', alpha=0.6, color='blue')
+            ax.bar(x + width / 2, [actual_dist.get(val, 0) for val in theo_values],
+                   width, label='Generated', alpha=0.6, color='green')
+            ax.set_xticks(x)
+            ax.set_xticklabels(theo_values)
 
-        # Customize plot
         ax.set_title(f'{attr_name} {"(Protected)" if protected else ""}')
-        ax.set_xticks(x)
-        ax.set_xticklabels(theo_values)
         ax.set_ylabel('Probability')
         ax.legend()
 
-    # Remove empty subplots if any
+    # Remove empty subplots
     for idx in range(len(schema.attr_names), len(axes)):
         fig.delaxes(axes[idx])
 
     plt.tight_layout()
     return fig
-
 
 # Create and show the plot
 fig = plot_distribution_comparison(schema, data)

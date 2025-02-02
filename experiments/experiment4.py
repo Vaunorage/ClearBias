@@ -422,6 +422,35 @@ def evaluate_discrimination_detection(
     return group_analysis_df, results_df, metrics_df
 
 
+def convert_numpy_types(obj):
+    """
+    Convert numpy types to native Python types for JSON serialization.
+
+    Args:
+        obj: Any Python object that might contain numpy data types
+
+    Returns:
+        obj with all numpy types converted to native Python types
+    """
+    import numpy as np
+
+    if isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, tuple):
+        return tuple(convert_numpy_types(item) for item in obj)
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    return obj
+
+
 class ExperimentRunner:
     def __init__(self, db_path: str = "experiments.db", output_dir: str = "output_dir"):
         self.db_path = Path(db_path)
@@ -797,14 +826,17 @@ class ExperimentRunner:
     def save_result(self, experiment_id: str, method_name: str,
                     result_df: pd.DataFrame, metrics: Dict[str, Any],
                     execution_time: float):
-        """Save results using pandas DataFrame"""
+        """Save results using pandas DataFrame with numpy type conversion"""
+
+        # Convert numpy types in metrics
+        converted_metrics = convert_numpy_types(metrics)
 
         result_data = pd.DataFrame([{
             'result_id': str(uuid.uuid4()),
             'experiment_id': experiment_id,
             'method_name': method_name,
             'result_data': result_df.reset_index(drop=True).to_json(),
-            'metrics': json.dumps(metrics),
+            'metrics': json.dumps(converted_metrics),
             'execution_time': execution_time
         }])
 
@@ -967,7 +999,8 @@ class ExperimentRunner:
             synthetic_data.to_sql('synthetic_data', conn, if_exists='append', index=False)
 
 
-def create_method_configurations(methods: Set[Method] = None, include_real_data: bool = True) -> List[ExperimentConfig]:
+def create_method_configurations(methods: Set[Method] = None, include_real_data: bool = True,
+                                 only_real_data: bool = False) -> List[ExperimentConfig]:
     """
     Creates comprehensive test configurations optimized for specific discrimination detection methods.
 
@@ -1154,10 +1187,10 @@ def create_method_configurations(methods: Set[Method] = None, include_real_data:
             'use_real_data': True,  # Added use_real_data flag
             'nb_attributes': 14,  # Adult dataset attributes minus fnlwgt
             'prop_protected_attr': 0.14,  # 2 protected attributes out of 14
-            'nb_groups': 10,  # Default group size for real data
+            'nb_groups': 13,  # Default group size for real data
             'max_group_size': 1000,  # Can be adjusted based on dataset size
             'min_number_of_classes': 2,
-            'max_number_of_classes': 2,
+            'max_number_of_classes': 3,
             'nb_categories_outcome': 2  # Binary income classification
         },
         'credit': {
@@ -1168,7 +1201,7 @@ def create_method_configurations(methods: Set[Method] = None, include_real_data:
             'nb_groups': 10,
             'max_group_size': 1000,
             'min_number_of_classes': 2,
-            'max_number_of_classes': 2,
+            'max_number_of_classes': 3,
             'nb_categories_outcome': 2  # Binary credit classification
         }
     }
@@ -1188,56 +1221,57 @@ def create_method_configurations(methods: Set[Method] = None, include_real_data:
     configurations = []
 
     # Generate configurations for each specified method and base config
-    for base_config in base_configs:
-        for method_name, method_enum in method_map.items():
-            if method_enum not in methods:
-                continue
+    if not only_real_data:
+        for base_config in base_configs:
+            for method_name, method_enum in method_map.items():
+                if method_enum not in methods:
+                    continue
 
-            method_params = param_ranges[method_name]
+                method_params = param_ranges[method_name]
 
-            # Generate standard combinations
-            standard_combo = {
-                'nb_attributes': method_params['nb_attributes'][2],  # Middle range
-                'prop_protected_attr': method_params['prop_protected_attr'][2],
-                'nb_groups': method_params['nb_groups'][2],
-                'max_group_size': method_params['max_group_size'][2]
-            }
+                # Generate standard combinations
+                standard_combo = {
+                    'nb_attributes': method_params['nb_attributes'][2],  # Middle range
+                    'prop_protected_attr': method_params['prop_protected_attr'][2],
+                    'nb_groups': method_params['nb_groups'][2],
+                    'max_group_size': method_params['max_group_size'][2]
+                }
 
-            # Generate configurations that vary parameters systematically
-            interesting_combinations = [
-                standard_combo,  # Standard case
-                # Varying each parameter individually
-                *[{**standard_combo, 'nb_attributes': val}
-                  for val in method_params['nb_attributes']],
-                *[{**standard_combo, 'prop_protected_attr': val}
-                  for val in method_params['prop_protected_attr']],
-                *[{**standard_combo, 'nb_groups': val}
-                  for val in method_params['nb_groups']],
-                *[{**standard_combo, 'max_group_size': val}
-                  for val in method_params['max_group_size']],
-                # Edge cases combinations
-                {**standard_combo, 'nb_attributes': method_params['nb_attributes'][0],
-                 'prop_protected_attr': method_params['prop_protected_attr'][0]},  # Minimal case
-                {**standard_combo, 'nb_attributes': method_params['nb_attributes'][-1],
-                 'prop_protected_attr': method_params['prop_protected_attr'][-1]},  # Maximal case
-                {**standard_combo, 'nb_groups': method_params['nb_groups'][0],
-                 'max_group_size': method_params['max_group_size'][0]},  # Small groups
-                {**standard_combo, 'nb_groups': method_params['nb_groups'][-1],
-                 'max_group_size': method_params['max_group_size'][-1]},  # Large groups
-            ]
+                # Generate configurations that vary parameters systematically
+                interesting_combinations = [
+                    standard_combo,  # Standard case
+                    # Varying each parameter individually
+                    *[{**standard_combo, 'nb_attributes': val}
+                      for val in method_params['nb_attributes']],
+                    *[{**standard_combo, 'prop_protected_attr': val}
+                      for val in method_params['prop_protected_attr']],
+                    *[{**standard_combo, 'nb_groups': val}
+                      for val in method_params['nb_groups']],
+                    *[{**standard_combo, 'max_group_size': val}
+                      for val in method_params['max_group_size']],
+                    # Edge cases combinations
+                    {**standard_combo, 'nb_attributes': method_params['nb_attributes'][0],
+                     'prop_protected_attr': method_params['prop_protected_attr'][0]},  # Minimal case
+                    {**standard_combo, 'nb_attributes': method_params['nb_attributes'][-1],
+                     'prop_protected_attr': method_params['prop_protected_attr'][-1]},  # Maximal case
+                    {**standard_combo, 'nb_groups': method_params['nb_groups'][0],
+                     'max_group_size': method_params['max_group_size'][0]},  # Small groups
+                    {**standard_combo, 'nb_groups': method_params['nb_groups'][-1],
+                     'max_group_size': method_params['max_group_size'][-1]},  # Large groups
+                ]
 
-            # Generate configuration for each combination and intensity
-            for dataset_params in interesting_combinations:
-                for intensity in method_params['configs'].keys():
-                    config = {
-                        **base_config,
-                        **dataset_params,
-                        **method_params['configs'][intensity],
-                        'methods': {method_enum}
-                    }
-                    configurations.append(ExperimentConfig(**config))
+                # Generate configuration for each combination and intensity
+                for dataset_params in interesting_combinations:
+                    for intensity in method_params['configs'].keys():
+                        config = {
+                            **base_config,
+                            **dataset_params,
+                            **method_params['configs'][intensity],
+                            'methods': {method_enum}
+                        }
+                        configurations.append(ExperimentConfig(**config))
 
-    if include_real_data:
+    if include_real_data or only_real_data:
         for dataset_name, dataset_config in real_dataset_configs.items():
             for method_name, method_enum in method_map.items():
                 if method_enum not in methods:
@@ -1287,11 +1321,11 @@ def run_experiments(configs: List[ExperimentConfig], methods: Set[Method] = None
 
 
 # %%
-DB_PATH = HERE.joinpath("experiments/discrimination_detection_results16.db").as_posix()
+DB_PATH = HERE.joinpath("experiments/discrimination_detection_results17.db").as_posix()
 FIGURES_PATH = HERE.joinpath("experiments/figures").as_posix()
 
 # %%
-for meth in [Method.AEQUITAS, Method.EXPGA, Method.MLCHECK, Method.BIASSCAN]:
+for meth in [Method.AEQUITAS, Method.EXPGA, Method.MLCHECK]:
     methods = {meth}
-    configs = create_method_configurations(methods=methods)
+    configs = create_method_configurations(methods=methods, only_real_data=True)
     run_experiments(configs, methods=methods, db_path=DB_PATH, use_cache=False)
