@@ -19,7 +19,10 @@ from typing import Literal, TypeVar, Any, List, Dict, Tuple, Optional, Union
 from scipy.stats import norm, multivariate_normal, spearmanr, gaussian_kde
 import pandas as pd
 import warnings
-
+from typing import Tuple, Optional, Dict, List
+from dataclasses import dataclass
+from sklearn.preprocessing import LabelEncoder
+from sklearn.cluster import KMeans
 from ucimlrepo import fetch_ucirepo
 
 from data_generator.main_old import DiscriminationData
@@ -383,10 +386,17 @@ def generate_schema_from_dataframe(
     if outcome_column not in df.columns:
         raise ValueError(f"Outcome column '{outcome_column}' not found in DataFrame")
 
-    new_cols = [f"Attr{k}" for k, v in enumerate(df.columns)]
-    new_cols = [f"{n}_{'T' if v in protected_columns else 'X'}" for n, v in zip(new_cols, df.columns)]
+    new_cols = []
+    for k, v in enumerate(df.columns):
+        if v == outcome_column:
+            attr_col = 'outcome'
+        else:
+            attr_col = f"Attr{k}_{'T' if v in protected_columns else 'X'}"
+
+        new_cols.append(attr_col)
 
     new_cols_mapping = {k: v for k, v in zip(new_cols, df.columns)}
+    reverse_cols_mapping = {v: k for k, v in zip(new_cols, df.columns)}
 
     if use_attr_naming_pattern:
         df.columns = new_cols
@@ -481,6 +491,7 @@ def generate_schema_from_dataframe(
     )
 
     return schema, correlation_matrix, new_cols_mapping
+
 
 def decode_dataframe(df: pd.DataFrame, schema: DataSchema) -> pd.DataFrame:
     """
@@ -1516,16 +1527,16 @@ def generate_data(
     return data
 
 
-def generate_from_real_data(dataset_name, *args, **kwargs):
+def generate_from_real_data(dataset_name, use_cache=False, *args, **kwargs):
     if dataset_name == 'adult':
         adult = fetch_ucirepo(id=2)
         df1 = adult['data']['original']
         df1.drop(columns=['fnlwgt'], inplace=True)
 
         schema, correlation_matrix, column_mapping = generate_schema_from_dataframe(df1,
-                                                                             protected_columns=['race', 'sex'],
-                                                                             outcome_column='income',
-                                                                             use_attr_naming_pattern=True)
+                                                                                    protected_columns=['race', 'sex'],
+                                                                                    outcome_column='income',
+                                                                                    use_attr_naming_pattern=True)
     elif dataset_name == 'credit':
         df1 = fetch_ucirepo(id=144)
         df1 = df1['data']['original']
@@ -1539,25 +1550,18 @@ def generate_from_real_data(dataset_name, *args, **kwargs):
 
     data = generate_data(
         correlation_matrix=correlation_matrix,
-        data_schema=schema, *args, **kwargs)
+        data_schema=schema, use_cache=use_cache, *args, **kwargs)
 
     # data = decode_dataframe(data.dataframe, schema)
     return data, schema
 
 
-from ucimlrepo import fetch_ucirepo
-import pandas as pd
-import numpy as np
-from typing import Tuple, Optional, Dict, List
-from dataclasses import dataclass
-from sklearn.preprocessing import LabelEncoder
-from sklearn.cluster import KMeans
-
-
 def get_real_data(
         dataset_name: str,
         protected_columns: Optional[List[str]] = None,
-        outcome_column: Optional[str] = None
+        outcome_column: Optional[str] = None,
+        use_cache=False,
+        *args, **kwargs
 ) -> Tuple[DiscriminationData, DataSchema]:
     """
     Fetch and process real datasets into the same format as generate_data output.
@@ -1566,11 +1570,11 @@ def get_real_data(
         dataset_name (str): Name of the dataset ('adult', 'credit', etc.)
         protected_columns (List[str], optional): List of column names to treat as protected attributes
         outcome_column (str, optional): Name of the column to use as outcome
+        *args, **kwargs: Additional arguments passed to generate_data
 
     Returns:
         Tuple[DiscriminationData, DataSchema]: Processed data and schema matching generate_data format
     """
-    # Default configurations for known datasets
     dataset_configs = {
         'adult': {
             'id': 2,
@@ -1595,150 +1599,28 @@ def get_real_data(
     dataset = fetch_ucirepo(id=config['id'])
     df = dataset['data']['original']
 
-    # Drop unnecessary columns
     if config['drop_columns']:
         df = df.drop(columns=config['drop_columns'])
 
-    # Generate schema and correlation matrix
+    # Generate schema from the dataframe
     schema, correlation_matrix, column_mapping = generate_schema_from_dataframe(
         df,
         protected_columns=config['protected_columns'],
         outcome_column=config['outcome_column'],
-        use_attr_naming_pattern=True
+        use_attr_naming_pattern=True,
+        ensure_positive_definite=True
     )
 
-    # Get the transformed column names from the mapping
-    reverse_mapping = {v: k for k, v in column_mapping.items()}
-    transformed_outcome = [k for k, v in column_mapping.items() if v == config['outcome_column']][0]
+    # Ensure schema attribute names are unique
+    schema.attr_names = list(dict.fromkeys(schema.attr_names))
 
-    def encode_categorical_columns(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, LabelEncoder]]:
-        """Encode all categorical columns in the dataframe."""
-        encoders = {}
-        df = df.copy()
-
-        for col in df.columns:
-            if df[col].dtype == 'object' or df[col].dtype.name == 'category':
-                le = LabelEncoder()
-                non_null_mask = df[col].notna()
-                if non_null_mask.any():
-                    values = df.loc[non_null_mask, col].astype(str)
-                    le.fit(values)
-                    df.loc[non_null_mask, col] = le.transform(values)
-                    df[col] = df[col].astype(float)
-                    encoders[col] = le
-
-        return df, encoders
-
-    def create_subgroups(group_df: pd.DataFrame, non_protected_cols: List[str]) -> pd.DataFrame:
-        """Create two subgroups within each group using KMeans clustering."""
-        if len(group_df) < 2:  # If group is too small, don't split
-            group_df['subgroup_key'] = group_df['group_key'] + '_1'
-            return group_df
-
-        # Use non-protected attributes for clustering
-        features_for_clustering = group_df[non_protected_cols].copy()
-
-        # Handle categorical features
-        for col in features_for_clustering.columns:
-            if features_for_clustering[col].dtype == 'object':
-                features_for_clustering[col] = pd.Categorical(features_for_clustering[col]).codes
-
-        # Fill any missing values
-        features_for_clustering = features_for_clustering.fillna(features_for_clustering.mean())
-
-        # Perform clustering
-        kmeans = KMeans(n_clusters=2, random_state=42)
-        cluster_labels = kmeans.fit_predict(features_for_clustering)
-
-        # Create subgroup keys
-        group_df['subgroup_key'] = group_df['group_key'] + '_' + cluster_labels.astype(str)
-        return group_df
-
-    def create_groups(df: pd.DataFrame, outcome_col: str) -> pd.DataFrame:
-        # Encode all categorical columns
-        df, encoders = encode_categorical_columns(df)
-
-        protected_cols = [col for col in df.columns if col.endswith('_T')]
-        non_protected_cols = [col for col in df.columns if col.endswith('_X')]
-
-        # Create group_key by combining protected attributes
-        df['group_key'] = df[protected_cols].astype(str).agg('|'.join, axis=1)
-
-        # Create subgroups within each group
-        df = df.groupby('group_key', group_keys=False).apply(
-            lambda x: create_subgroups(x, non_protected_cols)
-        ).reset_index(drop=True)
-
-        # Create individual keys
-        df['indv_key'] = df[protected_cols + non_protected_cols].astype(str).agg('|'.join, axis=1)
-
-        # Calculate group statistics
-        group_stats = df.groupby('group_key', as_index=False).agg({
-            outcome_col: ['mean', 'std', 'size']
-        })
-        group_stats.columns = ['group_key', 'mean_outcome', 'std_outcome', 'group_size']
-        group_stats['std_outcome'] = group_stats['std_outcome'].fillna(0)
-
-        df = df.merge(group_stats, on='group_key', how='left')
-
-        # Calculate subgroup sizes
-        subgroup_sizes = df.groupby(['group_key', 'subgroup_key']).size().reset_index(name='subgroup_size')
-        subgroup_sizes['total_group_size'] = subgroup_sizes.groupby('group_key')['subgroup_size'].transform('sum')
-        subgroup_sizes['diff_subgroup_size'] = abs(
-            subgroup_sizes['subgroup_size'] / subgroup_sizes['total_group_size'] - 0.5)
-        df = df.merge(subgroup_sizes[['group_key', 'diff_subgroup_size']], on='group_key', how='left')
-
-        # Calculate uncertainties
-        df['epis_uncertainty'] = df['std_outcome'] / (df['mean_outcome'] + 1e-8)
-        df['alea_uncertainty'] = 1 / np.sqrt(df['group_size'] + 1e-8)
-
-        # Add required columns
-        df['granularity_param'] = len(non_protected_cols)
-        df['intersectionality_param'] = len(protected_cols)
-        df['similarity_param'] = 0.5
-        df['epis_uncertainty_param'] = df['epis_uncertainty']
-        df['alea_uncertainty_param'] = df['alea_uncertainty']
-        df['frequency_param'] = df['group_size'] / len(df)
-        df['collisions'] = 0
-
-        # Calculate diff_outcome within each group
-        df['diff_outcome'] = df.groupby('group_key')[outcome_col].transform(
-            lambda x: x.max() - x.min()
-        )
-
-        # Calculate coefficient of variation
-        df['diff_variation'] = df.groupby('group_key')[outcome_col].transform(
-            lambda x: coefficient_of_variation(x)
-        )
-
-        return df
-
-    # Process the data using transformed column names
-    processed_df = create_groups(df, transformed_outcome)
-
-    # Ensure all numeric columns
-    for col in processed_df.columns:
-        if processed_df[col].dtype == 'object':
-            try:
-                processed_df[col] = pd.to_numeric(processed_df[col])
-            except:
-                if col not in ['group_key', 'subgroup_key', 'indv_key']:
-                    processed_df[col] = pd.Categorical(processed_df[col]).codes
-
-    # Create DiscriminationData object
-    data = DiscriminationData(
-        dataframe=DiscriminationDataFrame(processed_df),
-        categorical_columns=[col for col in processed_df.columns if col != transformed_outcome],
-        attributes={col: col.endswith('_T') for col in schema.attr_names},
-        collisions=0,
-        nb_groups=processed_df['group_key'].nunique(),
-        max_group_size=processed_df['group_size'].max(),
-        hiddenlayers_depth=3,
-        outcome_column=transformed_outcome,
-        attr_possible_values=schema.category_maps
+    # Generate the data using the schema
+    data = generate_data(
+        correlation_matrix=correlation_matrix,
+        data_schema=schema,
+        use_cache=use_cache,
+        *args,
+        **kwargs
     )
-
-    # Calculate actual metrics
-    data = calculate_actual_metrics(data)
 
     return data, schema

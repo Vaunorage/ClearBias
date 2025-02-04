@@ -20,7 +20,7 @@ from enum import Enum
 import re
 from pathlib import Path
 
-from data_generator.main import generate_from_real_data, generate_data
+from data_generator.main import generate_from_real_data, generate_data, get_real_data
 from path import HERE
 import sqlite3
 import json
@@ -118,16 +118,18 @@ class ExperimentConfig:
     # Real dataset parameters
     use_real_data: bool = False
     real_dataset_name: Optional[str] = None
+    dataset_name: Optional[str] = None
     correlation_matrix: Optional[np.ndarray] = None
     data_schema: Optional[str] = None
+    data_generation_method: Optional[str] = None  # Can be 'get_real_data' or 'generate_from_real_data'
 
     # Method specific parameters
     # Aequitas
-    aequitas_global_iteration_limit: int = 100
-    aequitas_local_iteration_limit: int = 10
     aequitas_model_type: str = "RandomForest"
-    aequitas_perturbation_unit: float = 1.0
     aequitas_threshold: float = 0.0
+    aequitas_perturbation_unit: float = 0.5
+    aequitas_global_iteration_limit: int = 200
+    aequitas_local_iteration_limit: int = 20
 
     # BiassScan
     bias_scan_test_size: float = 0.3
@@ -139,10 +141,10 @@ class ExperimentConfig:
     bias_scan_mode: str = 'ordinal'
 
     # ExpGA
-    expga_threshold: float = 0.5
     expga_threshold_rank: float = 0.5
-    expga_max_global: int = 50
-    expga_max_local: int = 50
+    expga_threshold: float = 0.2  # Lower threshold to match papers
+    expga_max_global: int = 100  # Increase exploration
+    expga_max_local: int = 100  # Increase local refinement
 
     # MLCheck
     mlcheck_iteration_no: int = 1
@@ -160,6 +162,9 @@ class ExperimentConfig:
             if self.real_dataset_name not in ['adult', 'credit']:
                 raise ValueError(
                     f"Unsupported dataset: {self.real_dataset_name}. Supported datasets are: 'adult', 'credit'")
+            if self.data_generation_method not in ['get_real_data', 'generate_from_real_data', None]:
+                raise ValueError(
+                    f"Invalid data_generation_method: {self.data_generation_method}. Must be 'get_real_data' or 'generate_from_real_data'")
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary, handling complex types"""
@@ -563,7 +568,7 @@ class ExperimentRunner:
 
         return {Method(row['method_name']) for _, row in df.iterrows()}
 
-    def resume_experiments(self):
+    def resume_experiments(self, use_cache: bool = True):
         """Resume experiments using pandas operations"""
         with sqlite3.connect(self.db_path) as conn:
             incomplete_experiments = pd.read_sql_query(
@@ -584,7 +589,7 @@ class ExperimentRunner:
                 logger.info(f"Resuming experiment {row['experiment_id']} for methods: {remaining_methods}")
                 config.methods = remaining_methods
                 try:
-                    self.run_experiment(config, row['experiment_id'])
+                    self.run_experiment(config, use_cache=use_cache)
                 except Exception as e:
                     logger.error(f"Failed to resume experiment {row['experiment_id']}: {str(e)}")
                     continue
@@ -753,7 +758,7 @@ class ExperimentRunner:
 
         try:
             # Generate data based on configuration
-            if config.use_real_data:
+            if config.data_generation_method == 'generate_from_real_data':
                 ge, schema = generate_from_real_data(
                     config.real_dataset_name,
                     nb_groups=config.nb_groups,
@@ -761,6 +766,10 @@ class ExperimentRunner:
                     min_number_of_classes=config.min_number_of_classes,
                     max_number_of_classes=config.max_number_of_classes,
                     use_cache=use_cache
+                )
+            elif config.data_generation_method == 'get_real_data':
+                ge, schema = get_real_data(
+                    dataset_name=config.real_dataset_name
                 )
             else:
                 ge = generate_data(
@@ -1006,20 +1015,21 @@ def create_method_configurations(methods: Set[Method] = None, include_real_data:
 
     Args:
         methods: Set of Method enums to create configurations for. If None, creates for all methods.
+        include_real_data: Whether to include configurations for real datasets
+        only_real_data: If True, only generate configurations for real datasets
 
     Returns:
         List of ExperimentConfig objects tailored for specified methods
     """
     # Parameter ranges optimized per method
     param_ranges = {
-        # Dataset parameters - adjusted based on method characteristics
         'aequitas': {
-            'nb_attributes': [5, 8, 10, 12, 15, 20],  # Extended range for attribute sensitivity
-            'prop_protected_attr': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],  # Finer granularity
-            'nb_groups': [10, 20, 35, 50, 75, 100, 150],  # More group size variations
-            'max_group_size': [100, 200, 350, 500, 750, 1000, 1500],  # Extended range
+            'nb_attributes': [5, 8, 10, 12, 15, 20],
+            'prop_protected_attr': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+            'nb_groups': [10, 20, 35, 50, 75, 100, 150],
+            'max_group_size': [100, 200, 350, 500, 750, 1000, 1500],
             'configs': {
-                'ultralight': {  # New ultralight config for quick tests
+                'ultralight': {
                     'aequitas_perturbation_unit': 0.25,
                     'aequitas_global_iteration_limit': 25,
                     'aequitas_local_iteration_limit': 3,
@@ -1039,170 +1049,120 @@ def create_method_configurations(methods: Set[Method] = None, include_real_data:
                     'aequitas_local_iteration_limit': 10,
                     'aequitas_threshold': 0.0,
                     'aequitas_model_type': 'RandomForest'
-                },
-                'intensive': {
-                    'aequitas_perturbation_unit': 2.0,
-                    'aequitas_global_iteration_limit': 200,
-                    'aequitas_local_iteration_limit': 25,
-                    'aequitas_threshold': 0.0,
-                    'aequitas_model_type': 'RandomForest'
-                },
-                'thorough': {  # New thorough config for comprehensive testing
-                    'aequitas_perturbation_unit': 1.5,
-                    'aequitas_global_iteration_limit': 150,
-                    'aequitas_local_iteration_limit': 15,
-                    'aequitas_threshold': 0.05,
-                    'aequitas_model_type': 'RandomForest'
                 }
             }
         },
         'biasscan': {
-            'nb_attributes': [5, 10, 15, 20, 30, 50, 75],  # Extended range
-            'prop_protected_attr': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],  # More variations
-            'nb_groups': [25, 50, 75, 100, 150, 200, 300],  # Extended range
-            'max_group_size': [250, 500, 750, 1000, 1500, 2000, 3000],  # More variations
+            'nb_attributes': [5, 10, 15, 20],
+            'prop_protected_attr': [0.1, 0.2, 0.3, 0.4],
+            'nb_groups': [25, 50, 75, 100],
+            'max_group_size': [250, 500, 750, 1000],
             'configs': {
-                'ultralight': {
-                    'bias_scan_test_size': 0.15,
-                    'bias_scan_n_estimators': 50,
-                    'bias_scan_num_iters': 25,
-                    'bias_scan_scoring': 'Poisson',
-                    'bias_scan_mode': 'ordinal'
-                },
-                'lightweight': {
-                    'bias_scan_test_size': 0.2,
-                    'bias_scan_n_estimators': 100,
-                    'bias_scan_num_iters': 50,
-                    'bias_scan_scoring': 'Poisson',
-                    'bias_scan_mode': 'ordinal'
-                },
                 'default': {
                     'bias_scan_test_size': 0.3,
+                    'bias_scan_random_state': 42,
                     'bias_scan_n_estimators': 200,
                     'bias_scan_num_iters': 100,
                     'bias_scan_scoring': 'Poisson',
-                    'bias_scan_mode': 'ordinal'
-                },
-                'thorough': {
-                    'bias_scan_test_size': 0.35,
-                    'bias_scan_n_estimators': 300,
-                    'bias_scan_num_iters': 150,
-                    'bias_scan_scoring': 'Poisson',
-                    'bias_scan_mode': 'ordinal'
-                },
-                'intensive': {
-                    'bias_scan_test_size': 0.4,
-                    'bias_scan_n_estimators': 500,
-                    'bias_scan_num_iters': 200,
-                    'bias_scan_scoring': 'Poisson',
+                    'bias_scan_favorable_value': 'high',
                     'bias_scan_mode': 'ordinal'
                 }
             }
         },
         'expga': {
-            'nb_attributes': [5, 8, 10, 12, 15, 20, 25],  # More granular range
-            'prop_protected_attr': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],  # Extended range
-            'nb_groups': [10, 20, 35, 50, 75, 100, 150],  # More variations
-            'max_group_size': [100, 200, 350, 500, 750, 1000, 1500],  # Extended range
+            'nb_attributes': [5, 8, 10, 12],
+            'prop_protected_attr': [0.1, 0.2, 0.3, 0.4],
+            'nb_groups': [10, 20, 35, 50],
+            'max_group_size': [100, 200, 350, 500],
             'configs': {
-                'ultralight': {
-                    'expga_threshold': 0.8,
-                    'expga_threshold_rank': 0.8,
-                    'expga_max_global': 15,
-                    'expga_max_local': 15
-                },
-                'lightweight': {
-                    'expga_threshold': 0.7,
-                    'expga_threshold_rank': 0.7,
-                    'expga_max_global': 25,
-                    'expga_max_local': 25
-                },
                 'default': {
                     'expga_threshold': 0.5,
                     'expga_threshold_rank': 0.5,
                     'expga_max_global': 50,
                     'expga_max_local': 50
-                },
-                'thorough': {
-                    'expga_threshold': 0.4,
-                    'expga_threshold_rank': 0.4,
-                    'expga_max_global': 75,
-                    'expga_max_local': 75
-                },
-                'intensive': {
-                    'expga_threshold': 0.3,
-                    'expga_threshold_rank': 0.3,
-                    'expga_max_global': 100,
-                    'expga_max_local': 100
                 }
             }
         },
         'mlcheck': {
-            'nb_attributes': [5, 8, 10, 12, 15, 20],  # More granular range
-            'prop_protected_attr': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],  # Extended range
-            'nb_groups': [10, 20, 35, 50, 75, 100],  # More variations
-            'max_group_size': [100, 200, 350, 500, 750, 1000],  # Extended range
+            'nb_attributes': [5, 8, 10, 12],
+            'prop_protected_attr': [0.1, 0.2, 0.3, 0.4],
+            'nb_groups': [10, 20, 35, 50],
+            'max_group_size': [100, 200, 350, 500],
             'configs': {
-                'ultralight': {
-                    'mlcheck_iteration_no': 1
-                },
-                'lightweight': {
-                    'mlcheck_iteration_no': 3
-                },
                 'default': {
-                    'mlcheck_iteration_no': 5
-                },
-                'thorough': {
-                    'mlcheck_iteration_no': 10
-                },
-                'intensive': {
-                    'mlcheck_iteration_no': 20
+                    'mlcheck_iteration_no': 1
                 }
             }
         }
     }
 
-    # Extended base configuration options
-    base_configs = [
-        {
-            'min_number_of_classes': 2,
-            'max_number_of_classes': 4,
-            'nb_categories_outcome': 2  # Binary classification
-        },
-        {
-            'min_number_of_classes': 2,
-            'max_number_of_classes': 5,
-            'nb_categories_outcome': 3  # Multi-class with 3 categories
-        },
-        {
-            'min_number_of_classes': 3,
-            'max_number_of_classes': 6,
-            'nb_categories_outcome': 4  # Multi-class with 4 categories
-        }
-    ]
+    # Base configuration options
+    base_config = {
+        'min_group_size': 10,
+        'nb_categories_outcome': 4,
+        'min_number_of_classes': 2,
+        'max_number_of_classes': 4,
+        'min_granularity': 1,
+        'min_intersectionality': 1,
+        'use_real_data': False,
+        'real_dataset_name': None,
+        'dataset_name': None,
+        'correlation_matrix': None,
+        'data_schema': None,
+        'data_generation_method': None,
+        'max_granularity': None,
+        'max_intersectionality': None
+    }
 
+    # Real dataset configurations
     real_dataset_configs = {
-        'adult': {
-            'real_dataset_name': 'adult',  # Changed from dataset_name to real_dataset_name
-            'use_real_data': True,  # Added use_real_data flag
-            'nb_attributes': 14,  # Adult dataset attributes minus fnlwgt
-            'prop_protected_attr': 0.14,  # 2 protected attributes out of 14
-            'nb_groups': 13,  # Default group size for real data
-            'max_group_size': 1000,  # Can be adjusted based on dataset size
+        'adult_config1': {
+            'nb_attributes': 14,
+            'prop_protected_attr': 0.14,
+            'nb_groups': 5,
+            'max_group_size': 500,
+            'use_real_data': True,
+            'real_dataset_name': 'adult',
+            'dataset_name': 'adult',
             'min_number_of_classes': 2,
             'max_number_of_classes': 3,
-            'nb_categories_outcome': 2  # Binary income classification
+            'nb_categories_outcome': 2
         },
-        'credit': {
-            'real_dataset_name': 'credit',  # Changed from dataset_name to real_dataset_name
-            'use_real_data': True,  # Added use_real_data flag
-            'nb_attributes': 20,  # Credit dataset attributes
-            'prop_protected_attr': 0.1,  # 2 protected attributes out of 20
+        'adult_config2': {
+            'nb_attributes': 14,
+            'prop_protected_attr': 0.14,
+            'nb_groups': 13,
+            'max_group_size': 1000,
+            'use_real_data': True,
+            'real_dataset_name': 'adult',
+            'dataset_name': 'adult',
+            'min_number_of_classes': 2,
+            'max_number_of_classes': 3,
+            'nb_categories_outcome': 2
+        },
+        'credit_config1': {
+            'nb_attributes': 20,
+            'prop_protected_attr': 0.1,
+            'nb_groups': 5,
+            'max_group_size': 500,
+            'use_real_data': True,
+            'real_dataset_name': 'credit',
+            'dataset_name': 'credit',
+            'min_number_of_classes': 2,
+            'max_number_of_classes': 3,
+            'nb_categories_outcome': 2
+        },
+        'credit_config2': {
+            'nb_attributes': 20,
+            'prop_protected_attr': 0.1,
             'nb_groups': 10,
             'max_group_size': 1000,
+            'use_real_data': True,
+            'real_dataset_name': 'credit',
+            'dataset_name': 'credit',
             'min_number_of_classes': 2,
             'max_number_of_classes': 3,
-            'nb_categories_outcome': 2  # Binary credit classification
+            'nb_categories_outcome': 2
         }
     }
 
@@ -1214,79 +1174,77 @@ def create_method_configurations(methods: Set[Method] = None, include_real_data:
         'mlcheck': Method.MLCHECK
     }
 
-    # If no methods specified, use all
     if methods is None:
         methods = set(Method)
 
     configurations = []
 
-    # Generate configurations for each specified method and base config
+    # Generate synthetic data configurations
     if not only_real_data:
-        for base_config in base_configs:
-            for method_name, method_enum in method_map.items():
-                if method_enum not in methods:
-                    continue
+        for method_name, method_enum in method_map.items():
+            if method_enum not in methods:
+                continue
 
-                method_params = param_ranges[method_name]
+            method_params = param_ranges[method_name]
+            standard_combo = {
+                'nb_attributes': method_params['nb_attributes'][2],
+                'prop_protected_attr': method_params['prop_protected_attr'][2],
+                'nb_groups': method_params['nb_groups'][2],
+                'max_group_size': method_params['max_group_size'][2]
+            }
 
-                # Generate standard combinations
-                standard_combo = {
-                    'nb_attributes': method_params['nb_attributes'][2],  # Middle range
-                    'prop_protected_attr': method_params['prop_protected_attr'][2],
-                    'nb_groups': method_params['nb_groups'][2],
-                    'max_group_size': method_params['max_group_size'][2]
+            for intensity, method_specific_params in method_params['configs'].items():
+                config_dict = {
+                    **base_config,
+                    **standard_combo,
+                    **method_specific_params,
+                    'methods': {method_enum}
                 }
+                configurations.append(ExperimentConfig(**config_dict))
 
-                # Generate configurations that vary parameters systematically
-                interesting_combinations = [
-                    standard_combo,  # Standard case
-                    # Varying each parameter individually
-                    *[{**standard_combo, 'nb_attributes': val}
-                      for val in method_params['nb_attributes']],
-                    *[{**standard_combo, 'prop_protected_attr': val}
-                      for val in method_params['prop_protected_attr']],
-                    *[{**standard_combo, 'nb_groups': val}
-                      for val in method_params['nb_groups']],
-                    *[{**standard_combo, 'max_group_size': val}
-                      for val in method_params['max_group_size']],
-                    # Edge cases combinations
-                    {**standard_combo, 'nb_attributes': method_params['nb_attributes'][0],
-                     'prop_protected_attr': method_params['prop_protected_attr'][0]},  # Minimal case
-                    {**standard_combo, 'nb_attributes': method_params['nb_attributes'][-1],
-                     'prop_protected_attr': method_params['prop_protected_attr'][-1]},  # Maximal case
-                    {**standard_combo, 'nb_groups': method_params['nb_groups'][0],
-                     'max_group_size': method_params['max_group_size'][0]},  # Small groups
-                    {**standard_combo, 'nb_groups': method_params['nb_groups'][-1],
-                     'max_group_size': method_params['max_group_size'][-1]},  # Large groups
-                ]
-
-                # Generate configuration for each combination and intensity
-                for dataset_params in interesting_combinations:
-                    for intensity in method_params['configs'].keys():
-                        config = {
-                            **base_config,
-                            **dataset_params,
-                            **method_params['configs'][intensity],
-                            'methods': {method_enum}
-                        }
-                        configurations.append(ExperimentConfig(**config))
-
+    # Generate real data configurations
     if include_real_data or only_real_data:
-        for dataset_name, dataset_config in real_dataset_configs.items():
+        for config_name, dataset_config in real_dataset_configs.items():
+            # Get real data parameters using get_real_data
+
+            # Update configuration with actual data parameters
+            get_real_config = {
+                **base_config,
+                **dataset_config,
+                'data_generation_method': 'get_real_data'
+            }
+
             for method_name, method_enum in method_map.items():
                 if method_enum not in methods:
                     continue
 
-                method_params = param_ranges[method_name]
+                method_params = param_ranges[method_name]['configs']['default']
+                config_dict = {
+                    **get_real_config,
+                    **method_params,
+                    'methods': {method_enum}
+                }
+                configurations.append(ExperimentConfig(**config_dict))
 
-                # Generate configurations for each intensity level
-                for intensity in method_params['configs'].keys():
-                    config = {
-                        **dataset_config,
-                        **method_params['configs'][intensity],
-                        'methods': {method_enum}
-                    }
-                    configurations.append(ExperimentConfig(**config))
+            # Generate configuration using generate_from_real_data
+
+            gen_real_config = {
+                **base_config,
+                **dataset_config,
+                'data_generation_method': 'generate_from_real_data'
+            }
+
+            for method_name, method_enum in method_map.items():
+                if method_enum not in methods:
+                    continue
+
+                method_params = param_ranges[method_name]['configs']['default']
+                config_dict = {
+                    **gen_real_config,
+                    **method_params,
+                    'methods': {method_enum}
+                }
+                configurations.append(ExperimentConfig(**config_dict))
 
     return configurations
 
@@ -1302,7 +1260,7 @@ def run_experiments(configs: List[ExperimentConfig], methods: Set[Method] = None
             config.methods = methods
 
     # Resume any incomplete experiments
-    runner.resume_experiments()
+    runner.resume_experiments(use_cache=use_cache)
 
     # Run new experiments, skipping duplicates
     for config in configs:
@@ -1321,11 +1279,11 @@ def run_experiments(configs: List[ExperimentConfig], methods: Set[Method] = None
 
 
 # %%
-DB_PATH = HERE.joinpath("experiments/discrimination_detection_results17.db").as_posix()
+DB_PATH = HERE.joinpath("experiments/discrimination_detection_results18.db").as_posix()
 FIGURES_PATH = HERE.joinpath("experiments/figures").as_posix()
 
 # %%
-for meth in [Method.AEQUITAS, Method.EXPGA, Method.MLCHECK]:
+for meth in [Method.AEQUITAS, Method.EXPGA]:
     methods = {meth}
     configs = create_method_configurations(methods=methods, only_real_data=True)
     run_experiments(configs, methods=methods, db_path=DB_PATH, use_cache=False)

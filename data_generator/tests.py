@@ -1,6 +1,7 @@
 from data_generator.main import generate_data, generate_data_schema, generate_from_real_data, get_real_data, \
     is_numeric_column
 
+ll = generate_from_real_data('adult')
 data, schema = get_real_data('adult')
 
 # %%
