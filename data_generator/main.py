@@ -427,6 +427,7 @@ def generate_schema_from_dataframe(
             encoded_vals, kde, categories, category_map, probs = create_kde_encoding(df[col], n_samples)
 
             encoded_df[col] = encoded_vals
+
             attr_categories.append(categories)
             category_maps[col] = category_map
             categorical_distribution[col] = probs.tolist()  # Store the KDE-based probabilities
@@ -490,7 +491,10 @@ def generate_schema_from_dataframe(
         column_mapping=new_cols_mapping
     )
 
-    return schema, correlation_matrix, new_cols_mapping
+    n_encoded_df = copy.deepcopy(encoded_df)
+    n_encoded_df['outcome'] = LabelEncoder().fit_transform(df['outcome'].astype(str))
+
+    return schema, correlation_matrix, new_cols_mapping, n_encoded_df
 
 
 def decode_dataframe(df: pd.DataFrame, schema: DataSchema) -> pd.DataFrame:
@@ -858,7 +862,7 @@ class IndividualsGenerator:
         return np.ones(n_values) / n_values  # Uniform distribution if not specified
 
     def generate_dataset_with_outcome(self, n_samples, predetermined_values, is_subgroup1):
-        samples = np.zeros((n_samples, self.n_attributes), dtype=int)
+        samples = np.full((n_samples, self.n_attributes), -1, dtype=int)
 
         # Fill in predetermined values
         if predetermined_values:
@@ -867,7 +871,7 @@ class IndividualsGenerator:
 
         # Generate remaining values
         for attr in self.gen_order:
-            mask = samples[:, attr] == 0
+            mask = samples[:, attr] == -1
             if not np.any(mask):
                 continue
 
@@ -1216,14 +1220,14 @@ def create_group(granularity, intersectionality,
     # Generate dataset for subgroup 1 and subgroup 2
     subgroup1_data = generator.generate_dataset_with_outcome(subgroup1_size, subgroup1_vals, is_subgroup1=True)
     subgroup1_individuals = [sample for sample, _, _, _ in subgroup1_data]
-    subgroup1_individuals_df = pd.DataFrame(subgroup1_individuals, columns=attr_names)
+    subgroup1_individuals_df = pd.DataFrame(subgroup1_individuals, columns=data_schema.attr_names)
     subgroup1_individuals_df['outcome'] = [outcome for _, outcome, _, _ in subgroup1_data]
     subgroup1_individuals_df['epis_uncertainty'] = [epis for _, _, epis, _ in subgroup1_data]
     subgroup1_individuals_df['alea_uncertainty'] = [alea for _, _, _, alea in subgroup1_data]
 
     subgroup2_data = generator.generate_dataset_with_outcome(subgroup2_size, subgroup2_vals, is_subgroup1=False)
     subgroup2_individuals = [sample for sample, _, _, _ in subgroup2_data]
-    subgroup2_individuals_df = pd.DataFrame(subgroup2_individuals, columns=attr_names)
+    subgroup2_individuals_df = pd.DataFrame(subgroup2_individuals, columns=data_schema.attr_names)
     subgroup2_individuals_df['outcome'] = [outcome for _, outcome, _, _ in subgroup2_data]
     subgroup2_individuals_df['epis_uncertainty'] = [epis for _, _, epis, _ in subgroup2_data]
     subgroup2_individuals_df['alea_uncertainty'] = [alea for _, _, _, alea in subgroup2_data]
@@ -1533,24 +1537,35 @@ def generate_from_real_data(dataset_name, use_cache=False, *args, **kwargs):
         df1 = adult['data']['original']
         df1.drop(columns=['fnlwgt'], inplace=True)
 
-        schema, correlation_matrix, column_mapping = generate_schema_from_dataframe(df1,
-                                                                                    protected_columns=['race', 'sex'],
-                                                                                    outcome_column='income',
-                                                                                    use_attr_naming_pattern=True)
+        schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(df1,
+                                                                                            protected_columns=['race',
+                                                                                                               'sex'],
+                                                                                            outcome_column='income',
+                                                                                            use_attr_naming_pattern=True)
     elif dataset_name == 'credit':
         df1 = fetch_ucirepo(id=144)
         df1 = df1['data']['original']
-        schema, correlation_matrix, new_cols_mapping = generate_schema_from_dataframe(df1,
-                                                                                      protected_columns=['Attribute8',
-                                                                                                         'Attribute12'],
-                                                                                      outcome_column='Attribute20',
-                                                                                      use_attr_naming_pattern=True)
+        schema, correlation_matrix, new_cols_mapping, enc_df = generate_schema_from_dataframe(df1,
+                                                                                              protected_columns=[
+                                                                                                  'Attribute8',
+                                                                                                  'Attribute12'],
+                                                                                              outcome_column='Attribute20',
+                                                                                              use_attr_naming_pattern=True,
+                                                                                              ensure_positive_definite=True)
     else:
         raise NotImplementedError(f"Dataset {dataset_name} not implemented")
 
+    # Ensure schema attribute names are unique
+    schema.attr_names = list(dict.fromkeys(schema.attr_names))
+
+    # Generate the data using the schema
     data = generate_data(
         correlation_matrix=correlation_matrix,
-        data_schema=schema, use_cache=use_cache, *args, **kwargs)
+        data_schema=schema,
+        use_cache=use_cache,
+        *args,
+        **kwargs
+    )
 
     # data = decode_dataframe(data.dataframe, schema)
     return data, schema
@@ -1603,7 +1618,7 @@ def get_real_data(
         df = df.drop(columns=config['drop_columns'])
 
     # Generate schema from the dataframe
-    schema, correlation_matrix, column_mapping = generate_schema_from_dataframe(
+    schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(
         df,
         protected_columns=config['protected_columns'],
         outcome_column=config['outcome_column'],
@@ -1611,16 +1626,4 @@ def get_real_data(
         ensure_positive_definite=True
     )
 
-    # Ensure schema attribute names are unique
-    schema.attr_names = list(dict.fromkeys(schema.attr_names))
-
-    # Generate the data using the schema
-    data = generate_data(
-        correlation_matrix=correlation_matrix,
-        data_schema=schema,
-        use_cache=use_cache,
-        *args,
-        **kwargs
-    )
-
-    return data, schema
+    return enc_df, schema
