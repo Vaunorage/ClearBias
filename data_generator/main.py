@@ -1626,4 +1626,16 @@ def get_real_data(
         ensure_positive_definite=True
     )
 
-    return enc_df, schema
+    data = DiscriminationData(
+        dataframe=enc_df,
+        categorical_columns=list(schema.attr_names) + ['outcome'],
+        attributes={k:v for k,v in zip(schema.attr_names, schema.protected_attr)},
+        collisions=0,
+        nb_groups=0,
+        max_group_size=0,
+        hiddenlayers_depth=0,
+        outcome_column='outcome',
+        attr_possible_values={}
+    )
+
+    return data, schema
