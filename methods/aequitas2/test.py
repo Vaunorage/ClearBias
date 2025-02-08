@@ -1,12 +1,5 @@
 from __future__ import division
-from random import seed, shuffle
-import random
-import math
-import os
-from collections import defaultdict
-from sklearn import svm
 import os, sys
-import urllib2
 
 sys.path.insert(0, './fair_classification/')
 import utils as ut
@@ -14,7 +7,6 @@ import numpy as np
 import loss_funcs as lf
 import random
 import time
-import argparse
 from scipy.optimize import basinhopping
 import config
 

@@ -9,7 +9,7 @@ from sklearn.preprocessing import LabelEncoder
 from typing import Tuple, List, Optional, Dict
 
 SEED = 1122334455
-seed(SEED)  # set the random seed so that the random permutations can be reproduced again
+seed(SEED)
 np.random.seed(SEED)
 
 
