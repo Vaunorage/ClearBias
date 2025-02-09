@@ -2,18 +2,18 @@ import numpy as np
 import tensorflow as tf
 import sys, os
 
+from scipy.optimize import basinhopping
+
+from methods.adf.adf_data.census import census_data
+from methods.adf.adf_data.credit import credit_data
+from methods.adf.adf_tutorial.utils import gradient_graph, cluster
+from methods.adf.adf_utils.utils_tf import model_argmax
+
 sys.path.append("../")
 import copy
 
 from tensorflow.python.platform import flags
-from scipy.optimize import basinhopping
-from data.census import census_data
-from data.credit import credit_data
-from data.bank import bank_data
 from adf_model.tutorial_models import dnn
-from utils.utils_tf import model_prediction, model_argmax
-from utils.config import census, credit, bank
-from tutorial.utils import cluster, gradient_graph
 import time
 import random
 import signal
