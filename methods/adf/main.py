@@ -1,49 +1,86 @@
+import sys
+
+from data_generator.main import get_real_data, DiscriminationData
+from path import HERE
+
+sys.path.append("C:/Users/gen06917/PycharmProjects/ClearBias")
 import numpy as np
 import tensorflow as tf
-import sys, os
-
-sys.path.append("../")
-import copy
-
-from tensorflow.python.platform import flags
-from scipy.optimize import basinhopping
-from data.census import census_data
-from data.credit import credit_data
-from data.bank import bank_data
-from adf_model.tutorial_models import dnn
-from utils.utils_tf import model_prediction, model_argmax
-from utils.config import census, credit, bank
-from tutorial.utils import cluster, gradient_graph
-import time
-import random
-import signal
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+# Disable eager execution for TF 1.x compatibility
+tf.compat.v1.disable_eager_execution()
 
-FLAGS = flags.FLAGS
+import sys, os
+import copy
+import pandas as pd
+from sklearn.preprocessing import LabelEncoder
+from scipy.optimize import basinhopping
+
+from adf_model.tutorial_models import dnn
+from adf_utils.utils_tf import model_prediction, model_argmax
+from adf_utils.config import census, credit, bank
+from adf_tutorial.utils import cluster, gradient_graph
 
 # step size of perturbation
 perturbation_size = 1
 
 
-def global_discovery(iteration, config):
-    input_bounds = config.input_bounds
-    params = config.params
+def load_census_data():
+    """Load Census Income dataset"""
+    # Load the data
+    data = pd.read_csv(HERE.joinpath('methods/adf/datasets/census'), header=None)
 
-    samples = []
-    for j in range(iteration):
-        x = np.zeros(params)
-        for i in range(params):
-            # random.seed(time.time())
-            x[i] = random.randint(input_bounds[i][0], input_bounds[i][1])
-        samples.append(x)
-    # print x
-    samples = np.array(samples)
-    return samples
+    # Encode categorical variables
+    le = LabelEncoder()
+    for i in range(len(data.columns)):
+        if data[i].dtype == 'object':
+            data[i] = le.fit_transform(data[i].astype(str))
+
+    # Split features and labels
+    X = data.iloc[:, :-1].values
+    y = data.iloc[:, -1].values
+
+    return X, y, (None, X.shape[1]), 2
 
 
-def check_for_error_condition(conf, sess, x, preds, t, sens):
+def load_credit_data():
+    """Load German Credit dataset"""
+    # Load the data
+    data = pd.read_csv('datasets/credit_sample', header=None)
+
+    # Encode categorical variables
+    le = LabelEncoder()
+    for i in range(len(data.columns)):
+        if data[i].dtype == 'object':
+            data[i] = le.fit_transform(data[i].astype(str))
+
+    # Split features and labels
+    X = data.iloc[:, :-1].values
+    y = data.iloc[:, -1].values - 1  # Convert to 0-based indexing
+
+    return X, y, (X.shape[1],), 2
+
+
+def load_bank_data():
+    """Load Bank Marketing dataset"""
+    # Load the data
+    data = pd.read_csv('datasets/bank', header=None)
+
+    # Encode categorical variables
+    le = LabelEncoder()
+    for col in data.columns:
+        if data[col].dtype == 'object':
+            data[col] = le.fit_transform(data[col].astype(str))
+
+    # Split features and labels
+    X = data.iloc[:, :-1].values
+    y = data.iloc[:, -1].values
+
+    return X, y, (X.shape[1],), 2
+
+
+def check_for_error_condition(ge: DiscriminationData, sess, x, preds, t, sens):
     """
     Check whether the test case is an individual discriminatory instance
     :param conf: the configuration of dataset
@@ -55,14 +92,18 @@ def check_for_error_condition(conf, sess, x, preds, t, sens):
     :return: whether it is an individual discriminatory instance
     """
     t = t.astype('int')
-    label = model_argmax(sess, x, preds, np.array([t]))
+    # Reshape t to (1, -1) for model input
+    t_reshaped = t.reshape(1, -1)
+    label = model_argmax(sess, x, preds, t_reshaped)
 
     # check for all the possible values of sensitive feature
     for val in range(conf.input_bounds[sens - 1][0], conf.input_bounds[sens - 1][1] + 1):
         if val != t[sens - 1]:
             tnew = copy.deepcopy(t)
             tnew[sens - 1] = val
-            label_new = model_argmax(sess, x, preds, np.array([tnew]))
+            # Reshape tnew to (1, -1) for model input
+            tnew_reshaped = tnew.reshape(1, -1)
+            label_new = model_argmax(sess, x, preds, tnew_reshaped)
             if label_new != label:
                 return True
     return False
@@ -92,7 +133,7 @@ def seed_test_input(clusters, limit):
     return np.array(rows)
 
 
-def clip(input, conf):
+def clip(input, ge: DiscriminationData):
     """
     Clip the generating instance with each feature to make sure it is valid
     :param input: generating instance
@@ -100,8 +141,8 @@ def clip(input, conf):
     :return: a valid generating instance
     """
     for i in range(len(input)):
-        input[i] = max(input[i], conf.input_bounds[i][0])
-        input[i] = min(input[i], conf.input_bounds[i][1])
+        input[i] = max(input[i], ge.input_bounds[i][0])
+        input[i] = min(input[i], ge.input_bounds[i][1])
     return input
 
 
@@ -110,7 +151,7 @@ class Local_Perturbation(object):
     The  implementation of local perturbation
     """
 
-    def __init__(self, sess, grad, x, n_value, sens, input_shape, conf):
+    def __init__(self, sess, grad, x, n_value, sens, input_shape, ge: DiscriminationData):
         """
         Initial function of local perturbation
         :param sess: TF session
@@ -146,23 +187,23 @@ class Local_Perturbation(object):
         ind_grad = self.sess.run(self.grad, feed_dict={self.x: np.array([x])})
         n_ind_grad = self.sess.run(self.grad, feed_dict={self.x: np.array([n_x])})
 
-        if np.zeros(self.input_shape).tolist() == ind_grad[0].tolist() and np.zeros(self.input_shape).tolist() == \
-                n_ind_grad[0].tolist():
+        # Convert gradients to float arrays to avoid boolean operations
+        ind_grad = np.array(ind_grad, dtype=np.float32)
+        n_ind_grad = np.array(n_ind_grad, dtype=np.float32)
+        zero_array = np.zeros(self.input_shape, dtype=np.float32)
+
+        if np.array_equal(ind_grad[0], zero_array) and np.array_equal(n_ind_grad[0], zero_array):
             probs = 1.0 / (self.input_shape - 1) * np.ones(self.input_shape)
             probs[self.sens - 1] = 0
         else:
             # nomalize the reciprocal of gradients (prefer the low impactful feature)
-            grad_sum = 1.0 / (abs(ind_grad[0]) + abs(n_ind_grad[0]))
+            grad_sum = 1.0 / (np.abs(ind_grad[0]) + np.abs(n_ind_grad[0]))
             grad_sum[self.sens - 1] = 0
             probs = grad_sum / np.sum(grad_sum)
         probs = probs / probs.sum()
 
         # randomly choose the feature for local perturbation
-        try:
-            index = np.random.choice(range(self.input_shape), p=probs)
-        except:
-            index = np.random.choice(range(self.input_shape))
-
+        index = np.random.choice(range(self.input_shape), p=probs)
         local_cal_grad = np.zeros(self.input_shape)
         local_cal_grad[index] = 1.0
 
@@ -171,7 +212,7 @@ class Local_Perturbation(object):
         return x
 
 
-def dnn_fair_testing(dataset, sensitive_param, model_path, cluster_num, max_global, max_local, max_iter, iter):
+def dnn_fair_testing(ge: DiscriminationData, sensitive_param, cluster_num, max_global, max_local, max_iter):
     """
     The implementation of ADF
     :param dataset: the name of testing dataset
@@ -183,28 +224,49 @@ def dnn_fair_testing(dataset, sensitive_param, model_path, cluster_num, max_glob
     :param max_local: the maximum number of samples for local search
     :param max_iter: the maximum iteration of global perturbation
     """
-    start = time.time()
 
-    data = {"census": census_data, "credit": credit_data, "bank": bank_data}
-    data_config = {"census": census, "credit": credit, "bank": bank}
-    config = data_config[dataset]
-
-    model = "MLP"
-    # file_name = "aequitas_"+dataset+sensitive_param+"_"+model+""
-    file_name = "adf_{}_{}{}.txt".format(model, dataset, sensitive_param)
-    f = open(file_name, "a")
-    f.write("iter:" + str(iter) + "------------------------------------------" + "\n" + "\n")
-    f.close()
-
+    dataset = "census"
     # prepare the testing data and model
     # X, Y, input_shape, nb_classes = data[dataset]()
-    # perturbation = global_discovery(1000,config)
+    X, Y, input_shape, nb_classes = ge.xdf.to_numpy(), ge.ydf.to_numpy(), (None, ge.xdf.shape[1]), \
+        ge.ydf.unique().shape[0]
+    print("Input shape:", input_shape)  # Debug print
+    tf.compat.v1.random.set_random_seed(1234)
+
+    # Create a TensorFlow session with v1 compatibility
+    sess = tf.compat.v1.Session()
+    x = tf.compat.v1.placeholder(tf.float32, shape=input_shape)
+    y = tf.compat.v1.placeholder(tf.float32, shape=(None, nb_classes))
+    model = dnn(input_shape, nb_classes)
+    preds = model(x)
+
+    # Initialize all variables
+    init = tf.compat.v1.global_variables_initializer()
+    sess.run(init)
+
+    saver = tf.compat.v1.train.Saver()
+
+    # Fix model path to be relative to the current file
+    # model_path = HERE.joinpath("methods/adf/models/census/test.model").as_posix()
+    # print("Loading model from:", model_path)  # Debug print
+    # saver.restore(sess, model_path)
+
+    # Create a saver object
+    # saver = tf.compat.v1.train.Saver()
+
+    # After your model training is complete
+    save_path = HERE.joinpath("methods/adf/models/census/").as_posix()
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+    model_save_path = os.path.join(save_path, "trained_model.model")
+    save_path = saver.save(sess, model_save_path)
+    print("Model saved in path:", save_path)
 
     # construct the gradient graph
     grad_0 = gradient_graph(x, preds)
 
     # build the clustering model
-    clf = cluster(dataset, X, cluster_num)
+    clf = cluster(X, cluster_num)
     clusters = [np.where(clf.labels_ == i) for i in range(cluster_num)]
 
     # store the result of fairness testing
@@ -215,58 +277,30 @@ def dnn_fair_testing(dataset, sensitive_param, model_path, cluster_num, max_glob
     local_disc_inputs_list = []
     value_list = []
     suc_idx = []
-    count = [1]
 
     def evaluate_local(inp):
         """
         Evaluate whether the test input after local perturbation is an individual discriminatory instance
         :param inp: test input
-        :return: whether it is an individual discriminatory instance
+        :return: float value indicating whether it is an individual discriminatory instance (1.0 for True, 0.0 for False)
         """
-        result = check_for_error_condition(data_config[dataset], sess, x, preds, inp, sensitive_param)
+        # Ensure inp is a 1D array before passing to check_for_error_condition
+        inp = inp.reshape(-1)  # Flatten to 1D
+        result = check_for_error_condition(ge, sess, x, preds, inp, sensitive_param)
 
-        temp = copy.deepcopy(inp.astype('int').tolist())
+        temp = copy.deepcopy(inp.astype('int').tolist())  # Already 1D, no need for [0]
         temp = temp[:sensitive_param - 1] + temp[sensitive_param:]
         tot_inputs.add(tuple(temp))
-
-        # count = 300
-        end = time.time()
-        use_time = end - start
-        sec = len(count) * 300
-        # print(sec)
-        # print(use_time)
-        if use_time >= sec:
-            f = open(file_name, "a")
-            f.write("Percentage discriminatory inputs - " + str(
-                float(len(global_disc_inputs_list) + len(local_disc_inputs_list))
-                / float(len(tot_inputs)) * 100) + "\n")
-            f.write("Number of discriminatory inputs are " + str(len(local_disc_inputs_list)) + "\n")
-            f.write("Total Inputs are " + str(len(tot_inputs)) + "\n")
-            f.write('use time:' + str(end - start) + "\n" + "\n")
-            f.close()
-
-            print("Percentage discriminatory inputs - " + str(
-                float(len(global_disc_inputs_list) + len(local_disc_inputs_list))
-                / float(len(tot_inputs)) * 100))
-            print("Number of discriminatory inputs are " + str(len(local_disc_inputs_list)))
-            print("Total Inputs are " + str(len(tot_inputs)))
-
-            print('use time:' + str(end - start))
-            count.append(1)
-        if use_time >= 3900:
-            return None
-
         if result and (tuple(temp) not in global_disc_inputs) and (tuple(temp) not in local_disc_inputs):
             local_disc_inputs.add(tuple(temp))
             local_disc_inputs_list.append(temp)
 
-        return not result
+        return float(not result)  # Convert boolean to float
 
     # select the seed input for fairness testing
     inputs = seed_test_input(clusters, min(max_global, len(X)))
 
     for num in range(len(inputs)):
-
         index = inputs[num]
         sample = X[index:index + 1]
 
@@ -305,34 +339,24 @@ def dnn_fair_testing(dataset, sensitive_param, model_path, cluster_num, max_glob
                 global_disc_inputs.add(tuple(temp))
                 value_list.append([sample[0, sensitive_param - 1], n_value])
                 suc_idx.append(index)
-                # print(len(suc_idx), num)
+                print(len(suc_idx), num)
 
                 # start local perturbation
                 minimizer = {"method": "L-BFGS-B"}
                 local_perturbation = Local_Perturbation(sess, grad_0, x, n_value, sensitive_param, input_shape[1],
-                                                        data_config[dataset])
-                try:
-                    basinhopping(evaluate_local, sample, stepsize=1.0, take_step=local_perturbation,
-                                 minimizer_kwargs=minimizer,
-                                 niter=max_local)
-                except:
-                    break
+                                                        ge)
+                basinhopping(evaluate_local, sample.flatten(), stepsize=1.0, take_step=local_perturbation,
+                             minimizer_kwargs=minimizer,
+                             niter=max_local)
 
-                with open("../results/census/ADF.txt", "a") as f:
-                    f.write("suc_idx is" + str(num) + "\n")
-                    f.write("Number of discriminatory inputs are " + str(len(local_disc_inputs_list)) + "\n")
-                    f.write("Percentage discriminatory inputs of local search- " + str(
-                        float(len(local_disc_inputs)) / float(len(tot_inputs)) * 100) + "\n")
-
+                print(len(local_disc_inputs_list),
+                      "Percentage discriminatory inputs of local search- " + str(
+                          float(len(local_disc_inputs)) / float(len(tot_inputs)) * 100))
                 break
 
             n_sample[0][sensitive_param - 1] = n_value
 
             if iter == max_iter:
-                break
-            end = time.time()
-            use_time = end - start
-            if use_time >= 3900:
                 break
 
             # global perturbation
@@ -340,9 +364,9 @@ def dnn_fair_testing(dataset, sensitive_param, model_path, cluster_num, max_glob
             n_grad = sess.run(tf.sign(grad_0), feed_dict={x: n_sample})
 
             # find the feature with same impact
-            if np.zeros(data_config[dataset].params).tolist() == s_grad[0].tolist():
+            if np.zeros(len(ge.attr_columns)).tolist() == s_grad[0].tolist():
                 g_diff = n_grad[0]
-            elif np.zeros(data_config[dataset].params).tolist() == n_grad[0].tolist():
+            elif np.zeros(len(ge.attr_columns)).tolist() == n_grad[0].tolist():
                 g_diff = s_grad[0]
             else:
                 g_diff = np.array(s_grad[0] == n_grad[0], dtype=float)
@@ -354,23 +378,23 @@ def dnn_fair_testing(dataset, sensitive_param, model_path, cluster_num, max_glob
                 g_diff[index] = 1.0
 
             cal_grad = s_grad * g_diff
-            sample[0] = clip(sample[0] + perturbation_size * cal_grad[0], data_config[dataset]).astype("int")
+            sample[0] = clip(sample[0] + perturbation_size * cal_grad[0], ge).astype("int")
 
     # create the folder for storing the fairness testing result
-    if not os.path.exists('../results/'):
-        os.makedirs('../results/')
-    if not os.path.exists('../results/' + dataset + '/'):
-        os.makedirs('../results/' + dataset + '/')
-    if not os.path.exists('../results/' + dataset + '/' + str(sensitive_param) + '/'):
-        os.makedirs('../results/' + dataset + '/' + str(sensitive_param) + '/')
+    if not os.path.exists('./results/'):
+        os.makedirs('./results/')
+    if not os.path.exists('./results/' + dataset + '/'):
+        os.makedirs('./results/' + dataset + '/')
+    if not os.path.exists('./results/' + dataset + '/' + str(sensitive_param) + '/'):
+        os.makedirs('./results/' + dataset + '/' + str(sensitive_param) + '/')
 
     # storing the fairness testing result
-    # np.save('../results/'+dataset+'/'+ str(sensitive_param) + '/suc_idx.npy', np.array(suc_idx))
-    np.save('../results/' + dataset + '/' + str(sensitive_param) + '/global_samples_adf_adv{}.npy'.format(iter),
+    np.save('./results/' + dataset + '/' + str(sensitive_param) + '/suc_idx.npy', np.array(suc_idx))
+    np.save('./results/' + dataset + '/' + str(sensitive_param) + '/global_samples.npy',
             np.array(global_disc_inputs_list))
-    np.save('../results/' + dataset + '/' + str(sensitive_param) + '/local_samples_adf_adv{}.npy'.format(iter),
+    np.save('./results/' + dataset + '/' + str(sensitive_param) + '/local_samples.npy',
             np.array(local_disc_inputs_list))
-    # np.save('../results/'+dataset+'/'+ str(sensitive_param) + '/disc_value_adf.npy', np.array(value_list))
+    np.save('./results/' + dataset + '/' + str(sensitive_param) + '/disc_value.npy', np.array(value_list))
 
     # print the overview information of result
     print("Total Inputs are " + str(len(tot_inputs)))
@@ -378,59 +402,16 @@ def dnn_fair_testing(dataset, sensitive_param, model_path, cluster_num, max_glob
     print("Total discriminatory inputs of local search- " + str(len(local_disc_inputs)))
 
 
-def myHandler(signum, frame):
-    print("Now, time is up")
-    exit()
+def main():
+    ge, ge_schema = get_real_data('adult')
 
-
-def main(argv=None):
-    start = time.time()
-    # signal.signal(signal.SIGALRM, myHandler)
-    # signal.alarm(1000)
-    # while True:
-    data = {"census": census_data, "credit": credit_data, "bank": bank_data}
-    global X, Y, input_shape, nb_classes
-    X, Y, input_shape, nb_classes = data[FLAGS.dataset]()
-
-    tf.set_random_seed(1234)
-    config = tf.ConfigProto()
-    config.gpu_options.per_process_gpu_memory_fraction = 0.8
-
-    global x, y, preds, sess
-    sess = tf.Session(config=config)
-    x = tf.placeholder(tf.float32, shape=input_shape)
-    y = tf.placeholder(tf.float32, shape=(None, nb_classes))
-    model = dnn(input_shape, nb_classes)
-    preds = model(x)
-    saver = tf.train.Saver()
-    saver.restore(sess, FLAGS.model_path)
-
-    ITER = 30
-    for i in range(ITER):
-        dnn_fair_testing(dataset=FLAGS.dataset,
-                         sensitive_param=FLAGS.sens_param,
-                         model_path=FLAGS.model_path,
-                         cluster_num=FLAGS.cluster_num,
-                         max_global=FLAGS.max_global,
-                         max_local=FLAGS.max_local,
-                         max_iter=FLAGS.max_iter,
-                         iter=i)
-        end = time.time()
-        print('total time:' + str(end - start))
+    dnn_fair_testing(ge=ge,
+                     sensitive_param=9,
+                     cluster_num=4,
+                     max_global=1000,
+                     max_local=1000,
+                     max_iter=10)
 
 
 if __name__ == '__main__':
-    """
-    census: 9,1 for gender, age, 8 for race
-    credit: 9,13 for gender,age
-    bank: 1 for age
-    """
-    flags.DEFINE_string("dataset", "bank", "the name of dataset")
-    flags.DEFINE_integer('sens_param', 1, 'sensitive index, index start from 1, 9 for gender, 8 for race')
-    flags.DEFINE_string('model_path', '../models/bank/99/test.model', 'the path for testing model')
-    flags.DEFINE_integer('cluster_num', 4,
-                         'the number of clusters to form as well as the number of centroids to generate')
-    flags.DEFINE_integer('max_global', 1000, 'maximum number of samples for global search')
-    flags.DEFINE_integer('max_local', 1000, 'maximum number of samples for local search')
-    flags.DEFINE_integer('max_iter', 10, 'maximum iteration of global perturbation')
-    tf.app.run()
+    main()

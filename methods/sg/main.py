@@ -1,27 +1,27 @@
+import logging
 import sys
-import argparse
 import numpy as np
+import pandas as pd
+from sklearn.cluster import KMeans
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.neural_network import MLPClassifier
+from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
+
 from queue import PriorityQueue
+
+from win32comext.shell.demos.servers.folder_view import onSetting1
 from z3 import *
 import os
 import copy
-import signal
-import time
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.svm import SVC
-from sklearn.neural_network import MLPClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.cluster import KMeans
-import joblib
-import random
-import lime
-from lime.lime_tabular import LimeTabularExplainer
-import pandas as pd
-import logging
 
-from data_generator.main import DiscriminationData
+from lime import lime_tabular
+import time
+import random
+
+from data_generator.main import get_real_data, DiscriminationData
 
 # Configure logging
 logging.basicConfig(
@@ -33,26 +33,51 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-args = None
+
+def train_model(model_type, X, y):
+    """
+    Train a model based on the specified type
+    :param model_type: String specifying model type ('lr', 'rf', 'svm', 'mlp')
+    :param X: Feature matrix
+    :param y: Target values
+    :return: Trained model
+    """
+    model_type = model_type.lower()
+    if model_type == 'lr':
+        model = LogisticRegression(random_state=42)
+    elif model_type == 'rf':
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
+    elif model_type == 'svm':
+        model = SVC(kernel='rbf', probability=True, random_state=42)
+    elif model_type == 'mlp':
+        model = MLPClassifier(hidden_layer_sizes=(100, 50), random_state=42)
+    else:
+        raise ValueError(f"Unsupported model type: {model_type}. Choose from: 'lr', 'rf', 'svm', 'mlp'")
+
+    # Split data and train model
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    model.fit(X_train, y_train)
+
+    # Print basic model performance
+    train_score = model.score(X_train, y_train)
+    test_score = model.score(X_test, y_test)
+    logger.info(f"Model training complete:")
+    logger.info(f"Training accuracy: {train_score:.4f}")
+    logger.info(f"Testing accuracy: {test_score:.4f}")
+
+    return model
 
 
-class Config:
-    def __init__(self, input_bounds, params, feature_name=None):
-        self.input_bounds = input_bounds
-        self.params = params
-        self.feature_name = feature_name if feature_name is not None else [f'x{i}' for i in range(params)]
-
-
-class QueueItem:
-    def __init__(self, priority, data):
-        self.priority = priority
-        self.data = data.tolist() if isinstance(data, np.ndarray) else data
-
-    def __lt__(self, other):
-        return self.priority < other.priority
-
-    def __eq__(self, other):
-        return self.priority == other.priority
+def cluster(data, cluster_num):
+    """
+    Perform K-means clustering on the data
+    :param data: input data to cluster
+    :param cluster_num: number of clusters to form
+    :return: fitted clustering model
+    """
+    kmeans = KMeans(n_clusters=cluster_num, random_state=42)
+    kmeans.fit(data)
+    return kmeans
 
 
 def global_discovery(iteration, config):
@@ -72,67 +97,54 @@ def global_discovery(iteration, config):
     return samples
 
 
-def cluster(data, cluster_num):
-    """
-    Perform K-means clustering on the data
-    :param data: input data to cluster
-    :param cluster_num: number of clusters to form
-    :return: fitted clustering model
-    """
-    kmeans = KMeans(n_clusters=cluster_num, random_state=42)
-    kmeans.fit(data)
-    return kmeans
-
-
-def seed_test_input(X, cluster_num, limit):
+def seed_test_input(dataset, cluster_num, limit):
     """
     Select the seed inputs for fairness testing
-    :param X: input data matrix
-    :param cluster_num: number of clusters to form
+    :param dataset: the name of dataset
+    :param clusters: the results of K-means clustering
     :param limit: the size of seed inputs wanted
     :return: a sequence of seed inputs
     """
     # build the clustering model
-    clf = cluster(X, cluster_num)
+    clf = cluster(dataset, cluster_num)
     clusters = [np.where(clf.labels_ == i)[0] for i in range(cluster_num)]
-
-    # Select samples from each cluster
-    selected_indices = []
-    max_per_cluster = limit // cluster_num + 1
-
-    for cluster_indices in clusters:
-        # Take up to max_per_cluster samples from each cluster
-        n_samples = min(len(cluster_indices), max_per_cluster)
-        if n_samples > 0:
-            selected = np.random.choice(cluster_indices, size=n_samples, replace=False)
-            selected_indices.extend(selected)
-
-        if len(selected_indices) >= limit:
-            break
-
-    # Trim to exact limit if we went over
-    selected_indices = selected_indices[:limit]
-
-    return X[selected_indices]
+    clusters = sorted(clusters, key=len)  # len(clusters[0][0])==32561
+    return clusters[0]
 
 
-def getPath(X, preds, input, conf):
+def extract_lime_decision_constraints(ge, model, input):
     """
     Get the path from Local Interpretable Model-agnostic Explanation Tree
     :param X: the whole inputs
-    :param preds: the model's symbolic output
+    :param model: the model's symbolic output
     :param input: instance to interpret
     :param conf: the configuration of dataset
     :return: the path for the decision of given instance
     """
 
-    # use the original implementation of LIME
-    explainer = LimeTabularExplainer(X, feature_names=conf.feature_name, class_names=['0', '1'],
-                                     categorical_features=[],
-                                     discretize_continuous=True)
+    # Convert DataFrame to numpy array for LIME
+    X_train = ge.xdf.to_numpy()
+
+    # Get feature names from DataFrame
+    feature_names = ge.xdf.columns.tolist()
+
+    # Define class names (binary classification: 0 and 1)
+    class_names = ge.ydf.unique()
+
+    # Get categorical features (if any are specified in the DataFrame)
+    categorical_features = [i for i, dtype in enumerate(ge.xdf.dtypes) if dtype == 'category' or dtype == 'object']
+
+    # Initialize LIME explainer
+    explainer = lime_tabular.LimeTabularExplainer(
+        X_train,
+        feature_names=feature_names,
+        class_names=class_names,
+        categorical_features=categorical_features,
+        discretize_continuous=True
+    )
     o_data, g_data = explainer._LimeTabularExplainer__data_inverse(input, num_samples=5000)
     # print(g_data)
-    g_labels = preds(g_data)
+    g_labels = model.predict(g_data)
 
     # build the interpretable tree
     tree = DecisionTreeClassifier(random_state=2019)  # min_samples_split=0.05, min_samples_leaf =0.01
@@ -157,25 +169,67 @@ def getPath(X, preds, input, conf):
     return path
 
 
-def check_for_error_condition(conf, preds, t, sens):
+def check_for_discrimination_case(ge, model, t, sensitive_indices):
     """
     Check whether the test case is an individual discriminatory instance
-    :param conf: the configuration of dataset
-    :param preds: the model's symbolic output
+    :param ge: DiscriminationData object
+    :param model: the model's symbolic output
     :param t: test case
-    :param sens: the index of sensitive feature
-    :return: tuple (is_discriminatory, original_prediction, counter_example, counter_prediction)
-            or (False, None, None, None) if no discrimination found
+    :param sensitive_indices: dictionary of sensitive attribute names and their indices
+    :return: whether it is an individual discriminatory instance
     """
-    label = preds(np.array([t]))
-    for val in range(conf.input_bounds[sens - 1][0], conf.input_bounds[sens - 1][1] + 1):
-        if val != t[sens - 1]:
-            tnew = copy.deepcopy(t)
-            tnew[sens - 1] = val
-            label_new = preds(np.array([tnew]))
-            if label_new != label:
-                return True, label, tnew, label_new
-    return False, None, None, None
+    import itertools
+
+    # Get original prediction
+    org_df = pd.DataFrame([t], columns=ge.attr_columns)
+    label = model.predict(org_df)
+    org_df['outcome'] = label
+
+    # Get all possible values for each sensitive attribute
+    sensitive_values = {}
+    for sens_name, sens_idx in sensitive_indices.items():
+        sensitive_values[sens_name] = np.unique(ge.xdf.iloc[:, sens_idx]).tolist()
+
+    # Generate all possible combinations of sensitive attribute values
+    sensitive_names = list(sensitive_indices.keys())
+    value_combinations = list(itertools.product(*[sensitive_values[name] for name in sensitive_names]))
+
+    # Create new test cases with all combinations
+    new_targets = []
+    for values in value_combinations:
+        # Skip if combination is identical to original
+        if all(t[sensitive_indices[name]] == value for name, value in zip(sensitive_names, values)):
+            continue
+
+        tnew = pd.DataFrame([t], columns=ge.attr_columns)
+        for name, value in zip(sensitive_names, values):
+            tnew[name] = value
+        new_targets.append(tnew)
+
+    if not new_targets:  # If no new combinations were generated
+        return False
+
+    new_targets = pd.concat(new_targets)
+    new_targets['outcome'] = model.predict(new_targets)
+
+    # Check if any combination leads to a different prediction
+    discriminations = new_targets[new_targets['outcome'] != label[0]]
+
+    return discriminations.shape[0] > 0, org_df, discriminations
+
+
+def remove_sensitive_attributes(input_vector, sensitive_indices):
+    """
+    Remove multiple sensitive attributes from the input vector
+    :param input_vector: original input vector
+    :param sensitive_indices: dictionary of sensitive attribute names and their indices
+    :return: input vector without sensitive attributes
+    """
+    result = []
+    for i in range(len(input_vector)):
+        if i not in sensitive_indices.values():
+            result.append(input_vector[i])
+    return result
 
 
 def global_solve(path_constraint, arguments, t, conf):
@@ -251,228 +305,110 @@ def average_confidence(path_constraint):
     return r
 
 
-def gen_arguments(conf):
+def gen_arguments(ge):
     """
     Generate the argument for all the features
-    :param conf: the configuration of dataset
+    :param ge: DiscriminationData object containing the dataset
     :return: a sequence of arguments
     """
     arguments = []
-    for i in range(conf.params):
-        arguments.append(z3.Int(conf.feature_name[i]))
-        # arguments.append(conf.feature_name[i])
+    feature_names = ge.xdf.columns.tolist()
+    for feature_name in feature_names:
+        arguments.append(z3.Int(str(feature_name)))
     return arguments
 
 
-def train_model(model_type, X, y):
-    """
-    Train a model based on the specified type
-    :param model_type: String specifying model type ('lr', 'rf', 'svm', 'mlp')
-    :param X: Feature matrix
-    :param y: Target values
-    :return: Trained model
-    """
-    model_type = model_type.lower()
-    if model_type == 'lr':
-        model = LogisticRegression(random_state=42)
-    elif model_type == 'rf':
-        model = RandomForestClassifier(n_estimators=100, random_state=42)
-    elif model_type == 'svm':
-        model = SVC(kernel='rbf', probability=True, random_state=42)
-    elif model_type == 'mlp':
-        model = MLPClassifier(hidden_layer_sizes=(100, 50), random_state=42)
-    else:
-        raise ValueError(f"Unsupported model type: {model_type}. Choose from: 'lr', 'rf', 'svm', 'mlp'")
-
-    # Split data and train model
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    model.fit(X_train, y_train)
-
-    # Print basic model performance
-    train_score = model.score(X_train, y_train)
-    test_score = model.score(X_test, y_test)
-    logger.info(f"Model training complete:")
-    logger.info(f"Training accuracy: {train_score:.4f}")
-    logger.info(f"Testing accuracy: {test_score:.4f}")
-
-    return model
-
-
-class SymbolicGenerationResult:
-    def __init__(self, outcome: int, diff_outcome: float, type_str: str,
-                 sensitive_attribute: str, total_inputs: int, discriminatory_inputs: int,
-                 percentage_discriminatory_inputs: float, case_id: int,
-                 indv_key: str, couple_key: str):
-        self.outcome = outcome
-        self.diff_outcome = diff_outcome
-        self.type = type_str
-        self.Sensitive_Attribute = sensitive_attribute
-        self.Total_Inputs = total_inputs
-        self.Discriminatory_Inputs = discriminatory_inputs
-        self.Percentage_Discriminatory_Inputs = percentage_discriminatory_inputs
-        self.case_id = case_id
-        self.indv_key = indv_key
-        self.couple_key = couple_key
-
-
-
-def symbolic_generation(ge: DiscriminationData, model_type, cluster_num, limit, iter):
+def symbolic_generation(ge: DiscriminationData, model_type, cluster_num, limit):
     """
     The implementation of symbolic generation
-    :param ge: pandas DataFrame containing the data
-    :param model_type: String specifying the type of model to train ('lr', 'rf', 'svm', 'mlp')
+    :param ge: the name of dataset
+    :param sensitive_param: the index of sensitive feature
+    :param model_type: model type
     :param cluster_num: the number of clusters to form as well as the number of
             centroids to generate
     :param limit: the maximum number of test case
-    :param iter: iteration number
-    :return: List of SymbolicGenerationResult objects
     """
-    start_time = time.time()
-    count = 300  # Initialize counter for periodic reporting
 
-    logger.info(f"Starting symbolic generation with model_type={model_type}, cluster_num={cluster_num}, limit={limit}")
+    start = time.time()
 
-    dataset = ge.dataframe
-    # Get data from DataFrame
-    logger.info("Preparing data...")
-    X = dataset.iloc[:, :-1].values
-    Y = dataset.iloc[:, -1].values
-    logger.info(f"Data shape: X={X.shape}, Y={Y.shape}")
+    model = train_model(model_type, ge.xdf, ge.ydf)
+    # the rank for priority queue, rank1 is for seed inputs, rank2 for local, rank3 for global
+    rank1 = 5
+    rank2 = 1
+    rank3 = 10
+    T1 = 0.3
 
-    # Set up input bounds based on the data
-    logger.info("Calculating input bounds...")
-    input_bounds = []
-    for col_idx in range(X.shape[1]):
-        min_val = int(X[:, col_idx].min())
-        max_val = int(X[:, col_idx].max())
-        input_bounds.append([min_val, max_val])
-    logger.info(f"Input bounds: {input_bounds}")
-
-    # Get feature names
-    feature_names = list(dataset.iloc[:, :-1].columns) if hasattr(dataset, 'columns') else [f'x{i}' for i in
-                                                                                            range(X.shape[1])]
-    logger.info(f"Feature names: {feature_names}")
-
-    # Create config object
-    config = Config(input_bounds=input_bounds,
-                    params=X.shape[1],
-                    feature_name=feature_names)
-    logger.info("Configuration object created")
-
-    # Protected indices setup
-    protected_indices = list(range(X.shape[1]))
-    sensitive_param = protected_indices[0] + 1
-    logger.info(f"Using sensitive parameter index: {sensitive_param}")
-
-    # Train the model
-    logger.info(f"Training {model_type} model...")
-    model = train_model(model_type, X, Y)
-
-    # Get seed inputs through clustering
-    logger.info("Generating seed inputs through clustering...")
-    inputs = seed_test_input(X, cluster_num, limit)
-    logger.info(f"Generated {len(inputs)} seed inputs")
-
-    # Initialize queue and tracking variables
-    logger.info("Initializing search process...")
-    q = PriorityQueue()
-    rank1 = 1
+    # store the result of fairness testing
+    global_disc_inputs = set()
+    global_disc_inputs_list = []
+    local_disc_inputs = set()
+    local_disc_inputs_list = []
     tot_inputs = set()
-    results = []  # List to store SymbolicGenerationResult objects
-    case_id = 0  # Counter for unique case IDs
 
-    # Add inputs to queue
-    for inp in inputs[::-1]:
-        q.put(QueueItem(rank1, inp))
-    logger.info(f"Added {len(inputs)} inputs to queue")
+    # select the seed input for fairness testing
+    inputs = seed_test_input(ge.xdf, cluster_num, limit)
+    print(len(inputs))
+    print(inputs)
+
+    # Get all input data at once and convert to numpy for faster processing
+    input_data = copy.deepcopy(ge.xdf.iloc[inputs])
+    input_data['key'] = input_data[ge.non_protected_attributes].apply(lambda x: ''.join(x.astype(str)), axis=1)
+    input_data = input_data.drop_duplicates(subset=['key'])
+    input_data.drop(columns=['key'], inplace=True)
+
+    # Initialize queue with optimized data insertion
+    targets_queue = PriorityQueue()
+    [targets_queue.put((rank1, row.tolist())) for row in input_data[::-1].to_numpy()]
 
     visited_path = []
     l_count = 0
     g_count = 0
+    count = 300
 
-    logger.info("Starting main search loop...")
-    while len(tot_inputs) < limit and q.qsize() != 0:
-        current_time = time.time()
-        use_time = current_time - start_time
+    # Generate arguments for Z3 solver
+    arguments = gen_arguments(ge)
 
-        if use_time >= count:
-            logger.info(f"Progress update at {use_time:.2f} seconds:")
-            logger.info(f"- Discriminatory inputs found: {len(results)}")
-            logger.info(f"- Total inputs processed: {len(tot_inputs)}")
-            logger.info(f"- Local searches: {l_count}")
-            logger.info(f"- Global searches: {g_count}")
-            logger.info(f"- Queue size: {q.qsize()}")
-            count += 300
+    results = []
+    use_time = 0  # Initialize use_time
 
-        if use_time >= 3900:
-            logger.warning("Time limit reached (65 minutes)")
+    while len(tot_inputs) < limit and targets_queue.qsize() != 0:
+        use_time = time.time() - start  # Update use_time at the start of each iteration
+        if use_time >= 3900:  # Check time limit at the start of each iteration
             break
 
-        # Get next input from queue
-        t = q.get()
-        t_rank = t.priority
-        t = np.array(t.data)
+        org_input = targets_queue.get()
+        org_input_rank = org_input[0]
+        org_input = np.array(org_input[1])
 
-        # Check for discrimination
-        logger.debug(f"Checking input: {t}")
-        is_disc, orig_pred, counter_ex, counter_pred = check_for_error_condition(config, model.predict, t,
-                                                                                 sensitive_param)
-        if is_disc:
-            # First, get the schema to know which attributes are protected
-            schema = ge.schema()
+        found, org_df, found_df = check_for_discrimination_case(ge, model, org_input, ge.sensitive_indices)
+        decision_rules = extract_lime_decision_constraints(ge, model, org_input)
 
-            # Create formatted feature names based on protected attributes
-            formatted_feature_names = []
-            for i, name in enumerate(feature_names):
-                # Check if this attribute is protected by looking it up in the schema's protected_attr list
-                is_protected = schema.protected_attr[i]
-                formatted_name = f"Attr{i}_{'T' if is_protected else 'X'}"
-                formatted_feature_names.append(formatted_name)
+        # Create a version of the input without any sensitive parameters
+        input_without_sensitive = remove_sensitive_attributes(org_input.tolist(), ge.sensitive_indices)
+        input_key = tuple(input_without_sensitive)
 
-            # Create DataFrames with the properly formatted column names
-            indv1 = pd.DataFrame([t], columns=formatted_feature_names)
-            indv2 = pd.DataFrame([counter_ex], columns=formatted_feature_names)
+        # Track unique inputs and check for discrimination
+        tot_inputs.add(input_key)
+        if found:
+            print(input_key, found, len(tot_inputs), len(results))
+            results.append((org_df, found_df))
+            if (input_key not in global_disc_inputs) and (input_key not in local_disc_inputs):
+                if org_input_rank > 2:
+                    global_disc_inputs.add(input_key)
+                    global_disc_inputs_list.append(input_key)
+                else:
+                    local_disc_inputs.add(input_key)
+                    local_disc_inputs_list.append(input_key)
 
-            indv_key1 = "|".join(str(x) for x in t)
-            indv_key2 = "|".join(str(x) for x in counter_ex)
+                if len(tot_inputs) == limit:
+                    break
 
-            # Add the additional columns
-            indv1['outcome'] = orig_pred
-            indv1['indv_key'] = indv_key1
-            indv2['outcome'] = counter_pred
-            indv2['indv_key'] = indv_key2
-
-            # Create couple_key as before
-
-            couple_key = f"{indv_key1}-{indv_key2}"
-            diff_outcome = abs(orig_pred - counter_pred)
-
-            df_res = pd.concat([indv1, indv2])
-            df_res['couple_key'] = couple_key
-            df_res['diff_outcome'] = diff_outcome
-            df_res['case_id'] = case_id
-            results.append(df_res)
-            case_id += 1
-
-            # Log in a format similar to Aequitas
-            logger.info(
-                f"Found discrimination: {df_res['couple_key']} (outcome={df_res['outcome']}, diff={df_res['diff_outcome']})")
-
-            tot_inputs.add(tuple(t.tolist()))
-
-        # Get explanation path
-        p = getPath(X, model.predict, t, config)
-        path_str = str([(config.feature_name[c[0]], c[1], c[2], c[3]) for c in p])
-        logger.debug(f"Path for input: {path_str}")
-
-        if str(p) not in visited_path:
-            visited_path.append(str(p))
-
-            # Local search
-            logger.debug("Performing local search...")
-            for i in range(len(p)):
-                path_constraint = copy.deepcopy(p)
-                c = path_constraint[i]
+            # local search
+            for decision_rule_index in range(len(decision_rules)):
+                path_constraint = copy.deepcopy(decision_rules)
+                c = path_constraint[decision_rule_index]
+                if c[0] in ge.sensitive_indices.values():
+                    continue
 
                 if c[1] == "<=":
                     c[1] = ">"
@@ -481,87 +417,140 @@ def symbolic_generation(ge: DiscriminationData, model_type, cluster_num, limit, 
                     c[1] = "<="
                     c[3] = 1.0 - c[3]
 
-                input = local_solve(path_constraint, gen_arguments(config), t, i, config)
-                if input is not None:
+                end = time.time()
+                use_time = end - start
+                if use_time >= count:
+                    print("Percentage discriminatory inputs - " + str(
+                        float(len(global_disc_inputs_list) + len(local_disc_inputs_list))
+                        / float(len(tot_inputs)) * 100))
+                    print("Number of discriminatory inputs are " + str(len(local_disc_inputs_list)))
+                    print("Total Inputs are " + str(len(tot_inputs)))
+                    print('use time:' + str(end - start))
+                    count += 300
+
+                if use_time >= 3900:  # Check time limit after each local search
+                    break
+                if path_constraint not in visited_path:
+                    visited_path.append(path_constraint)
+                    input = local_solve(path_constraint, arguments, org_input, decision_rule_index, ge)
                     l_count += 1
+                    if input != None:
+                        r = average_confidence(path_constraint)
+                        targets_queue.put((rank2 + r, input))
+
+        # global search
+        prefix_pred = []
+        for c in decision_rules:
+            if c[0] in ge.sensitive_indices.values():
+                continue
+            if c[3] < T1:
+                break
+
+            n_c = copy.deepcopy(c)
+            if n_c[1] == "<=":
+                n_c[1] = ">"
+                n_c[3] = 1.0 - c[3]
+            else:
+                n_c[1] = "<="
+                n_c[3] = 1.0 - c[3]
+            path_constraint = prefix_pred + [n_c]
+
+            end = time.time()
+            use_time = end - start
+            if use_time >= count:
+                print("Percentage discriminatory inputs - " + str(
+                    float(len(global_disc_inputs_list) + len(local_disc_inputs_list))
+                    / float(len(tot_inputs)) * 100))
+                print("Number of discriminatory inputs are " + str(len(local_disc_inputs_list)))
+                print("Total Inputs are " + str(len(tot_inputs)))
+                print('use time:' + str(end - start))
+                count += 300
+
+            # filter out the path_constraint already solved before
+            if path_constraint not in visited_path:
+                visited_path.append(path_constraint)
+                input = global_solve(path_constraint, arguments, org_input, ge)
+                g_count += 1
+                if input != None:
                     r = average_confidence(path_constraint)
-                    q.put(QueueItem(1 + r, input))
-                    logger.debug(f"Added new input from local search: {input}")
+                    targets_queue.put((rank3 - r, input))
 
-            # Global search
-            logger.debug("Performing global search...")
-            prefix_pred = []
-            for i in range(len(p)):
-                c = p[i]
-                path_constraint = prefix_pred
+            prefix_pred = prefix_pred + [c]
 
-                if c[1] == "<=":
-                    n_c = copy.deepcopy(c)
-                    n_c[1] = ">"
-                    n_c[3] = 1.0 - c[3]
-                else:
-                    n_c = copy.deepcopy(c)
-                    n_c[1] = "<="
-                    n_c[3] = 1.0 - c[3]
+            if use_time >= 3900:  # Check time limit after each global search iteration
+                break
+    res_df = []
+    case_id = 0
+    for org, counter_org in results:
+        for _, counter_examples in counter_org.iterrows():
+            indv1 = org.copy()
+            indv2 = pd.DataFrame([counter_examples])
 
-                path_constraint = prefix_pred + [n_c]
-                input = global_solve(path_constraint, gen_arguments(config), t, config)
+            indv_key1 = "|".join(str(x) for x in indv1[ge.attr_columns].iloc[0])
+            indv_key2 = "|".join(str(x) for x in indv2[ge.attr_columns].iloc[0])
 
-                if input is not None:
-                    g_count += 1
-                    r = average_confidence(path_constraint)
-                    q.put(QueueItem(10 - r, input))
-                    logger.debug(f"Added new input from global search: {input}")
+            # Add the additional columns
+            indv1['indv_key'] = indv_key1
+            indv2['indv_key'] = indv_key2
 
-                prefix_pred = prefix_pred + [c]
+            # Create couple_key as before
 
-    logger.info("Search completed!")
-    logger.info(f"Final statistics:")
-    logger.info(f"- Total time: {time.time() - start_time:.2f} seconds")
-    logger.info(f"- Total discriminatory inputs found: {len(results)}")
-    logger.info(f"- Total inputs processed: {len(tot_inputs)}")
-    logger.info(f"- Local searches performed: {l_count}")
-    logger.info(f"- Global searches performed: {g_count}")
+            couple_key = f"{indv_key1}-{indv_key2}"
+            diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
 
-    # create the folder for storing the fairness testing result
-    if not os.path.exists('./results/'):
-        os.makedirs('./results/')
-    if not os.path.exists('./results/' + "generated" + '/'):
-        os.makedirs('./results/' + "generated" + '/')
-    if not os.path.exists('./results/' + "generated" + '/' + str(sensitive_param)):
-        os.makedirs('./results/' + "generated" + '/' + str(sensitive_param))
+            df_res = pd.concat([indv1, indv2])
+            df_res['couple_key'] = couple_key
+            df_res['diff_outcome'] = diff_outcome
+            df_res['case_id'] = case_id
+            res_df.append(df_res)
+            case_id += 1
 
-    # storing the fairness testing result
-    np.save('./results/' + "generated" + '/' + str(sensitive_param) + '/global_samples_symbolic{}.npy'.format(iter),
-            np.array([r['couple_key'] for r in results]))
-    np.save('./results/' + "generated" + '/' + str(sensitive_param) + '/local_samples_symbolic{}.npy'.format(iter),
-            np.array([r['couple_key'] for r in results]))
+    if len(res_df) != 0:
+        res_df = pd.concat(res_df)
+    else:
+        res_df = pd.DataFrame([])
 
-    if not results:
-        return pd.DataFrame()  # Return empty DataFrame if no results
+    # Calculate metrics similar to Aequitas
+    end_time = time.time()
+    execution_time = end_time - start
 
-    # Convert results to DataFrame
-    df = pd.DataFrame(results)
+    return res_df, execution_time, tot_inputs, results
 
-    # Calculate global statistics
-    total_inputs = len(tot_inputs)
-    discriminatory_inputs = len(results)
-    percentage = (discriminatory_inputs / total_inputs * 100) if total_inputs > 0 else 0
 
-    # Update global statistics in each row
-    df["Total Inputs"] = total_inputs
-    df["Discriminatory Inputs"] = discriminatory_inputs
-    df["Percentage Discriminatory Inputs"] = percentage
-    df["TSN"] = total_inputs
-    df["DSN"] = discriminatory_inputs
-    df["SUR"] = percentage
+def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100, iter=2):
+    if not cluster_num:
+        cluster_num = len(ge.ydf.unique())
 
-    # Reorder columns to match desired format
-    desired_cols = [f"Attr{i}_{'T' if str(i) in df.columns[0] else 'X'}" for i in range(len(feature_names))] + [
-        "outcome", "diff_outcome", "type", "Sensitive Attribute", "Total Inputs",
-        "Discriminatory Inputs", "Percentage Discriminatory Inputs", "TSN", "DSN",
-        "DSS", "SUR", "case_id", "indv_key", "couple_key"
-    ]
+    start = time.time()
+    results = []
+    for i in range(iter):
+        res_df, execution_time, tot_inputs, f_results = symbolic_generation(ge=ge,
+                                                                 model_type=model_type,
+                                                                 cluster_num=cluster_num,
+                                                                 limit=limit)
+        end = time.time()
 
-    # Reorder columns and return
-    return df[desired_cols]
+        print('total time:' + str(end - start))
+        results.append((res_df, execution_time, tot_inputs, f_results))
+
+    results_df = pd.concat([res[0] for res in results])
+    results_df.drop_duplicates(subset='couple_key', keep='first', inplace=True)
+
+    tsn = sum([len(res[2]) for res in results])
+    dsn = sum([len(res[3]) for res in results])
+
+    metrics = {
+        "TSN": tsn,
+        "DSN": dsn,
+        "DSS": round(sum([res[1] for res in results])/len(results), 2),
+        "SUR": round(dsn/tsn, 2)
+    }
+
+    return results_df, metrics
+
+
+if __name__ == '__main__':
+    ge, ge_schema = get_real_data('adult')
+
+    res = run_sg(ge)
+    print(res)

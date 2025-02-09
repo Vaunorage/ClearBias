@@ -1,6 +1,5 @@
 from data_generator.main import generate_data, get_real_data, generate_from_real_data
-from methods.aequitas.algo import run_aequitas
-from methods.sg.main import symbolic_generation
+from methods.sg.main import run_sg
 
 # ge = generate_data(
 #     nb_attributes=6,
@@ -13,15 +12,9 @@ from methods.sg.main import symbolic_generation
 #     nb_categories_outcome=4,
 #     use_cache=True)
 
-ge, schema = get_real_data('adult')
+ge, ge_schema = get_real_data('adult')
 
-# Then run symbolic generation with the model type
-res = symbolic_generation(
-    ge=ge,  # Pass the entire ge object, not just the dataframe
-    model_type='lr',  # Choose from: 'lr', 'rf', 'svm', 'mlp'
-    cluster_num=5,    # or whatever number of clusters you want
-    limit=10,       # maximum number of test cases
-    iter=1            # iteration number
-)
+res = run_sg(ge)
 
+print(res)
 print("Sdsdd")
