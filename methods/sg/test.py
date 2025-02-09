@@ -16,11 +16,11 @@ from methods.sg.main import symbolic_generation
 ge, schema = get_real_data('adult')
 
 # Then run symbolic generation with the model type
-symbolic_generation(
-    dataset=ge.dataframe,  # Pass the entire ge object, not just the dataframe
+res = symbolic_generation(
+    ge=ge,  # Pass the entire ge object, not just the dataframe
     model_type='lr',  # Choose from: 'lr', 'rf', 'svm', 'mlp'
     cluster_num=5,    # or whatever number of clusters you want
-    limit=1000,       # maximum number of test cases
+    limit=10,       # maximum number of test cases
     iter=1            # iteration number
 )
 

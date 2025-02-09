@@ -15,8 +15,8 @@ from methods.aequitas.algo import run_aequitas
 ge, schema = get_real_data('adult')
 
 # %%
-global_iteration_limit = 6000
-local_iteration_limit = 1000
+global_iteration_limit = 100
+local_iteration_limit = 100
 model_type = "RandomForest"
 results_df, model_scores = run_aequitas(ge.training_dataframe, col_to_be_predicted=ge.outcome_column,
                                         sensitive_param_name_list=ge.protected_attributes,

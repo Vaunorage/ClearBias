@@ -1614,6 +1614,9 @@ def get_real_data(
     dataset = fetch_ucirepo(id=config['id'])
     df = dataset['data']['original']
 
+    if dataset_name == 'adult':
+        df['income'] = df['income'].apply(lambda x: x.replace('.', ''))
+
     if config['drop_columns']:
         df = df.drop(columns=config['drop_columns'])
 
@@ -1629,7 +1632,7 @@ def get_real_data(
     data = DiscriminationData(
         dataframe=enc_df,
         categorical_columns=list(schema.attr_names) + ['outcome'],
-        attributes={k:v for k,v in zip(schema.attr_names, schema.protected_attr)},
+        attributes={k: v for k, v in zip(schema.attr_names, schema.protected_attr)},
         collisions=0,
         nb_groups=0,
         max_group_size=0,
