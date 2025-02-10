@@ -1,5 +1,7 @@
 import copy
 import itertools
+import time
+import logging
 from typing import Tuple, List, Dict, Optional, Any
 import numpy as np
 import tensorflow as tf
@@ -18,6 +20,14 @@ from adf_tutorial.utils import cluster, gradient_graph
 
 # Disable eager execution for TF 1.x compatibility
 tf.compat.v1.disable_eager_execution()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger('ADF')
 
 # Configuration constants
 PERTURBATION_SIZE = 1.0
@@ -235,30 +245,31 @@ class LocalPerturbation:
 
 def dnn_fair_testing(
     ge: DiscriminationData,
-    cluster_num: int,
+    max_tsn: int,
     max_global: int,
     max_local: int,
     max_iter: int
-) -> List[Tuple[tuple, int, tuple, int]]:
+) -> Tuple[List[Tuple[tuple, int, tuple, int]], Dict[str, float]]:
     """The implementation of ADF.
     
     Args:
         ge (DiscriminationData): DiscriminationData object containing dataset and metadata
-        cluster_num (int): The number of clusters to form
+        max_tsn (int): The number of clusters to form
         max_global (int): The maximum number of samples for global search
         max_local (int): The maximum number of samples for local search
         max_iter (int): The maximum iteration of global perturbation
         
     Returns:
-        List[Tuple[tuple, int, tuple, int]]: List of discriminatory pairs
+        Tuple containing:
+            - List[Tuple[tuple, int, tuple, int]]: List of discriminatory pairs
+            - Dict[str, float]: Dictionary containing the following metrics:
+                - TSN: Total Sample Number
+                - DSN: Discriminatory Sample Number
+                - SUR: Success Rate (DSN/TSN)
+                - DSS: Discriminatory Sample Search time (Time/DSN)
     """
-    sensitive_indices = ge.sensitive_indices
-    if not isinstance(sensitive_indices, list):
-        sensitive_indices = [sensitive_indices]
-
-    dataset = "census"
     X, Y, input_shape, nb_classes = ge.xdf.to_numpy(), ge.ydf.to_numpy(), (None, ge.xdf.shape[1]), ge.ydf.unique().shape[0]
-    print("Input shape:", input_shape)  # Debug print
+    logger.info(f"Input shape: {input_shape}")
     tf.compat.v1.random.set_random_seed(1234)
 
     sess = tf.compat.v1.Session()
@@ -274,10 +285,10 @@ def dnn_fair_testing(
 
     model_path = HERE.joinpath("methods/adf/models/census/trained_model.model")
     if os.path.exists(model_path.with_suffix(".model.index")):
-        print("Loading existing model from:", model_path)
+        logger.info(f"Loading existing model from: {model_path}")
         saver.restore(sess, str(model_path))
     else:
-        print("No existing model found. Training a new model...")
+        logger.info("No existing model found. Training a new model...")
         Y_one_hot = tf.keras.utils.to_categorical(Y, nb_classes)
 
         X_mean = np.mean(X, axis=0)
@@ -334,21 +345,21 @@ def dnn_fair_testing(
             history['loss'].append(epoch_loss)
             history['accuracy'].append(epoch_acc)
 
-            print(f"Epoch {epoch + 1}/{epochs}, Loss: {epoch_loss:.4f}, Accuracy: {epoch_acc:.4f}")
+            logger.info(f"Epoch {epoch + 1}/{epochs}, Loss: {epoch_loss:.4f}, Accuracy: {epoch_acc:.4f}")
 
             if epoch > 0 and abs(history['loss'][-1] - history['loss'][-2]) < 1e-4:
-                print("Loss has stopped decreasing. Early stopping...")
+                logger.info("Loss has stopped decreasing. Early stopping...")
                 break
 
         final_acc = sess.run(accuracy, feed_dict={x: X_normalized, y: Y_one_hot})
-        print(f"\nFinal Test Accuracy: {final_acc:.4f}")
+        logger.info(f"Final Test Accuracy: {final_acc:.4f}")
 
         save_path = HERE.joinpath("methods/adf/models/census/")
         if not os.path.exists(save_path):
             os.makedirs(save_path)
         model_save_path = save_path.joinpath("trained_model.model")
         save_path = saver.save(sess, str(model_save_path))
-        print("Model saved in path:", save_path)
+        logger.info(f"Model saved in path: {save_path}")
 
     grad_0 = gradient_graph(x, preds)
 
@@ -362,6 +373,8 @@ def dnn_fair_testing(
     discriminatory_pairs = []
     unique_disc_pairs = set()
 
+    start_time = time.time()
+
     def evaluate_local(inp):
         result, disc_tuple = check_for_error_condition(ge, sess, x, preds, inp, ge.sensitive_indices.values())
 
@@ -372,6 +385,7 @@ def dnn_fair_testing(
         temp = tuple(temp)
 
         tot_inputs.add(temp)
+
         if result and (temp not in global_disc_inputs) and (temp not in local_disc_inputs):
             local_disc_inputs.add(temp)
             local_disc_inputs_list.append(temp)
@@ -380,12 +394,15 @@ def dnn_fair_testing(
                     unique_disc_pairs.add(disc_tuple)
                     discriminatory_pairs.append(disc_tuple)
 
+        current_dsn = len(global_disc_inputs) + len(local_disc_inputs)
+        logger.info(
+            f"[Real-time Metrics] TSN: {len(tot_inputs)} DSN: {current_dsn}")
         return float(not result)
 
     clusters = seed_test_input(X, min(max_global, len(X)))
 
     for iter_num, cluster in enumerate(clusters):
-        if iter_num > max_iter:
+        if iter_num > max_iter or len(tot_inputs) > max_tsn:
             break
 
         for index in cluster:
@@ -414,7 +431,7 @@ def dnn_fair_testing(
                 n_probs = model_prediction(sess, x, preds, n_sample)[0]
                 n_label = np.argmax(n_probs)
                 n_prob = n_probs[n_label]
-                print(sample, label, n_sample, n_label)
+                logger.debug(f"Sample comparison - Original: {sample}, Label: {label}, New: {n_sample}, New Label: {n_label}")
                 if label != n_label:
                     for i, (name, value) in enumerate(zip(sensitive_values.keys(), values)):
                         n_values[ge.sensitive_indices[name]] = value
@@ -433,12 +450,14 @@ def dnn_fair_testing(
                 global_disc_inputs_list.append(sample_key)
                 global_disc_inputs.add(tuple(sample_key))
                 suc_idx.append(index)
-
+                current_dsn = len(global_disc_inputs) + len(local_disc_inputs)
+                logger.info(f"[Real-time Metrics] DSN: {current_dsn} (Global: {len(global_disc_inputs)}, Local: {len(local_disc_inputs)})")
                 minimizer = {"method": "L-BFGS-B"}
                 local_perturbation = LocalPerturbation(sess, grad_0, x, n_values, ge.sensitive_indices.values(), input_shape[1], ge)
                 basinhopping(evaluate_local, sample.flatten(), stepsize=1.0, take_step=local_perturbation, minimizer_kwargs=minimizer, niter=max_local)
 
-                print(len(local_disc_inputs_list), "Percentage discriminatory inputs of local search- ", float(len(local_disc_inputs)) / float(len(tot_inputs)) * 100)
+                logger.info(f"Local search discriminatory inputs: {len(local_disc_inputs_list)}")
+                logger.info(f"Percentage discriminatory inputs of local search: {float(len(local_disc_inputs)) / float(len(tot_inputs)) * 100:.2f}%")
                 break
 
         s_grad = sess.run(tf.sign(grad_0), feed_dict={x: sample})
@@ -458,17 +477,40 @@ def dnn_fair_testing(
         cal_grad = s_grad * g_diff
         sample[0] = clip(sample[0] + PERTURBATION_SIZE * cal_grad[0], ge).astype("int")
 
-    print("Total Inputs are ", len(tot_inputs))
-    print("Total discriminatory inputs of global search- ", len(global_disc_inputs))
-    print("Total discriminatory inputs of local search- ", len(local_disc_inputs))
-    print("Total discriminatory pairs found- ", len(discriminatory_pairs))
+    end_time = time.time()
+    total_time = end_time - start_time
+    
+    # Calculate metrics
+    tsn = len(tot_inputs)  # Total Sample Number
+    dsn = len(global_disc_inputs) + len(local_disc_inputs)  # Discriminatory Sample Number
+    sur = dsn / tsn if tsn > 0 else 0  # Success Rate
+    dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
 
-    return discriminatory_pairs
+    metrics = {
+        'TSN': tsn,
+        'DSN': dsn,
+        'SUR': sur,
+        'DSS': dss
+    }
+
+    logger.info(f"Total Inputs: {len(tot_inputs)}")
+    logger.info(f"Global Search Discriminatory Inputs: {len(global_disc_inputs)}")
+    logger.info(f"Local Search Discriminatory Inputs: {len(local_disc_inputs)}")
+    logger.info(f"Success Rate (SUR): {metrics['SUR']:.4f}")
+    logger.info(f"Average Search Time per Discriminatory Sample (DSS): {metrics['DSS']:.4f} seconds")
+    logger.info(f"Total Discriminatory Pairs Found: {len(discriminatory_pairs)}")
+
+    return discriminatory_pairs, metrics
 
 def main():
     ge, ge_schema = get_real_data('adult')
 
-    dnn_fair_testing(ge=ge, cluster_num=4, max_global=1000, max_local=1000, max_iter=1000)
+    discriminatory_pairs, metrics = dnn_fair_testing(ge=ge, max_tsn=1000, max_global=1000,
+                                                     max_local=1000, max_iter=1000)
+
+    print(discriminatory_pairs)
+
+
 
 if __name__ == '__main__':
     main()
