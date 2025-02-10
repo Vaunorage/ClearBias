@@ -9,7 +9,7 @@ import random
 import time
 from scipy.optimize import basinhopping
 import config
-from utils import train_sklearn_model
+from methods.utils import train_sklearn_model
 
 import logging
 import sys
@@ -274,9 +274,6 @@ def evaluate_local(inp):
     """
     global total_samples, discriminatory_samples, current_local_iter
     current_local_iter += 1
-    
-    import itertools
-    import pandas as pd
 
     # Check if this input has already been tested
     if is_case_tested(inp):
@@ -476,3 +473,5 @@ logger.info("")
 logger.info(f"Total Inputs are {len(tot_inputs)}")
 logger.info(f"Number of discriminatory inputs are {len(global_disc_inputs_list) + len(local_disc_inputs_list)}")
 logger.info(f"Time running : {(time.time() - start_time):.2f} seconds")
+
+
