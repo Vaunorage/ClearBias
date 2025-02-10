@@ -6,7 +6,6 @@ from typing import Tuple, List, Dict, Optional, Any
 import numpy as np
 import tensorflow as tf
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder
 from scipy.optimize import basinhopping
 import os
 
@@ -28,74 +27,6 @@ logger = logging.getLogger('ADF')
 
 # Configuration constants
 PERTURBATION_SIZE = 1.0
-DATASETS_PATH = HERE.joinpath('methods/adf/datasets')
-
-
-def load_census_data() -> Tuple[np.ndarray, np.ndarray, Tuple[Optional[int], int], int]:
-    """Load and preprocess Census Income dataset.
-    
-    Returns:
-        tuple: Contains:
-            - X (np.ndarray): Feature matrix
-            - y (np.ndarray): Target labels
-            - input_shape (tuple): Shape of input features
-            - num_classes (int): Number of target classes
-    """
-    data = pd.read_csv(DATASETS_PATH.joinpath('census'), header=None)
-    X, y = _preprocess_data(data)
-    return X, y, (None, X.shape[1]), 2
-
-
-def load_credit_data() -> Tuple[np.ndarray, np.ndarray, Tuple[int], int]:
-    """Load and preprocess German Credit dataset.
-    
-    Returns:
-        tuple: Contains:
-            - X (np.ndarray): Feature matrix
-            - y (np.ndarray): Target labels
-            - input_shape (tuple): Shape of input features
-            - num_classes (int): Number of target classes
-    """
-    data = pd.read_csv('datasets/credit_sample', header=None)
-    X, y = _preprocess_data(data)
-    y = y - 1  # Convert to 0-based indexing
-    return X, y, (X.shape[1],), 2
-
-
-def load_bank_data() -> Tuple[np.ndarray, np.ndarray, Tuple[int], int]:
-    """Load and preprocess Bank Marketing dataset.
-    
-    Returns:
-        tuple: Contains:
-            - X (np.ndarray): Feature matrix
-            - y (np.ndarray): Target labels
-            - input_shape (tuple): Shape of input features
-            - num_classes (int): Number of target classes
-    """
-    data = pd.read_csv('datasets/bank', header=None)
-    X, y = _preprocess_data(data)
-    return X, y, (X.shape[1],), 2
-
-
-def _preprocess_data(data: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-    """Helper function to preprocess data by encoding categorical variables.
-    
-    Args:
-        data (pd.DataFrame): Raw data to preprocess
-        
-    Returns:
-        tuple: Contains:
-            - X (np.ndarray): Processed feature matrix
-            - y (np.ndarray): Processed target labels
-    """
-    le = LabelEncoder()
-    for col in data.columns:
-        if data[col].dtype == 'object':
-            data[col] = le.fit_transform(data[col].astype(str))
-
-    X = data.iloc[:, :-1].values
-    y = data.iloc[:, -1].values
-    return X, y
 
 
 def check_for_error_condition(
@@ -288,85 +219,85 @@ def dnn_fair_testing(
     init = tf.compat.v1.global_variables_initializer()
     sess.run(init)
 
-    saver = tf.compat.v1.train.Saver()
+    # saver = tf.compat.v1.train.Saver()
 
-    model_path = HERE.joinpath("methods/adf/models/census/trained_model.model")
-    if os.path.exists(model_path.with_suffix(".model.index")):
-        logger.info(f"Loading existing model from: {model_path}")
-        saver.restore(sess, str(model_path))
-    else:
-        logger.info("No existing model found. Training a new model...")
-        Y_one_hot = tf.keras.utils.to_categorical(Y, nb_classes)
+    # model_path = HERE.joinpath("methods/adf/models/census/trained_model.model")
+    # if os.path.exists(model_path.with_suffix(".model.index")):
+    #     logger.info(f"Loading existing model from: {model_path}")
+    #     saver.restore(sess, str(model_path))
+    # else:
+    logger.info("No existing model found. Training a new model...")
+    Y_one_hot = tf.keras.utils.to_categorical(Y, nb_classes)
 
-        X_mean = np.mean(X, axis=0)
-        X_std = np.std(X, axis=0)
-        X_std[X_std == 0] = 1  # Avoid division by zero
-        X_normalized = (X - X_mean) / X_std
+    X_mean = np.mean(X, axis=0)
+    X_std = np.std(X, axis=0)
+    X_std[X_std == 0] = 1  # Avoid division by zero
+    X_normalized = (X - X_mean) / X_std
 
-        batch_size = 32
-        epochs = 10
-        learning_rate = 0.01  # Increased learning rate
+    batch_size = 32
+    epochs = 10
+    learning_rate = 0.01  # Increased learning rate
 
-        optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=learning_rate)
+    optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=learning_rate)
 
-        with tf.compat.v1.variable_scope('training'):
-            logits = model(x)  # Get logits from model
-            loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=y, logits=logits))
-            train_op = optimizer.minimize(loss)
+    with tf.compat.v1.variable_scope('training'):
+        logits = model(x)  # Get logits from model
+        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=y, logits=logits))
+        train_op = optimizer.minimize(loss)
 
-            correct_prediction = tf.equal(tf.argmax(logits, 1), tf.argmax(y, 1))
-            accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+        correct_prediction = tf.equal(tf.argmax(logits, 1), tf.argmax(y, 1))
+        accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 
-        n_batches = int(np.ceil(len(X_normalized) / batch_size))
+    n_batches = int(np.ceil(len(X_normalized) / batch_size))
 
-        sess.run(tf.compat.v1.global_variables_initializer())
+    sess.run(tf.compat.v1.global_variables_initializer())
 
-        history = {'loss': [], 'accuracy': []}
+    history = {'loss': [], 'accuracy': []}
 
-        for epoch in range(epochs):
-            indices = np.random.permutation(len(X_normalized))
-            X_shuffled = X_normalized[indices]
-            Y_shuffled = Y_one_hot[indices]
+    for epoch in range(epochs):
+        indices = np.random.permutation(len(X_normalized))
+        X_shuffled = X_normalized[indices]
+        Y_shuffled = Y_one_hot[indices]
 
-            epoch_loss = 0
-            epoch_acc = 0
+        epoch_loss = 0
+        epoch_acc = 0
 
-            for i in range(n_batches):
-                start_idx = i * batch_size
-                end_idx = min((i + 1) * batch_size, len(X_normalized))
+        for i in range(n_batches):
+            start_idx = i * batch_size
+            end_idx = min((i + 1) * batch_size, len(X_normalized))
 
-                batch_x = X_shuffled[start_idx:end_idx]
-                batch_y = Y_shuffled[start_idx:end_idx]
+            batch_x = X_shuffled[start_idx:end_idx]
+            batch_y = Y_shuffled[start_idx:end_idx]
 
-                _, batch_loss, batch_acc = sess.run(
-                    [train_op, loss, accuracy],
-                    feed_dict={x: batch_x, y: batch_y}
-                )
+            _, batch_loss, batch_acc = sess.run(
+                [train_op, loss, accuracy],
+                feed_dict={x: batch_x, y: batch_y}
+            )
 
-                epoch_loss += batch_loss
-                epoch_acc += batch_acc
+            epoch_loss += batch_loss
+            epoch_acc += batch_acc
 
-            epoch_loss /= n_batches
-            epoch_acc /= n_batches
+        epoch_loss /= n_batches
+        epoch_acc /= n_batches
 
-            history['loss'].append(epoch_loss)
-            history['accuracy'].append(epoch_acc)
+        history['loss'].append(epoch_loss)
+        history['accuracy'].append(epoch_acc)
 
-            logger.info(f"Epoch {epoch + 1}/{epochs}, Loss: {epoch_loss:.4f}, Accuracy: {epoch_acc:.4f}")
+        logger.info(f"Epoch {epoch + 1}/{epochs}, Loss: {epoch_loss:.4f}, Accuracy: {epoch_acc:.4f}")
 
-            if epoch > 0 and abs(history['loss'][-1] - history['loss'][-2]) < 1e-4:
-                logger.info("Loss has stopped decreasing. Early stopping...")
-                break
+        if epoch > 0 and abs(history['loss'][-1] - history['loss'][-2]) < 1e-4:
+            logger.info("Loss has stopped decreasing. Early stopping...")
+            break
 
-        final_acc = sess.run(accuracy, feed_dict={x: X_normalized, y: Y_one_hot})
-        logger.info(f"Final Test Accuracy: {final_acc:.4f}")
+    final_acc = sess.run(accuracy, feed_dict={x: X_normalized, y: Y_one_hot})
+    logger.info(f"Final Test Accuracy: {final_acc:.4f}")
 
-        save_path = HERE.joinpath("methods/adf/models/census/")
-        if not os.path.exists(save_path):
-            os.makedirs(save_path)
-        model_save_path = save_path.joinpath("trained_model.model")
-        save_path = saver.save(sess, str(model_save_path))
-        logger.info(f"Model saved in path: {save_path}")
+    # save_path = HERE.joinpath("methods/adf/models/census/")
+    # if not os.path.exists(save_path):
+    #     os.makedirs(save_path)
+    # model_save_path = save_path.joinpath("trained_model.model")
+    # save_path = saver.save(sess, str(model_save_path))
+    # logger.info(f"Model saved in path: {save_path}")
 
     grad_0 = gradient_graph(x, preds)
 
