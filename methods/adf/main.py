@@ -8,15 +8,12 @@ import tensorflow as tf
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from scipy.optimize import basinhopping
-import sys
 import os
 
 from data_generator.main import get_real_data, DiscriminationData
 from path import HERE
 from adf_model.tutorial_models import dnn
-from adf_utils.utils_tf import model_prediction, model_argmax
-from adf_utils.config import census, credit, bank
-from adf_tutorial.utils import cluster, gradient_graph
+from methods.adf.utils_tf import model_prediction, model_argmax, cluster, gradient_graph
 
 # Disable eager execution for TF 1.x compatibility
 tf.compat.v1.disable_eager_execution()
