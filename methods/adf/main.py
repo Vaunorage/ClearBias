@@ -33,6 +33,7 @@ logger = logging.getLogger('ADF')
 PERTURBATION_SIZE = 1.0
 DATASETS_PATH = HERE.joinpath('methods/adf/datasets')
 
+
 def load_census_data() -> Tuple[np.ndarray, np.ndarray, Tuple[Optional[int], int], int]:
     """Load and preprocess Census Income dataset.
     
@@ -46,6 +47,7 @@ def load_census_data() -> Tuple[np.ndarray, np.ndarray, Tuple[Optional[int], int
     data = pd.read_csv(DATASETS_PATH.joinpath('census'), header=None)
     X, y = _preprocess_data(data)
     return X, y, (None, X.shape[1]), 2
+
 
 def load_credit_data() -> Tuple[np.ndarray, np.ndarray, Tuple[int], int]:
     """Load and preprocess German Credit dataset.
@@ -62,6 +64,7 @@ def load_credit_data() -> Tuple[np.ndarray, np.ndarray, Tuple[int], int]:
     y = y - 1  # Convert to 0-based indexing
     return X, y, (X.shape[1],), 2
 
+
 def load_bank_data() -> Tuple[np.ndarray, np.ndarray, Tuple[int], int]:
     """Load and preprocess Bank Marketing dataset.
     
@@ -75,6 +78,7 @@ def load_bank_data() -> Tuple[np.ndarray, np.ndarray, Tuple[int], int]:
     data = pd.read_csv('datasets/bank', header=None)
     X, y = _preprocess_data(data)
     return X, y, (X.shape[1],), 2
+
 
 def _preprocess_data(data: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     """Helper function to preprocess data by encoding categorical variables.
@@ -91,18 +95,19 @@ def _preprocess_data(data: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
     for col in data.columns:
         if data[col].dtype == 'object':
             data[col] = le.fit_transform(data[col].astype(str))
-    
+
     X = data.iloc[:, :-1].values
     y = data.iloc[:, -1].values
     return X, y
 
+
 def check_for_error_condition(
-    ge: DiscriminationData,
-    sess: tf.compat.v1.Session,
-    x: tf.Tensor,
-    preds: tf.Tensor,
-    t: np.ndarray,
-    sens_indices: List[int]
+        ge: DiscriminationData,
+        sess: tf.compat.v1.Session,
+        x: tf.Tensor,
+        preds: tf.Tensor,
+        t: np.ndarray,
+        sens_indices: List[int]
 ) -> Tuple[bool, Optional[Tuple[tuple, int, tuple, int]]]:
     """Check whether the test case is an individual discriminatory instance.
     
@@ -125,7 +130,7 @@ def check_for_error_condition(
 
     for sens_idx in sens_indices:
         unique_vals = np.unique(ge.xdf.iloc[:, sens_idx])
-        
+
         for val in unique_vals:
             if val != t[sens_idx]:
                 t_changed = t.copy()
@@ -137,6 +142,7 @@ def check_for_error_condition(
                     return True, (tuple(t), label, tuple(t_changed), label_changed)
 
     return False, None
+
 
 def seed_test_input(dataset: str, cluster_num: int) -> List[np.ndarray]:
     """Select the seed inputs for fairness testing.
@@ -153,6 +159,7 @@ def seed_test_input(dataset: str, cluster_num: int) -> List[np.ndarray]:
     clusters = sorted(clusters, key=lambda x: x.shape[0])  # len(clusters[0][0])==32561
     return clusters
 
+
 def clip(input: np.ndarray, ge: DiscriminationData) -> np.ndarray:
     """Clip the generating instance with each feature to make sure it is valid.
     
@@ -168,18 +175,19 @@ def clip(input: np.ndarray, ge: DiscriminationData) -> np.ndarray:
         input[i] = min(input[i], ge.input_bounds[i][1])
     return input
 
+
 class LocalPerturbation:
     """Implementation of local perturbation strategy."""
 
     def __init__(
-        self,
-        sess: tf.compat.v1.Session,
-        grad: tf.Tensor,
-        x: tf.Tensor,
-        n_values: Dict[int, Any],
-        sensitive_indices: List[int],
-        input_shape: int,
-        ge: DiscriminationData
+            self,
+            sess: tf.compat.v1.Session,
+            grad: tf.Tensor,
+            x: tf.Tensor,
+            n_values: Dict[int, Any],
+            sensitive_indices: List[int],
+            input_shape: int,
+            ge: DiscriminationData
     ):
         """Initialize local perturbation.
         
@@ -243,22 +251,23 @@ class LocalPerturbation:
 
         return x
 
+
 def dnn_fair_testing(
-    ge: DiscriminationData,
-    max_tsn: int,
-    max_global: int,
-    max_local: int,
-    max_iter: int
-) -> Tuple[List[Tuple[tuple, int, tuple, int]], Dict[str, float]]:
+        ge: DiscriminationData,
+        max_tsn: int,
+        max_global: int,
+        max_local: int,
+        max_iter: int
+) -> [pd.DataFrame, Dict[str, float]]:
     """The implementation of ADF.
-    
+
     Args:
         ge (DiscriminationData): DiscriminationData object containing dataset and metadata
         max_tsn (int): The number of clusters to form
         max_global (int): The maximum number of samples for global search
         max_local (int): The maximum number of samples for local search
         max_iter (int): The maximum iteration of global perturbation
-        
+
     Returns:
         Tuple containing:
             - List[Tuple[tuple, int, tuple, int]]: List of discriminatory pairs
@@ -268,7 +277,8 @@ def dnn_fair_testing(
                 - SUR: Success Rate (DSN/TSN)
                 - DSS: Discriminatory Sample Search time (Time/DSN)
     """
-    X, Y, input_shape, nb_classes = ge.xdf.to_numpy(), ge.ydf.to_numpy(), (None, ge.xdf.shape[1]), ge.ydf.unique().shape[0]
+    X, Y, input_shape, nb_classes = ge.xdf.to_numpy(), ge.ydf.to_numpy(), (None, ge.xdf.shape[1]), \
+        ge.ydf.unique().shape[0]
     logger.info(f"Input shape: {input_shape}")
     tf.compat.v1.random.set_random_seed(1234)
 
@@ -406,6 +416,9 @@ def dnn_fair_testing(
             break
 
         for index in cluster:
+            if len(tot_inputs) > max_tsn:
+                break
+
             sample = X[index:index + 1]
 
             probs = model_prediction(sess, x, preds, sample)[0]
@@ -421,7 +434,8 @@ def dnn_fair_testing(
             value_combinations = list(itertools.product(*[sensitive_values[name] for name in sensitive_values.keys()]))
 
             for values in value_combinations:
-                if all(sample[0][ge.sensitive_indices[name]] == value for name, value in zip(sensitive_values.keys(), values)):
+                if all(sample[0][ge.sensitive_indices[name]] == value for name, value in
+                       zip(sensitive_values.keys(), values)):
                     continue
 
                 tnew = pd.DataFrame(sample, columns=ge.attr_columns)
@@ -431,7 +445,8 @@ def dnn_fair_testing(
                 n_probs = model_prediction(sess, x, preds, n_sample)[0]
                 n_label = np.argmax(n_probs)
                 n_prob = n_probs[n_label]
-                logger.debug(f"Sample comparison - Original: {sample}, Label: {label}, New: {n_sample}, New Label: {n_label}")
+                logger.debug(
+                    f"Sample comparison - Original: {sample}, Label: {label}, New: {n_sample}, New Label: {n_label}")
                 if label != n_label:
                     for i, (name, value) in enumerate(zip(sensitive_values.keys(), values)):
                         n_values[ge.sensitive_indices[name]] = value
@@ -446,18 +461,23 @@ def dnn_fair_testing(
             sample_key = copy.deepcopy(sample[0].astype('int').tolist())
             sample_key = [sample_key[i] for i in range(len(sample_key)) if i not in ge.sensitive_indices.values()]
 
-            if label != n_label and (tuple(sample_key) not in global_disc_inputs) and (tuple(sample_key) not in local_disc_inputs):
+            if label != n_label and (tuple(sample_key) not in global_disc_inputs) and (
+                    tuple(sample_key) not in local_disc_inputs):
                 global_disc_inputs_list.append(sample_key)
                 global_disc_inputs.add(tuple(sample_key))
                 suc_idx.append(index)
                 current_dsn = len(global_disc_inputs) + len(local_disc_inputs)
-                logger.info(f"[Real-time Metrics] DSN: {current_dsn} (Global: {len(global_disc_inputs)}, Local: {len(local_disc_inputs)})")
+                logger.info(
+                    f"[Real-time Metrics] DSN: {current_dsn} (Global: {len(global_disc_inputs)}, Local: {len(local_disc_inputs)})")
                 minimizer = {"method": "L-BFGS-B"}
-                local_perturbation = LocalPerturbation(sess, grad_0, x, n_values, ge.sensitive_indices.values(), input_shape[1], ge)
-                basinhopping(evaluate_local, sample.flatten(), stepsize=1.0, take_step=local_perturbation, minimizer_kwargs=minimizer, niter=max_local)
+                local_perturbation = LocalPerturbation(sess, grad_0, x, n_values, ge.sensitive_indices.values(),
+                                                       input_shape[1], ge)
+                basinhopping(evaluate_local, sample.flatten(), stepsize=1.0, take_step=local_perturbation,
+                             minimizer_kwargs=minimizer, niter=max_local)
 
                 logger.info(f"Local search discriminatory inputs: {len(local_disc_inputs_list)}")
-                logger.info(f"Percentage discriminatory inputs of local search: {float(len(local_disc_inputs)) / float(len(tot_inputs)) * 100:.2f}%")
+                logger.info(
+                    f"Percentage discriminatory inputs of local search: {float(len(local_disc_inputs)) / float(len(tot_inputs)) * 100:.2f}%")
                 break
 
         s_grad = sess.run(tf.sign(grad_0), feed_dict={x: sample})
@@ -479,7 +499,7 @@ def dnn_fair_testing(
 
     end_time = time.time()
     total_time = end_time - start_time
-    
+
     # Calculate metrics
     tsn = len(tot_inputs)  # Total Sample Number
     dsn = len(global_disc_inputs) + len(local_disc_inputs)  # Discriminatory Sample Number
@@ -500,16 +520,53 @@ def dnn_fair_testing(
     logger.info(f"Average Search Time per Discriminatory Sample (DSS): {metrics['DSS']:.4f} seconds")
     logger.info(f"Total Discriminatory Pairs Found: {len(discriminatory_pairs)}")
 
-    return discriminatory_pairs, metrics
+    res_df = []
+    case_id = 0
+    for org, org_outcome, counter_org, counter_org_outcome in discriminatory_pairs:
+        indv1 = pd.DataFrame([list(org)], columns=ge.attr_columns)
+        indv2 = pd.DataFrame([list(counter_org)], columns=ge.attr_columns)
+
+        indv_key1 = "|".join(str(x) for x in indv1[ge.attr_columns].iloc[0])
+        indv_key2 = "|".join(str(x) for x in indv2[ge.attr_columns].iloc[0])
+
+        # Add the additional columns
+        indv1['indv_key'] = indv_key1
+        indv1['outcome'] = int(org_outcome)
+        indv2['indv_key'] = indv_key2
+        indv2['outcome'] = int(counter_org_outcome)
+
+        # Create couple_key as before
+
+        couple_key = f"{indv_key1}-{indv_key2}"
+        diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
+
+        df_res = pd.concat([indv1, indv2])
+        df_res['couple_key'] = couple_key
+        df_res['diff_outcome'] = diff_outcome
+        df_res['case_id'] = case_id
+        res_df.append(df_res)
+        case_id += 1
+
+    if len(res_df) != 0:
+        res_df = pd.concat(res_df)
+    else:
+        res_df = pd.DataFrame([])
+
+    res_df['TSN'] = tsn
+    res_df['DSN'] = dsn
+    res_df['SUR'] = sur
+    res_df['DSS'] = dss
+
+    return res_df, metrics
+
 
 def main():
     ge, ge_schema = get_real_data('adult')
 
-    discriminatory_pairs, metrics = dnn_fair_testing(ge=ge, max_tsn=1000, max_global=1000,
-                                                     max_local=1000, max_iter=1000)
+    discriminatory_df, metrics = dnn_fair_testing(ge=ge, max_tsn=500, max_global=1000,
+                                                  max_local=100, max_iter=1000)
 
-    print(discriminatory_pairs)
-
+    print(discriminatory_df)
 
 
 if __name__ == '__main__':
