@@ -1552,6 +1552,28 @@ def generate_from_real_data(dataset_name, use_cache=False, *args, **kwargs):
                                                                                               outcome_column='Attribute20',
                                                                                               use_attr_naming_pattern=True,
                                                                                               ensure_positive_definite=True)
+    elif dataset_name == 'bank':
+        # Bank Marketing dataset
+        bank_marketing = fetch_ucirepo(id=222)
+        df = pd.concat([bank_marketing.data.features, bank_marketing.data.targets], axis=1)
+        
+        if 'protected_columns' not in kwargs:
+            kwargs['protected_columns'] = ['age', 'marital', 'education']
+        if 'outcome_column' not in kwargs:
+            kwargs['outcome_column'] = 'y'
+            
+        # Ensure all column names are valid Python identifiers
+        df.columns = [col.replace('-', '_') for col in df.columns]
+        
+        # Update protected columns if they were renamed
+        kwargs['protected_columns'] = [col.replace('-', '_') for col in kwargs['protected_columns']]
+        kwargs['outcome_column'] = kwargs['outcome_column'].replace('-', '_')
+        
+        schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(
+            df,
+            protected_columns=kwargs['protected_columns'],
+            outcome_column=kwargs['outcome_column']
+        )
     else:
         raise NotImplementedError(f"Dataset {dataset_name} not implemented")
 
@@ -1582,7 +1604,7 @@ def get_real_data(
     Fetch and process real datasets into the same format as generate_data output.
 
     Args:
-        dataset_name (str): Name of the dataset ('adult', 'credit', etc.)
+        dataset_name (str): Name of the dataset ('adult', 'credit', 'bank', etc.)
         protected_columns (List[str], optional): List of column names to treat as protected attributes
         outcome_column (str, optional): Name of the column to use as outcome
         *args, **kwargs: Additional arguments passed to generate_data
@@ -1601,6 +1623,12 @@ def get_real_data(
             'id': 144,
             'protected_columns': ['Attribute8', 'Attribute12'] if protected_columns is None else protected_columns,
             'outcome_column': 'Attribute20' if outcome_column is None else outcome_column,
+            'drop_columns': []
+        },
+        'bank': {
+            'id': 222,
+            'protected_columns': ['age', 'marital', 'education'] if protected_columns is None else protected_columns,
+            'outcome_column': 'y' if outcome_column is None else outcome_column,
             'drop_columns': []
         }
     }
@@ -1640,5 +1668,63 @@ def get_real_data(
         outcome_column='outcome',
         attr_possible_values={}
     )
+
+    return data, schema
+
+def generate_from_real_data(dataset_name, use_cache=False, *args, **kwargs):
+    if dataset_name == 'adult':
+        adult = fetch_ucirepo(id=2)
+        df1 = adult['data']['original']
+        df1.drop(columns=['fnlwgt'], inplace=True)
+
+        schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(df1,
+                                                                                            protected_columns=['race',
+                                                                                                               'sex'],
+                                                                                            outcome_column='income',
+                                                                                            use_attr_naming_pattern=True)
+    elif dataset_name == 'credit':
+        df1 = fetch_ucirepo(id=144)
+        df1 = df1['data']['original']
+        schema, correlation_matrix, new_cols_mapping, enc_df = generate_schema_from_dataframe(df1,
+                                                                                              protected_columns=[
+                                                                                                  'Attribute8',
+                                                                                                  'Attribute12'],
+                                                                                              outcome_column='Attribute20',
+                                                                                              use_attr_naming_pattern=True,
+                                                                                              ensure_positive_definite=True)
+    elif dataset_name == 'bank':
+        # Bank Marketing dataset
+        bank_marketing = fetch_ucirepo(id=222)
+        df1 = pd.concat([bank_marketing.data.features, bank_marketing.data.targets], axis=1)
+        
+        # Ensure all column names are valid Python identifiers
+        df1.columns = [col.replace('-', '_') for col in df1.columns]
+        
+        schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(
+            df1,
+            protected_columns=['age', 'marital', 'education'],
+            outcome_column='y',
+            use_attr_naming_pattern=True,
+            ensure_positive_definite=True
+        )
+    else:
+        raise NotImplementedError(f"Dataset {dataset_name} not implemented")
+
+    if use_cache:
+        cache = DataCache()
+        data = cache.load(kwargs)
+        if data is not None:
+            return data, schema
+
+    data = generate_data(
+        gen_order=schema.gen_order,
+        correlation_matrix=correlation_matrix,
+        data_schema=schema,
+        use_cache=use_cache,
+        *args, **kwargs
+    )
+
+    if use_cache:
+        cache.save(data, kwargs)
 
     return data, schema
