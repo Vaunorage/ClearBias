@@ -17,10 +17,8 @@ ge, schema = get_real_data('adult')
 # %%
 global_iteration_limit = 100
 local_iteration_limit = 100
-model_type = "RandomForest"
-results_df, model_scores = run_aequitas(ge.training_dataframe, col_to_be_predicted=ge.outcome_column,
-                                        sensitive_param_name_list=ge.protected_attributes,
-                                        perturbation_unit=1, model_type=model_type, threshold=0,
+model_type = "rf"
+results_df, model_scores = run_aequitas(ge, model_type=model_type, threshold=0,
                                         global_iteration_limit=global_iteration_limit,
                                         local_iteration_limit=local_iteration_limit)
 print('helo')
