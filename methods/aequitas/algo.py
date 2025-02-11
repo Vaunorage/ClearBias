@@ -1,598 +1,537 @@
-import time
-import random
-import numpy as np
+from __future__ import division
+
+import itertools
 import pandas as pd
-from typing import TypedDict
-from pandas import DataFrame
-from sklearn.preprocessing import LabelEncoder
-from sklearn.svm import SVC
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.neural_network import MLPClassifier
+import numpy as np
+import random
+import time
 from scipy.optimize import basinhopping
-import errno
+import logging
+import sys
 
-from tqdm import tqdm
-from scipy.optimize import minimize_scalar
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import f1_score
-from typing import List, Dict, Union, Tuple
+from data_generator.main import get_real_data
+from methods.utils import train_sklearn_model
 
-
-def chunks(lst, n):
-    for i in range(0, len(lst), n):
-        yield lst[i:i + n]
-
-
-def my_queue_get(queue, block=True, timeout=None):
-    while True:
-        try:
-            return queue.get(block, timeout)
-        except IOError as e:
-            if e.errno != errno.EINTR:
-                raise
+logger = logging.getLogger('aequitas')
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler(sys.stdout)
+handler.setLevel(logging.INFO)
+formatter = logging.Formatter('%(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 
-def worker(fully_direct, local_inputs, minimizer, local_iteration_limit):
-    results = []
-    for inp in local_inputs:
-        basinhopping(fully_direct.evaluate_local, inp, stepsize=1.0, take_step=fully_direct.local_perturbation,
-                     minimizer_kwargs=minimizer, niter=local_iteration_limit)
-    results.append([fully_direct.local_disc_inputs, fully_direct.local_disc_inputs_list, fully_direct.tot_inputs])
-    return results
+def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
+                                threshold=0.2,
+                                global_iteration_limit=100, local_iteration_limit=100):
+    """
+    Run Aequitas Fully Directed algorithm on the given discrimination data.
+    
+    Args:
+        discrimination_data: DiscriminationData object containing the dataset and metadata
+        model_type: Type of sklearn model to use ('rf', 'svm', 'lr', 'dt')
+        init_prob: Initial probability for direction probability
+        perturbation_unit: Size of perturbation for feature values
+        threshold: Threshold for discrimination
+        global_iteration_limit: Maximum number of global iterations
+        local_iteration_limit: Maximum number of local iterations
+        direction_probability_change_size: Change size for direction probability
+        param_probability_change_size: Change size for parameter probability
+    
+    Returns:
+        tuple: (results_dataframe, metrics_dict)
+    """
+    # Configure logger
 
+    random.seed(time.time())
 
-def mp_basinhopping(fully_direct, minimizer, local_iteration_limit):
-    divided_lists = chunks(fully_direct.global_disc_inputs_list["discr_input"], 4)
-    results = []
+    # Train the model using the new function
+    model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
+        data=discrimination_data.dataframe,
+        model_type=model_type,
+        sensitive_attrs=discrimination_data.protected_attributes,
+        target_col=discrimination_data.outcome_column
+    )
 
-    # Adding tqdm to the loop for progress tracking
-    for inputs in tqdm(list(divided_lists), desc="Processing inputs"):
-        result = worker(fully_direct, inputs, minimizer, local_iteration_limit)
-        results.extend(result)
+    params = len(feature_names)
+    direction_probability = [init_prob] * params
+    param_probability = [1.0 / params] * params
 
-    local_inputs = set()
-    local_inputs_list = {"discr_input": [], "counter_discr_input": [], 'magnitude': []}
-    tot_inputs_out = set()
+    # Initialize tracking variables
+    start_time = time.time()
+    total_samples = 0
+    discriminatory_samples = 0
+    current_global_iter = 0
+    current_local_iter = 0
 
-    # Looping through results to collect data
-    for res in results:
-        set_inputs, list_inputs, tot_inputs = res
-        for item in set_inputs:
-            local_inputs.add(item)
-        for k, item in enumerate(list_inputs['discr_input']):
-            if item not in local_inputs_list['discr_input']:
-                local_inputs_list['discr_input'].append(item)
-                local_inputs_list['counter_discr_input'].append(list_inputs['counter_discr_input'][k])
-                local_inputs_list['magnitude'].append(list_inputs['magnitude'][k])
-        for item in tot_inputs:
-            tot_inputs_out.add(item)
+    global_disc_inputs = set()
+    global_disc_inputs_list = []
+    local_disc_inputs = set()
+    local_disc_inputs_list = []
+    tot_inputs = set()
+    discrimination_cases = []
 
-    fully_direct.local_disc_inputs = local_inputs
-    fully_direct.local_disc_inputs_list = local_inputs_list
-    fully_direct.tot_inputs = tot_inputs_out
-
-    return fully_direct
-
-
-class Dataset:
-    def __init__(self, df: pd.DataFrame, col_to_be_predicted, sensitive_param_name_list=None):
-        self.df = df
-        self.col_to_be_predicted = col_to_be_predicted
-        self.sensitive_param_name_list = sensitive_param_name_list
-        self.feature_names = [col for col in df.columns if col != col_to_be_predicted]
-        self.protected_attributes = sensitive_param_name_list
-        self.sensitive_param_idx_list = [self.feature_names.index(name) for name in sensitive_param_name_list]
-        self.column_names = list(df.columns)
-
-        self.num_params = df.shape[1] - 1
-
-        self.column_names = self.get_column_names()
-        self.input_bounds = self.get_input_bounds()
-        self.col_to_be_predicted_idx = self.get_idx_of_col_to_be_predicted(col_to_be_predicted)
-
-        self.sensitive_param_idx_list = [df.columns.get_loc(name) for name in self.sensitive_param_name_list if
-                                         name in df.columns]
-
-    def get_idx_of_col_to_be_predicted(self, col_to_be_predicted):
-        return list(self.df.columns).index(col_to_be_predicted)
-
-    def get_column_names(self):
-        return list(self.df.columns)
-
-    def get_input_bounds(self):
-        input_bounds = []
-        for col in self.df:
-            numUniqueVals = self.df[col].nunique()
-            input_bounds.append([0, numUniqueVals - 1])  # bound is inclusive
-        return input_bounds
-
-
-class Fully_Direct:
-    def __init__(self, dataset: Dataset, perturbation_unit, threshold, global_iteration_limit, local_iteration_limit,
-                 sensitive_param_idx, model):
-        random.seed(time.time())
-        self.start_time = time.time()
-
-        self.column_names = dataset.column_names
-        self.num_params = dataset.num_params
-        self.input_bounds = dataset.input_bounds
-        self.sensitive_param_idx = sensitive_param_idx
-        self.col_to_be_predicted_idx = dataset.col_to_be_predicted_idx
-
-        self.perturbation_unit = perturbation_unit
-        self.threshold = threshold
-        self.global_iteration_limit = global_iteration_limit
-        self.local_iteration_limit = local_iteration_limit
-
-        self.init_prob = 0.5
-        self.cov = 0
-        self.direction_probability_change_size = 0.001
-        self.param_probability_change_size = 0.001
-
-        self.direction_probability = [self.init_prob] * len(self.input_bounds)
-        self.direction_probability[self.col_to_be_predicted_idx] = 0  # nullify the y col
-        self.param_probability = [1.0 / self.num_params] * len(self.input_bounds)
-
-        self.normalise_probability()
-
-        self.param_probability[self.col_to_be_predicted_idx] = 0
-
-        self.global_disc_inputs = set()
-        self.global_disc_inputs_list = {"discr_input": [], "counter_discr_input": [], 'magnitude': []}
-
-        self.local_disc_inputs = set()
-        self.local_disc_inputs_list = {"discr_input": [], "counter_discr_input": [], 'magnitude': []}
-
-        self.tot_inputs = set()
-
-        self.model = model
-
-    def normalise_probability(self):
+    def normalise_probability():
+        """Normalize the probability distribution to ensure it sums to 1"""
         probability_sum = 0.0
-        for prob in self.param_probability:
+        for prob in param_probability:
             probability_sum = probability_sum + prob
 
-        for i in range(self.num_params):
-            self.param_probability[i] = float(self.param_probability[i]) / float(probability_sum)
+        for i in range(params):
+            param_probability[i] = float(param_probability[i]) / float(probability_sum)
 
-    def evaluate_input(self, inp):
-        inp = np.array([int(k) for k in inp])
-        sensValue = inp[self.sensitive_param_idx]
-        inp0 = np.delete(inp, self.col_to_be_predicted_idx).reshape(1, -1)
-        out0 = self.model.predict(inp0)
+    def calculate_metrics():
+        """Calculate and return the testing metrics"""
+        nonlocal start_time, total_samples, discriminatory_samples
 
-        for i in range(self.input_bounds[self.sensitive_param_idx][1] + 1):
-            if sensValue != i:
-                modified_inp = inp.copy()
-                modified_inp[self.sensitive_param_idx] = i
-                modified_inp = np.delete(modified_inp, self.col_to_be_predicted_idx).reshape(1, -1)
-                out1 = self.model.predict(modified_inp)
+        end_time = time.time()
+        total_time = end_time - start_time
 
-                if abs(out1 - out0) > self.threshold:
-                    return abs(out1 - out0)
+        # Calculate Success Rate (SUR)
+        sur = discriminatory_samples / len(tot_inputs) if len(tot_inputs) > 0 else 0
 
-        return False
+        # Calculate Discriminatory Sample Search time (DSS)
+        dss = total_time / discriminatory_samples if discriminatory_samples > 0 else float('inf')
 
-    def evaluate_global(self, inp):
-        inp0 = [int(i) for i in inp]
-        sensValue = inp0[self.sensitive_param_idx]
+        return {
+            'TSN': len(tot_inputs),
+            'DSN': discriminatory_samples,
+            'SUR': sur,
+            'DSS': dss,
+            'Total_Time': total_time
+        }
 
-        inp0np = np.reshape(np.asarray(inp0), (1, -1))
-        self.tot_inputs.add(tuple(map(tuple, inp0np)))
+    def print_progress(search_type=""):
+        """Print current progress and metrics in a single line"""
+        nonlocal current_global_iter, current_local_iter
+        metrics = calculate_metrics()
 
-        inp0 = np.asarray(inp0)
-        inp0 = np.reshape(inp0, (1, -1))
+        # Clear previous line
+        sys.stdout.write('\r')
+        sys.stdout.flush()
 
-        # Returns early if input is already in the global discriminatory inputs set
-        if (tuple(map(tuple, inp0)) in self.global_disc_inputs):
-            return 0
-
-        inp0delY = np.delete(inp0, [self.col_to_be_predicted_idx])
-        inp0delY = np.reshape(inp0delY, (1, -1))
-        out0 = self.model.predict(inp0delY)
-
-        # Loops through all values of the sensitive parameter
-        for i in range(self.input_bounds[self.sensitive_param_idx][1] + 1):
-            if i != sensValue:
-                inp1 = [int(k) for k in inp]
-                inp1[self.sensitive_param_idx] = i
-                inp1 = np.reshape(np.asarray(inp1), (1, -1))
-
-                # drop y column here
-                inp1delY = np.delete(inp1, [self.col_to_be_predicted_idx])
-                inp1delY = np.reshape(inp1delY, (1, -1))
-                out1 = self.model.predict(inp1delY)
-                diff = abs(out0 - out1)
-
-                if (diff > self.threshold):
-                    self.global_disc_inputs.add(tuple(map(tuple, inp0)))  # add the entire input, including original y
-                    self.global_disc_inputs_list['discr_input'].append(inp0.tolist()[0])
-                    self.global_disc_inputs_list['counter_discr_input'].append(inp1.tolist()[0])
-                    self.global_disc_inputs_list['magnitude'].append(diff)
-                    return diff
-        return 0
-
-    def evaluate_local(self, inp):
-        inp0 = [int(i) for i in inp]
-        sensValue = inp0[self.sensitive_param_idx]
-
-        inp0np = np.reshape(np.asarray(inp0), (1, -1))
-
-        self.tot_inputs.add(tuple(map(tuple, inp0np)))
-
-        inp0 = np.asarray(inp0)
-        inp0 = np.reshape(inp0, (1, -1))
-
-        # Returns early if input is already in the global or local discriminatory inputs set
-        if ((tuple(map(tuple, inp0)) in self.global_disc_inputs) or (
-                tuple(map(tuple, inp0)) in self.local_disc_inputs)):
-            return 0
-
-        inp0delY = np.delete(inp0, [self.col_to_be_predicted_idx])
-        inp0delY = np.reshape(inp0delY, (1, -1))
-        out0 = self.model.predict(inp0delY)
-
-        # Loops through all values of the sensitive parameter
-        for i in range(self.input_bounds[self.sensitive_param_idx][1] + 1):
-            if sensValue != i:
-                inp1 = [int(k) for k in inp]
-                inp1[self.sensitive_param_idx] = i
-                inp1 = np.asarray(inp1)
-                inp1 = np.reshape(inp1, (1, -1))
-
-                # drop y column here
-                inp1delY = np.delete(inp1, [self.col_to_be_predicted_idx])
-                inp1delY = np.reshape(inp1delY, (1, -1))
-
-                out1 = self.model.predict(inp1delY)
-
-                diff = abs(out0 - out1)
-
-                if diff > self.threshold:
-                    self.local_disc_inputs.add(tuple(map(tuple, inp0)))
-                    self.local_disc_inputs_list['discr_input'].append(inp0.tolist()[0])
-                    self.local_disc_inputs_list['counter_discr_input'].append(inp1.tolist()[0])
-                    self.local_disc_inputs_list['magnitude'].append(diff)
-                    return diff
-        return 0
-
-    def global_discovery(self, x):
-        try:
-            random.seed(time.time())
-            x = [random.randint(low, high) for [low, high] in self.input_bounds]
-            x[self.sensitive_param_idx] = 0
-            return x
-        except:  # unknown error
-            return x
-
-    def local_perturbation(self, x):
-        columns = [i for i in range(len(self.input_bounds))]  # we're only perturbing non-y columns right?
-        self.normalise_probability()
-        param_choice = np.random.choice(columns, p=self.param_probability)
-        act = [-1, 1]
-        direction_choice = np.random.choice(act, p=[self.direction_probability[param_choice],
-                                                    (1 - self.direction_probability[param_choice])])
-
-        if (x[param_choice] == self.input_bounds[param_choice][0]) \
-                or (x[param_choice] == self.input_bounds[param_choice][1]):
-            direction_choice = np.random.choice(act)
-
-        x[param_choice] = x[param_choice] + (direction_choice * self.perturbation_unit)
-
-        x[param_choice] = max(self.input_bounds[param_choice][0], x[param_choice])
-        x[param_choice] = min(self.input_bounds[param_choice][1], x[param_choice])
-
-        ei = self.evaluate_input(x)
-
-        if (ei and direction_choice == -1) or (not ei and direction_choice == 1):
-            self.direction_probability[param_choice] = min(
-                self.direction_probability[param_choice]
-                + (self.direction_probability_change_size * self.perturbation_unit), 1)
-
-        elif (not ei and direction_choice == -1) or (ei and direction_choice == 1):
-            self.direction_probability[param_choice] = max(
-                self.direction_probability[param_choice]
-                - (self.direction_probability_change_size * self.perturbation_unit), 0)
-
-        if ei:
-            self.param_probability[param_choice] = self.param_probability[param_choice] + \
-                                                   self.param_probability_change_size
-            self.normalise_probability()
+        # Create progress message
+        if search_type == "global":
+            progress = f"Global: {current_global_iter}/{global_iteration_limit} ({(current_global_iter / global_iteration_limit) * 100:.1f}%)"
+        elif search_type == "local":
+            progress = f"Local: {current_local_iter}/{local_iteration_limit} ({(current_local_iter / local_iteration_limit) * 100:.1f}%)"
         else:
-            self.param_probability[param_choice] = max(
-                self.param_probability[param_choice] - self.param_probability_change_size, 0)
-            self.normalise_probability()
+            progress = "Initializing..."
 
-        return x
+        # Format the status line
+        status = (
+            f"\r{progress} | "
+            f"Tested: {metrics['TSN']} | "
+            f"Found: {metrics['DSN']} | "
+            f"Success: {metrics['SUR']:.4f} | "
+            f"Time/Sample: {metrics['DSS']:.2f}s | "
+            f"Total: {metrics['Total_Time']:.1f}s"
+        )
 
+        logger.info(status)
 
-def generate_sklearn_classifier(dataset: Dataset, model_type: str):
-    le = LabelEncoder()
+    def is_case_tested(features):
+        """Check if a case has already been tested"""
+        return (tuple(features),) in tot_inputs
 
-    col_to_be_predicted = dataset.col_to_be_predicted
+    def evaluate_input(inp):
+        """Evaluate discrimination for a given input"""
+        protected_attrs = discrimination_data.protected_attributes
+        results = []
 
-    df = dataset.df
-    cat_feature = list(df.columns)
+        # Create base input as DataFrame
+        base_input = pd.DataFrame([inp], columns=feature_names)
+        base_pred = model.predict(base_input)[0]
 
-    for col in cat_feature:
-        df.loc[:, col] = le.fit_transform(df[col])
+        # Test each protected attribute
+        for attr in protected_attrs:
+            attr_idx = feature_names.index(attr)
+            unique_vals = sorted(discrimination_data.dataframe[attr].unique())
 
-    X = df.drop([col_to_be_predicted], axis=1)
-    y = df[col_to_be_predicted]
+            # Test all values of protected attribute
+            predictions = []
+            for val in unique_vals:
+                test_input = base_input.copy()
+                test_input[attr].iloc[0] = val
+                pred = model.predict(test_input)[0]
+                predictions.append(pred)
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=12)
+            # Calculate maximum discrimination
+            max_disc = max(abs(p1 - p2) for p1, p2 in itertools.combinations(predictions, 2))
+            results.append(max_disc)
 
-    if model_type == "DecisionTree":
-        model = DecisionTreeClassifier(random_state=42, criterion='entropy', splitter='random')
-        model_name = 'DecisionTreeClassifier'
-    elif model_type == "MLPC":
-        model = MLPClassifier(solver='lbfgs', alpha=1e-5, hidden_layer_sizes=(7, 5), random_state=1)
-        model_name = 'MLPClassifier'
-    elif model_type == "SVM":
-        model = SVC(gamma=0.0025)
-        model_name = 'SVC'
-    elif model_type == "RandomForest":
-        model = RandomForestClassifier(n_estimators=4)
-        model_name = 'RandomForestClassifier'
-    else:
-        error_message = 'The chosen types of model is not supported yet. Please choose from one of the following: \
-                            DecisionTree, MLPC, SVM and RandomForest'
-        raise ValueError(error_message)
+        return max(results)
 
-    model.fit(X_train.values, y_train.values)
-    pred = model.predict(X_test.values)
+    def evaluate_global(inp):
+        """
+        Evaluate discrimination across all possible combinations of protected attributes.
+        Returns the maximum discrimination found between any pair of protected attribute combinations.
+        """
+        nonlocal total_samples, discriminatory_samples, current_global_iter
+        current_global_iter += 1
+        # Check if this input has already been tested
+        if is_case_tested(inp):
+            logger.info(f"\rSkipping already tested case in global search")
+            return 0
 
-    scores = []
-    ss = {
-        'model': model_name,
-        'score': model.score(X_test, y_test),
-        'f1_score': f1_score(y_test, pred, average='weighted')
-    }
-    print(ss)
-    scores.append(ss)
+        # Convert input to DataFrame
+        inp_df = pd.DataFrame([inp], columns=feature_names)
+        original_pred = model.predict(inp_df)[0]
 
-    return model, scores
+        # Add original case to total inputs
+        tot_inputs.add((tuple(inp),))
 
+        # Get values for protected attributes
+        protected_values = {}
+        for attr in discrimination_data.protected_attributes:
+            protected_values[attr] = sorted(discrimination_data.dataframe[attr].unique())
 
-class AequitasResultRow(TypedDict, total=False):
-    outcome: Union[int, float]
-    diff_outcome: float
-    type: str
-    Sensitive_Attribute: str
-    Total_Inputs: int
-    Discriminatory_Inputs: int
-    Percentage_Discriminatory_Inputs: float
-    case_id: int
-    indv_key: str
-    couple_key: str
+        # Generate all possible combinations of protected attribute values
+        value_combinations = list(
+            itertools.product(*[protected_values[attr] for attr in discrimination_data.protected_attributes]))
 
+        # Create test cases for all combinations
+        test_cases = []
+        for values in value_combinations:
+            # Skip if combination is identical to original
+            if all(inp_df[attr].iloc[0] == value for attr, value in
+                   zip(discrimination_data.protected_attributes, values)):
+                continue
 
-AequitasResultDF = DataFrame
+            new_case = inp_df.copy()
+            for attr, value in zip(discrimination_data.protected_attributes, values):
+                new_case[attr] = value
 
+            # Skip if this case has already been tested
+            if is_case_tested(new_case.iloc[0].values):
+                continue
 
-def collect_results(fully_direct, sensitive_attribute, start_time):
-    # Calculate percentage of discriminatory inputs
-    total_disc_inputs = len(fully_direct.global_disc_inputs_list["discr_input"]) + len(
-        fully_direct.local_disc_inputs_list["discr_input"])
-    percentage_disc_inputs = total_disc_inputs / len(fully_direct.tot_inputs) * 100 if fully_direct.tot_inputs else 0
+            test_cases.append(new_case)
 
-    # Calculate additional metrics
-    performance_metrics = calculate_metrics(fully_direct, start_time)
+        if not test_cases:  # If no new combinations were generated
+            return 0
 
-    # Collect results in a dictionary
-    results = {
-        "Sensitive Attribute": sensitive_attribute,
-        "Total Inputs": len(fully_direct.tot_inputs),
-        "Discriminatory Inputs": total_disc_inputs,
-        "Percentage Discriminatory Inputs": percentage_disc_inputs,
-        "Global Discriminatory Inputs": fully_direct.global_disc_inputs_list["discr_input"],
-        "Global Counter Discriminatory Inputs": fully_direct.global_disc_inputs_list["counter_discr_input"],
-        "Global Magnitude": fully_direct.global_disc_inputs_list["magnitude"],
-        "Local Discriminatory Inputs": fully_direct.local_disc_inputs_list["discr_input"],
-        "Local Counter Discriminatory Inputs": fully_direct.local_disc_inputs_list["counter_discr_input"],
-        "Local Magnitude": fully_direct.local_disc_inputs_list["magnitude"],
-        **performance_metrics  # Add the new metrics
-    }
-    return results
+        # Update total samples count
+        total_samples += len(test_cases) + 1  # +1 for original case
 
+        # Combine all test cases and get predictions
+        test_df = pd.concat(test_cases)
+        predictions = model.predict(test_df)
 
-def aequitas_fully_directed_sklearn(dataset, perturbation_unit, threshold, global_iteration_limit,
-                                    local_iteration_limit, sensitive_param_id, model, sensitive_attribute):
-    print(f"Aequitas Fully Directed Started for {sensitive_attribute}...\n")
-    start_time = time.time()  # Track start time
-    initial_input = [random.randint(low, high) for [low, high] in dataset.input_bounds]
+        # Find discriminatory cases
+        discriminatory_cases = test_df[predictions != original_pred]
+        max_discrimination = 0
+
+        if len(discriminatory_cases) > 0:
+            # Update discriminatory samples count
+            discriminatory_samples += len(discriminatory_cases)
+
+            # Print progress after finding discrimination
+            print_progress("global")
+
+            for _, disc_case in discriminatory_cases.iterrows():
+                disc_tuple = tuple(disc_case.values)
+
+                # Add to total inputs before processing
+                tot_inputs.add((disc_tuple,))
+
+                counter_pred = model.predict(disc_case.to_frame().T)[0]
+
+                # Store discrimination case
+                discrimination_cases.append((
+                    list(inp_df.iloc[0].values),  # original_features
+                    original_pred,  # original_outcome
+                    list(disc_case.values),  # counter_features
+                    counter_pred  # counter_outcome
+                ))
+
+                if (disc_tuple,) not in global_disc_inputs:
+                    global_disc_inputs.add((disc_tuple,))
+                    global_disc_inputs_list.append(list(disc_case.values))
+
+                # Calculate discrimination magnitude
+                discrimination = abs(original_pred - counter_pred)
+                max_discrimination = max(max_discrimination, discrimination)
+
+                if discrimination > threshold:
+                    logger.info(
+                        f"\nDiscrimination found - Original: {dict(zip(discrimination_data.protected_attributes, inp_df[discrimination_data.protected_attributes].iloc[0]))} "
+                        f"({original_pred}) → New: {dict(zip(discrimination_data.protected_attributes, disc_case[discrimination_data.protected_attributes]))} "
+                        f"({counter_pred}) | Magnitude: {discrimination:.4f}"
+                    )
+                    print_progress("global")
+
+        # Print progress periodically
+        if current_global_iter % 10 == 0:
+            print_progress("global")
+
+        return max_discrimination
+
+    def evaluate_local(inp):
+        """
+        Evaluate local discrimination by checking individual changes in protected attributes.
+        Returns the maximum discrimination found from changing any single protected attribute.
+        """
+        nonlocal total_samples, discriminatory_samples, current_local_iter
+        current_local_iter += 1
+
+        # Check if this input has already been tested
+        if is_case_tested(inp):
+            logger.info(f"\rSkipping already tested case in local search")
+            return 0
+
+        # Convert input to DataFrame
+        inp_df = pd.DataFrame([inp], columns=feature_names)
+        original_pred = model.predict(inp_df)[0]
+
+        # Add original case to total inputs
+        tot_inputs.add((tuple(inp),))
+
+        # Get values for protected attributes
+        protected_values = {}
+        for attr in discrimination_data.protected_attributes:
+            protected_values[attr] = sorted(discrimination_data.dataframe[attr].unique())
+
+        # Create test cases by changing one protected attribute at a time
+        test_cases = []
+        for attr in discrimination_data.protected_attributes:
+            current_value = inp_df[attr].iloc[0]
+            # Try each possible value for this attribute while keeping others constant
+            for value in protected_values[attr]:
+                if value != current_value:  # Skip if it's the current value
+                    new_case = inp_df.copy()
+                    new_case[attr] = value
+
+                    # Skip if this case has already been tested
+                    if is_case_tested(new_case.iloc[0].values):
+                        continue
+
+                    test_cases.append({
+                        'data': new_case,
+                        'changed_attr': attr,
+                        'new_value': value
+                    })
+
+        if not test_cases:  # If no new combinations were generated
+            return 0
+
+        # Update total samples count
+        total_samples += len(test_cases) + 1  # +1 for original case
+
+        max_discrimination = 0
+
+        # Evaluate each test case
+        for test_case in test_cases:
+            test_df = test_case['data']
+
+            # Add to total inputs before processing
+            tot_inputs.add((tuple(test_df.iloc[0].values),))
+
+            counter_pred = model.predict(test_df)[0]
+
+            # Calculate discrimination for this case
+            discrimination = abs(original_pred - counter_pred)
+
+            if discrimination > max_discrimination:
+                max_discrimination = discrimination
+
+            # If this case shows discrimination above threshold
+            if discrimination > threshold:
+                # Update discriminatory samples count
+                discriminatory_samples += 1
+
+                disc_tuple = tuple(test_df.iloc[0].values)
+
+                # Store discrimination case
+                discrimination_cases.append((
+                    list(inp_df.iloc[0].values),  # original_features
+                    original_pred,  # original_outcome
+                    list(test_df.iloc[0].values),  # counter_features
+                    counter_pred  # counter_outcome
+                ))
+
+                if (disc_tuple,) not in local_disc_inputs:
+                    local_disc_inputs.add((disc_tuple,))
+                    local_disc_inputs_list.append(list(test_df.iloc[0].values))
+
+                    logger.info(
+                        f"\nLocal discrimination found - Attribute: {test_case['changed_attr']} | "
+                        f"Change: {inp_df[test_case['changed_attr']].iloc[0]} → {test_case['new_value']} | "
+                        f"Prediction: {original_pred} → {counter_pred} | "
+                        f"Magnitude: {discrimination:.4f}"
+                    )
+                    print_progress("local")
+
+        # Print progress periodically
+        if current_local_iter % 10 == 0:
+            print_progress("local")
+
+        return max_discrimination
+
+    class Local_Perturbation(object):
+
+        def __init__(self, stepsize=1):
+            self.stepsize = stepsize
+
+        def __call__(self, x):
+            """
+            Local perturbation of inputs by making small changes to feature values
+            """
+            s = self.stepsize
+            for i in range(len(x)):
+                # Skip protected attributes
+                if feature_names[i] in discrimination_data.protected_attributes:
+                    continue
+
+                # Randomly perturb other features
+                random.seed(time.time())
+                if random.random() < direction_probability[i]:
+                    if x[i] + s <= 1:
+                        x[i] = x[i] + s
+                else:
+                    if x[i] - s >= 0:
+                        x[i] = x[i] - s
+
+            # Randomly set one protected attribute to a random valid value
+            if discrimination_data.protected_attributes:  # If there are any protected attributes
+                attr = random.choice(discrimination_data.protected_attributes)
+                idx = feature_names.index(attr)
+                possible_values = sorted(discrimination_data.dataframe[attr].unique())
+                x[idx] = random.choice(possible_values)
+
+            return x
+
+    class Global_Discovery(object):
+        def __init__(self, stepsize=1):
+            self.stepsize = stepsize
+
+        def __call__(self, x):
+            """
+            Global discovery of discriminatory inputs by randomly perturbing feature values
+            """
+            for i in range(len(x)):
+                random.seed(time.time())
+                x[i] = random.random()
+
+            # Set all protected attributes to their minimum values
+            for attr in discrimination_data.protected_attributes:
+                idx = feature_names.index(attr)
+                possible_values = sorted(discrimination_data.dataframe[attr].unique())
+                x[idx] = possible_values[0]  # Use the first (minimum) value
+
+            return x
+
+    # Initialize start time and progress tracking
+    logger.info("Starting Global Search...")
+    print_progress()
+
+    initial_input = list(discrimination_data.xdf.sample(n=1).to_numpy()[0])
+
     minimizer = {"method": "L-BFGS-B"}
 
-    fully_direct = Fully_Direct(dataset, perturbation_unit, threshold, global_iteration_limit, local_iteration_limit,
-                                sensitive_param_id, model)
+    global_discovery = Global_Discovery()
+    local_perturbation = Local_Perturbation()
 
-    basinhopping(fully_direct.evaluate_global, initial_input, stepsize=1.0, take_step=fully_direct.global_discovery,
-                 minimizer_kwargs=minimizer, niter=global_iteration_limit)
-    print("Finished Global Search")
+    basinhopping(evaluate_global, initial_input, stepsize=1.0, take_step=global_discovery, minimizer_kwargs=minimizer,
+                 niter=global_iteration_limit)
 
-    fully_direct = mp_basinhopping(fully_direct, minimizer, local_iteration_limit)
-    print("Local Search Finished")
+    logger.info("Finished Global Search")
+    metrics = calculate_metrics()
+    logger.info(f"TSN: {metrics['TSN']}")
+    logger.info(f"DSN: {metrics['DSN']}")
+    logger.info(f"Success Rate (SUR = DSN/TSN): {metrics['SUR']:.4f}")
+    logger.info(f"Discriminatory Sample Search time (DSS): {metrics['DSS']:.4f} seconds")
+    logger.info(f"Total Time: {metrics['Total_Time']:.2f} seconds")
+    logger.info("")
+    logger.info("Starting Local Search")
 
-    results = collect_results(fully_direct, sensitive_attribute, start_time)
+    for inp in global_disc_inputs_list[:1]:
+        basinhopping(evaluate_local, inp, stepsize=1.0, take_step=local_perturbation, minimizer_kwargs=minimizer,
+                     niter=local_iteration_limit)
+        metrics = calculate_metrics()
+        logger.info(f"TSN: {metrics['TSN']}")
+        logger.info(f"DSN: {metrics['DSN']}")
+        logger.info(f"Success Rate (SUR = DSN/TSN): {metrics['SUR']:.4f}")
+        logger.info(f"Discriminatory Sample Search time (DSS): {metrics['DSS']:.4f} seconds")
+        logger.info(f"Total Time: {metrics['Total_Time']:.2f} seconds")
 
-    # Create DataFrames with the results
-    res_global = pd.DataFrame({k: results[k] for k in
-                               ['Global Discriminatory Inputs', 'Global Counter Discriminatory Inputs',
-                                'Global Magnitude']})
-    res_global['type'] = 'global'
+    logger.info("")
+    logger.info("Local Search Finished")
+    metrics = calculate_metrics()
+    logger.info(f"TSN: {metrics['TSN']}")
+    logger.info(f"DSN: {metrics['DSN']}")
+    logger.info(f"Success Rate (SUR = DSN/TSN): {metrics['SUR']:.4f}")
+    logger.info(f"Discriminatory Sample Search time (DSS): {metrics['DSS']:.4f} seconds")
+    logger.info(f"Total Time: {metrics['Total_Time']:.2f} seconds")
+    logger.info("")
+    logger.info(f"Total Inputs are {len(tot_inputs)}")
+    logger.info(f"Number of discriminatory inputs are {len(global_disc_inputs_list) + len(local_disc_inputs_list)}")
+    logger.info(f"Time running : {(time.time() - start_time):.2f} seconds")
 
-    res_local = pd.DataFrame({k: results[k] for k in
-                              ['Local Discriminatory Inputs', 'Local Counter Discriminatory Inputs',
-                               'Local Magnitude']})
-    res_local['type'] = 'local'
+    end_time = time.time()
+    total_time = end_time - start_time
 
-    res = pd.DataFrame(np.concatenate([res_global.values, res_local.values]),
-                       columns=['discrimination', 'counter_discrimination', 'magnitude', 'type'])
+    # Calculate metrics
+    tsn = len(tot_inputs)  # Total Sample Number
+    dsn = len(global_disc_inputs) + len(local_disc_inputs)  # Discriminatory Sample Number
+    sur = dsn / tsn if tsn > 0 else 0  # Success Rate
+    dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
 
-    # Add all metrics to the results DataFrame
-    metric_columns = ['Sensitive Attribute', 'Total Inputs', 'Discriminatory Inputs',
-                      'Percentage Discriminatory Inputs', 'TSN', 'DSN', 'DSS', 'SUR']
-    for column in metric_columns:
-        res[column] = results[column]
-
-    return res
-
-
-def calculate_metrics(fully_direct, start_time) -> Dict[str, float]:
-    """
-    Calculate key performance metrics for Aequitas
-
-    Parameters:
-    fully_direct: Fully_Direct object containing results
-    start_time: float, the start time of the search process
-
-    Returns:
-    Dict containing TSN, DSN, DSS, and SUR metrics
-    """
-    # Calculate Total Sample Number (TSN)
-    tsn = len(fully_direct.tot_inputs)
-
-    # Calculate Discriminatory Sample Number (DSN)
-    global_dsn = len(fully_direct.global_disc_inputs_list["discr_input"])
-    local_dsn = len(fully_direct.local_disc_inputs_list["discr_input"])
-    total_dsn = global_dsn + local_dsn
-
-    # Calculate execution time
-    execution_time = time.time() - start_time
-
-    # Calculate Discriminatory Sample Search (DSS) - average time per discriminatory sample
-    dss = execution_time / total_dsn if total_dsn > 0 else 0
-
-    # Calculate Success Rate (SUR) - percentage of discriminatory samples
-    sur = (total_dsn / tsn * 100) if tsn > 0 else 0
-
-    return {
-        "TSN": tsn,
-        "DSN": total_dsn,
-        "DSS": round(dss, 2),  # seconds
-        "SUR": round(sur, 2)  # percentage
+    metrics = {
+        'TSN': tsn,
+        'DSN': dsn,
+        'SUR': sur,
+        'DSS': dss
     }
 
+    logger.info(f"Total Inputs: {len(tot_inputs)}")
+    logger.info(f"Global Search Discriminatory Inputs: {len(global_disc_inputs)}")
+    logger.info(f"Local Search Discriminatory Inputs: {len(local_disc_inputs)}")
+    logger.info(f"Success Rate (SUR): {metrics['SUR']:.4f}")
+    logger.info(f"Average Search Time per Discriminatory Sample (DSS): {metrics['DSS']:.4f} seconds")
+    logger.info(f"Total Discriminatory Pairs Found: {len(discrimination_cases)}")
 
-def run_aequitas(df: DataFrame,
-                 col_to_be_predicted: str,
-                 sensitive_param_name_list: List[str],
-                 perturbation_unit: float,
-                 model_type: str,
-                 threshold: float = 0,
-                 global_iteration_limit: int = 1000,
-                 local_iteration_limit: int = 100) -> Tuple[AequitasResultDF, Dict[str, Union[str, float]]]:
-    """
-    Run Aequitas analysis on the provided dataset.
+    res_df = []
+    case_id = 0
+    for org, org_outcome, counter_org, counter_org_outcome in discrimination_cases:
+        indv1 = pd.DataFrame([list(org)], columns=discrimination_data.attr_columns)
+        indv2 = pd.DataFrame([list(counter_org)], columns=discrimination_data.attr_columns)
 
-    Args:
-        df: Input DataFrame
-        col_to_be_predicted: Target column name
-        sensitive_param_name_list: List of sensitive parameter names
-        perturbation_unit: Size of perturbation steps
-        model_type: Type of model to use
-        threshold: Discrimination threshold
-        global_iteration_limit: Maximum global iterations
-        local_iteration_limit: Maximum local iterations
+        indv_key1 = "|".join(str(x) for x in indv1[discrimination_data.attr_columns].iloc[0])
+        indv_key2 = "|".join(str(x) for x in indv2[discrimination_data.attr_columns].iloc[0])
 
-    Returns:
-        Tuple containing results DataFrame and model scores
-    """
-    # Initialize dataset and model
-    dataset = Dataset(df, col_to_be_predicted=col_to_be_predicted,
-                      sensitive_param_name_list=sensitive_param_name_list)
-    model, model_scores = generate_sklearn_classifier(dataset, model_type)
+        # Add the additional columns
+        indv1['indv_key'] = indv_key1
+        indv1['outcome'] = int(org_outcome)
+        indv2['indv_key'] = indv_key2
+        indv2['outcome'] = int(counter_org_outcome)
 
-    # Run analysis for each sensitive parameter
-    results = []
-    for sensitive_param_id, sensitive_attribute in zip(dataset.sensitive_param_idx_list,
-                                                       sensitive_param_name_list):
-        result = aequitas_fully_directed_sklearn(
-            dataset,
-            perturbation_unit,
-            threshold,
-            global_iteration_limit,
-            local_iteration_limit,
-            sensitive_param_id,
-            model,
-            sensitive_attribute
-        )
-        results.append(result)
+        # Create couple_key as before
 
-    # If no results, return empty
-    if not results:
-        return pd.DataFrame(), {}
+        couple_key = f"{indv_key1}-{indv_key2}"
+        diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
 
-    # Combine all results
-    combined_results: AequitasResultDF = pd.concat(results)
-    combined_results['case_id'] = np.arange(combined_results.shape[0])
+        df_res = pd.concat([indv1, indv2])
+        df_res['couple_key'] = couple_key
+        df_res['diff_outcome'] = diff_outcome
+        df_res['case_id'] = case_id
+        res_df.append(df_res)
+        case_id += 1
 
-    # Rename magnitude to diff_outcome for clarity
-    combined_results = combined_results.rename(columns={'magnitude': 'diff_outcome'})
+    if len(res_df) != 0:
+        res_df = pd.concat(res_df)
+    else:
+        res_df = pd.DataFrame([])
 
-    # Process discriminatory and counter-discriminatory cases
-    discriminatory_cases = combined_results.copy()
-    discriminatory_cases['discrimination'] = discriminatory_cases['counter_discrimination']
-    discriminatory_cases = discriminatory_cases.drop(columns=['counter_discrimination'])
+    res_df['TSN'] = tsn
+    res_df['DSN'] = dsn
+    res_df['SUR'] = sur
+    res_df['DSS'] = dss
 
-    counter_cases = combined_results.drop(columns=['counter_discrimination'])
+    return res_df, metrics
 
-    # Combine all cases
-    all_cases: AequitasResultDF = pd.concat([discriminatory_cases, counter_cases],
-                                            ignore_index=True)
-    all_cases.sort_values(by=['case_id'], inplace=True)
 
-    try:
-        # Convert discrimination data to proper format
-        discrimination_data = []
-        for disc in all_cases['discrimination']:
-            if isinstance(disc, (list, np.ndarray)):
-                discrimination_data.append(disc)
-            else:
-                discrimination_data.append([disc] * len(dataset.column_names))
-
-        # Create final results DataFrame
-        disc_df = pd.DataFrame(discrimination_data, columns=dataset.column_names)
-        final_results: AequitasResultDF = pd.concat(
-            [disc_df, all_cases.drop(columns=['discrimination'])],
-            axis=1
-        )
-
-        # Predict outcomes
-        prediction_columns = [col for col in dataset.column_names
-                              if col != dataset.col_to_be_predicted]
-        final_results['outcome'] = model.predict(final_results[prediction_columns])
-
-        # Process diff_outcome to ensure consistent format
-        final_results['diff_outcome'] = final_results['diff_outcome'].apply(
-            lambda x: x[0] if isinstance(x, (list, np.ndarray)) else x
-        )
-
-        # Generate individual and couple keys
-        attributes = [col for col in df.columns if col != col_to_be_predicted]
-        final_results['indv_key'] = final_results.apply(
-            lambda x: '|'.join(map(str, x[attributes].values.tolist())),
-            axis=1
-        )
-
-        # Generate couple keys
-        couple_keys = final_results.groupby(['case_id']).apply(
-            lambda x: pd.Series([
-                '-'.join(x['indv_key'].tolist()),
-                '-'.join(x['indv_key'].tolist()[::-1])
-            ], index=x.index)
-        )
-
-        if not couple_keys.empty:
-            final_results['couple_key'] = couple_keys.reset_index(level=0, drop=True)
-        else:
-            final_results['couple_key'] = None
-
-        return final_results, model_scores[0]
-
-    except Exception as e:
-        print(f"Error processing results: {str(e)}")
-        print(f"Shape of discrimination data: {len(discrimination_data)} rows")
-        print(f"Number of columns expected: {len(dataset.column_names)}")
-        raise e
+if __name__ == '__main__':
+    ge, schema = get_real_data('adult')
+    ll = run_aequitas(discrimination_data=ge)
+    print('ddd')
