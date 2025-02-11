@@ -1,8 +1,10 @@
 from __future__ import division
 
-import pandas as pd
+from typing import TypedDict, Tuple, Dict
 
-from data_generator.main import get_real_data
+import pandas as pd
+import logging
+import sys
 import itertools
 import random
 import time
@@ -10,10 +12,39 @@ import lime
 import shap
 import numpy as np
 from lime.lime_tabular import LimeTabularExplainer
+from pandas import DataFrame
 
+from data_generator.main import get_real_data
 from data_generator.main_old import DiscriminationData
 from methods.exp_ga.genetic_algorithm import GA
 from methods.utils import train_sklearn_model
+
+
+# Configure logging with custom formatter
+class MetricsFormatter(logging.Formatter):
+    def format(self, record):
+        if hasattr(record, 'metrics'):
+            return record.metrics
+        return super().format(record)
+
+
+# Configure logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Clear any existing handlers
+if logger.handlers:
+    logger.handlers.clear()
+
+# Create console handler with custom formatter
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(MetricsFormatter())
+logger.addHandler(console_handler)
+
+# Create file handler with standard formatter
+file_handler = logging.FileHandler('discrimination_search.log')
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(file_handler)
 
 global_disc_inputs = set()
 global_disc_inputs_list = []
@@ -23,8 +54,15 @@ tot_inputs = set()
 location = np.zeros(21)
 all_found_discriminations = []
 
-threshold_l = 10  # replace census-7,credit-14,bank-10
-threshold = 0
+# Counters for TSN and DSN
+TSN = 0  # Total inputs processed
+DSN = 0  # Total discriminatory instances found
+
+
+def log_metrics():
+    """Log TSN and DSN metrics in a side-by-side format"""
+    metrics = f"\rTSN: {TSN:<10} | DSN: {DSN:<10}"
+    logger.info('', extra={'metrics': metrics})
 
 
 def ConstructExplainer(train_vectors, feature_names, class_names):
@@ -40,10 +78,13 @@ def Shap_value(model, test_vectors):
     return shap_values
 
 
-def Searchseed(model, feature_names, sens_name, explainer, train_vectors, num, X_ori):
+def Searchseed(model, feature_names, sens_name, explainer, train_vectors, num, X_ori, threshold_l):
+    global TSN, DSN
     seed = []
     for x in train_vectors:
         tot_inputs.add(tuple(x))
+        TSN += 1
+        log_metrics()
         exp = explainer.explain_instance(x, model.predict_proba, num_features=num)
         explain_labels = exp.available_labels()
         exp_result = exp.as_list(label=explain_labels[0])
@@ -79,6 +120,7 @@ def Searchseed(model, feature_names, sens_name, explainer, train_vectors, num, X
 
 
 def Searchseed_Shap(feature_names, sens_name, shap_values, train_vectors):
+    global TSN, DSN
     seed = []
     for i in range(len(shap_values[0])):
         sample = shap_values[0][i]
@@ -99,6 +141,8 @@ def Searchseed_Shap(feature_names, sens_name, shap_values, train_vectors):
             seed.append(train_vectors[i])
         if len(seed) > 10:
             return seed
+        TSN += 1
+        log_metrics()
     return seed
 
 
@@ -120,14 +164,18 @@ class Global_Discovery(object):
         return samples
 
 
-def xai_fair_testing(max_global, max_local):
+def xai_fair_testing(ge: DiscriminationData, max_global, max_local, model_type='rf',
+                     threshold: float = 0, threshold_l: int = 10):
+    logger.info("Starting XAI Fair Testing")
+    log_metrics()  # Show initial metrics
+    logger.info(f"Initial TSN: {TSN}, Initial DSN: {DSN}")
+
     # Load and preprocess data based on dataset
-    ge, ge_schema = get_real_data('adult')
 
     # Train the model using the new function
     model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
         data=ge.dataframe,
-        model_type='rf',  # You can change this to 'svm', 'lr', or 'dt'
+        model_type=model_type,  # You can change this to 'svm', 'lr', or 'dt'
         sensitive_attrs=ge.protected_attributes,
         target_col=ge.outcome_column
     )
@@ -137,8 +185,11 @@ def xai_fair_testing(max_global, max_local):
         Evaluate local discrimination by checking individual changes in protected attributes.
         Returns the maximum discrimination found from changing any single protected attribute.
         """
+        global TSN, DSN
 
         tot_inputs.add(tuple(inp))
+        TSN += 1
+        log_metrics()
 
         # Get original prediction
         org_df = pd.DataFrame([inp], columns=ge.attr_columns)
@@ -165,8 +216,10 @@ def xai_fair_testing(max_global, max_local):
             for name, value in zip(sensitive_names, values):
                 tnew[name] = value
 
+            TSN += 1
             tot_inputs.add(tuple(tnew.to_numpy().tolist()[0]))
             new_targets.append(tnew)
+            log_metrics()
 
         if not new_targets:  # If no new combinations were generated
             return 0
@@ -188,6 +241,8 @@ def xai_fair_testing(max_global, max_local):
                 local_disc_inputs.add(disc_tuple)
                 local_disc_inputs_list.append(list(discriminations.iloc[i].values))
                 all_found_discriminations.append((org_df, discriminations.iloc[i]))
+                DSN += 1
+                log_metrics()
 
         max_discrimination = np.max(np.abs(discriminations['outcome'] - label[0]))
 
@@ -207,8 +262,7 @@ def xai_fair_testing(max_global, max_local):
     explainer = ConstructExplainer(ge.xdf, ge.attr_columns, list(ge.ydf.unique()))
 
     seed = Searchseed(model, ge.attr_columns, ge.sensitive_indices.values(), explainer, train_samples,
-                      len(ge.attr_columns),
-                      ge.xdf)
+                      len(ge.attr_columns), ge.xdf, threshold_l=threshold_l)
 
     print('Finish Searchseed')
     for inp in seed:
@@ -255,10 +309,89 @@ def xai_fair_testing(max_global, max_local):
     print("Total Inputs are " + str(len(tot_inputs)))
     print("Number of discriminatory inputs are " + str(len(local_disc_inputs_list)))
 
+    end_time = time.time()
+    total_time = end_time - start
 
-def main():
-    xai_fair_testing(max_global=1000, max_local=1000)
+    # Calculate metrics
+    tsn = len(tot_inputs)  # Total Sample Number
+    dsn = len(all_found_discriminations)  # Discriminatory Sample Number
+    sur = dsn / tsn if tsn > 0 else 0  # Success Rate
+    dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
+
+    metrics = {
+        'TSN': tsn,
+        'DSN': dsn,
+        'SUR': sur,
+        'DSS': dss
+    }
+
+    logger.info(f"Total Inputs: {len(tot_inputs)}")
+    logger.info(f"Global Search Discriminatory Inputs: {len(global_disc_inputs)}")
+    logger.info(f"Local Search Discriminatory Inputs: {len(local_disc_inputs)}")
+    logger.info(f"Success Rate (SUR): {metrics['SUR']:.4f}")
+    logger.info(f"Average Search Time per Discriminatory Sample (DSS): {metrics['DSS']:.4f} seconds")
+    logger.info(f"Total Discriminatory Pairs Found: {len(all_found_discriminations)}")
+
+    res_df = []
+    case_id = 0
+    for indv1, indv2 in all_found_discriminations:
+        indv2 = indv2.to_frame().T
+        indv_key1 = "|".join(str(x) for x in indv1[ge.attr_columns].iloc[0])
+        indv_key2 = "|".join(str(x) for x in indv2[ge.attr_columns].iloc[0])
+
+        # Add the additional columns
+        indv1['indv_key'] = indv_key1
+        indv2['indv_key'] = indv_key2
+
+        # Create couple_key as before
+
+        couple_key = f"{indv_key1}-{indv_key2}"
+        diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
+
+        df_res = pd.concat([indv1, indv2])
+        df_res['couple_key'] = couple_key
+        df_res['diff_outcome'] = diff_outcome
+        df_res['case_id'] = case_id
+        res_df.append(df_res)
+        case_id += 1
+
+    if len(res_df) != 0:
+        res_df = pd.concat(res_df)
+    else:
+        res_df = pd.DataFrame([])
+
+    res_df['TSN'] = tsn
+    res_df['DSN'] = dsn
+    res_df['SUR'] = sur
+    res_df['DSS'] = dss
+
+    return res_df, metrics
 
 
-if __name__ == '__main__':
-    main()
+class ExpGAResultRow(TypedDict, total=False):
+    group_id: str
+    outcome: float
+    diff_outcome: float
+    indv_key: str
+    couple_key: str
+
+
+class Metrics(TypedDict):
+    TSN: int  # Total Sample Number
+    DSN: int  # Discriminatory Sample Number
+    DSS: float  # Discriminatory Sample Search (avg time)
+    SUR: float  # Success Rate
+
+ExpGAResultDF = DataFrame
+
+def run_expga(dataset: DiscriminationData, model_type: str = 'rf', threshold: float = 0.5,
+              threshold_rank: int = 10, max_global: int = 50, max_local: int = 50,
+              **model_kwargs) -> Tuple[ExpGAResultDF, Dict[str, Metrics]]:
+    res_df, metrics = xai_fair_testing(ge=dataset, max_global=max_global, max_local=max_local, model_type=model_type,
+                                       threshold=threshold, threshold_l=threshold_rank)
+
+    return res_df, metrics
+
+
+# if __name__ == '__main__':
+    # run_expga()

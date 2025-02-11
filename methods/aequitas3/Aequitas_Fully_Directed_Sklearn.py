@@ -51,14 +51,6 @@ direction_probability_change_size = 0.001
 param_probability = [1.0 / params] * params
 param_probability_change_size = 0.001
 
-def normalise_probability():
-    """Normalize the probability distribution to ensure it sums to 1"""
-    probability_sum = 0.0
-    for prob in param_probability:
-        probability_sum = probability_sum + prob
-
-    for i in range(params):
-        param_probability[i] = float(param_probability[i]) / float(probability_sum)
 
 sensitive_param = config.sensitive_param
 name = 'sex'
@@ -91,19 +83,29 @@ discriminatory_samples = 0  # DSN
 current_global_iter = 0
 current_local_iter = 0
 
+
+def normalise_probability():
+    """Normalize the probability distribution to ensure it sums to 1"""
+    probability_sum = 0.0
+    for prob in param_probability:
+        probability_sum = probability_sum + prob
+
+    for i in range(params):
+        param_probability[i] = float(param_probability[i]) / float(probability_sum)
+
 def calculate_metrics():
     """Calculate and return the testing metrics"""
     global start_time, total_samples, discriminatory_samples
-    
+
     end_time = time.time()
     total_time = end_time - start_time
-    
+
     # Calculate Success Rate (SUR)
     sur = discriminatory_samples / len(tot_inputs) if len(tot_inputs) > 0 else 0
-    
+
     # Calculate Discriminatory Sample Search time (DSS)
     dss = total_time / discriminatory_samples if discriminatory_samples > 0 else float('inf')
-    
+
     return {
         'TSN': len(tot_inputs),
         'DSN': discriminatory_samples,
@@ -116,11 +118,11 @@ def print_progress(search_type=""):
     """Print current progress and metrics in a single line"""
     metrics = calculate_metrics()
     global current_global_iter, current_local_iter
-    
+
     # Clear previous line
     sys.stdout.write('\r')
     sys.stdout.flush()
-    
+
     # Create progress message
     if search_type == "global":
         progress = f"Global: {current_global_iter}/{global_iteration_limit} ({(current_global_iter/global_iteration_limit)*100:.1f}%)"
@@ -128,7 +130,7 @@ def print_progress(search_type=""):
         progress = f"Local: {current_local_iter}/{local_iteration_limit} ({(current_local_iter/local_iteration_limit)*100:.1f}%)"
     else:
         progress = "Initializing..."
-    
+
     # Format the status line
     status = (
         f"\r{progress} | "
@@ -138,7 +140,7 @@ def print_progress(search_type=""):
         f"Time/Sample: {metrics['DSS']:.2f}s | "
         f"Total: {metrics['Total_Time']:.1f}s"
     )
-    
+
     logger.info(status)
 
 def is_case_tested(features):
@@ -201,11 +203,11 @@ def evaluate_global(inp):
         new_case = inp_df.copy()
         for attr, value in zip(ge.protected_attributes, values):
             new_case[attr] = value
-            
+
         # Skip if this case has already been tested
         if is_case_tested(new_case.iloc[0].values):
             continue
-            
+
         test_cases.append(new_case)
 
     if not test_cases:  # If no new combinations were generated
@@ -221,22 +223,22 @@ def evaluate_global(inp):
     # Find discriminatory cases
     discriminatory_cases = test_df[predictions != original_pred]
     max_discrimination = 0
-    
+
     if len(discriminatory_cases) > 0:
         # Update discriminatory samples count
         discriminatory_samples += len(discriminatory_cases)
-        
+
         # Print progress after finding discrimination
         print_progress("global")
-        
+
         for _, disc_case in discriminatory_cases.iterrows():
             disc_tuple = tuple(disc_case.values)
-            
+
             # Add to total inputs before processing
             tot_inputs.add((disc_tuple,))
-            
+
             counter_pred = model.predict(disc_case.to_frame().T)[0]
-            
+
             # Store discrimination case
             discrimination_cases.append((
                 list(inp_df.iloc[0].values),  # original_features
@@ -244,15 +246,15 @@ def evaluate_global(inp):
                 list(disc_case.values),        # counter_features
                 counter_pred                   # counter_outcome
             ))
-            
+
             if (disc_tuple,) not in global_disc_inputs:
                 global_disc_inputs.add((disc_tuple,))
                 global_disc_inputs_list.append(list(disc_case.values))
-            
+
             # Calculate discrimination magnitude
             discrimination = abs(original_pred - counter_pred)
             max_discrimination = max(max_discrimination, discrimination)
-            
+
             if discrimination > threshold:
                 logger.info(
                     f"\nDiscrimination found - Original: {dict(zip(ge.protected_attributes, inp_df[ge.protected_attributes].iloc[0]))} "
@@ -301,11 +303,11 @@ def evaluate_local(inp):
             if value != current_value:  # Skip if it's the current value
                 new_case = inp_df.copy()
                 new_case[attr] = value
-                
+
                 # Skip if this case has already been tested
                 if is_case_tested(new_case.iloc[0].values):
                     continue
-                    
+
                 test_cases.append({
                     'data': new_case,
                     'changed_attr': attr,
@@ -319,29 +321,29 @@ def evaluate_local(inp):
     total_samples += len(test_cases) + 1  # +1 for original case
 
     max_discrimination = 0
-    
+
     # Evaluate each test case
     for test_case in test_cases:
         test_df = test_case['data']
-        
+
         # Add to total inputs before processing
         tot_inputs.add((tuple(test_df.iloc[0].values),))
-        
+
         counter_pred = model.predict(test_df)[0]
-        
+
         # Calculate discrimination for this case
         discrimination = abs(original_pred - counter_pred)
-        
+
         if discrimination > max_discrimination:
             max_discrimination = discrimination
-        
+
         # If this case shows discrimination above threshold
         if discrimination > threshold:
             # Update discriminatory samples count
             discriminatory_samples += 1
-            
+
             disc_tuple = tuple(test_df.iloc[0].values)
-            
+
             # Store discrimination case
             discrimination_cases.append((
                 list(inp_df.iloc[0].values),  # original_features
@@ -349,11 +351,11 @@ def evaluate_local(inp):
                 list(test_df.iloc[0].values),  # counter_features
                 counter_pred                   # counter_outcome
             ))
-            
+
             if (disc_tuple,) not in local_disc_inputs:
                 local_disc_inputs.add((disc_tuple,))
                 local_disc_inputs_list.append(list(test_df.iloc[0].values))
-                
+
                 logger.info(
                     f"\nLocal discrimination found - Attribute: {test_case['changed_attr']} | "
                     f"Change: {inp_df[test_case['changed_attr']].iloc[0]} → {test_case['new_value']} | "
@@ -382,7 +384,7 @@ class Local_Perturbation(object):
             # Skip protected attributes
             if feature_names[i] in ge.protected_attributes:
                 continue
-                
+
             # Randomly perturb other features
             random.seed(time.time())
             if random.random() < direction_probability[i]:
@@ -451,7 +453,7 @@ logger.info(f"Total Time: {metrics['Total_Time']:.2f} seconds")
 logger.info("")
 logger.info("Starting Local Search")
 
-for inp in global_disc_inputs_list:
+for inp in global_disc_inputs_list[:1]:
     basinhopping(evaluate_local, inp, stepsize=1.0, take_step=local_perturbation, minimizer_kwargs=minimizer,
                  niter=local_iteration_limit)
     metrics = calculate_metrics()
@@ -473,5 +475,67 @@ logger.info("")
 logger.info(f"Total Inputs are {len(tot_inputs)}")
 logger.info(f"Number of discriminatory inputs are {len(global_disc_inputs_list) + len(local_disc_inputs_list)}")
 logger.info(f"Time running : {(time.time() - start_time):.2f} seconds")
+
+
+
+end_time = time.time()
+total_time = end_time - start_time
+
+# Calculate metrics
+tsn = len(tot_inputs)  # Total Sample Number
+dsn = len(global_disc_inputs) + len(local_disc_inputs)  # Discriminatory Sample Number
+sur = dsn / tsn if tsn > 0 else 0  # Success Rate
+dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
+
+metrics = {
+    'TSN': tsn,
+    'DSN': dsn,
+    'SUR': sur,
+    'DSS': dss
+}
+
+logger.info(f"Total Inputs: {len(tot_inputs)}")
+logger.info(f"Global Search Discriminatory Inputs: {len(global_disc_inputs)}")
+logger.info(f"Local Search Discriminatory Inputs: {len(local_disc_inputs)}")
+logger.info(f"Success Rate (SUR): {metrics['SUR']:.4f}")
+logger.info(f"Average Search Time per Discriminatory Sample (DSS): {metrics['DSS']:.4f} seconds")
+logger.info(f"Total Discriminatory Pairs Found: {len(discrimination_cases)}")
+
+res_df = []
+case_id = 0
+for org, org_outcome, counter_org, counter_org_outcome in discrimination_cases:
+    indv1 = pd.DataFrame([list(org)], columns=ge.attr_columns)
+    indv2 = pd.DataFrame([list(counter_org)], columns=ge.attr_columns)
+
+    indv_key1 = "|".join(str(x) for x in indv1[ge.attr_columns].iloc[0])
+    indv_key2 = "|".join(str(x) for x in indv2[ge.attr_columns].iloc[0])
+
+    # Add the additional columns
+    indv1['indv_key'] = indv_key1
+    indv1['outcome'] = int(org_outcome)
+    indv2['indv_key'] = indv_key2
+    indv2['outcome'] = int(counter_org_outcome)
+
+    # Create couple_key as before
+
+    couple_key = f"{indv_key1}-{indv_key2}"
+    diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
+
+    df_res = pd.concat([indv1, indv2])
+    df_res['couple_key'] = couple_key
+    df_res['diff_outcome'] = diff_outcome
+    df_res['case_id'] = case_id
+    res_df.append(df_res)
+    case_id += 1
+
+if len(res_df) != 0:
+    res_df = pd.concat(res_df)
+else:
+    res_df = pd.DataFrame([])
+
+res_df['TSN'] = tsn
+res_df['DSN'] = dsn
+res_df['SUR'] = sur
+res_df['DSS'] = dss
 
 
