@@ -2,7 +2,6 @@ from __future__ import division
 
 import itertools
 import pandas as pd
-import numpy as np
 import random
 import time
 from scipy.optimize import basinhopping

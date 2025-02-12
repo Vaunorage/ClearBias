@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import random
 from itertools import product
@@ -8,8 +9,18 @@ import time
 from data_generator.main import get_real_data, DiscriminationData
 from methods.utils import train_sklearn_model
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
-def aequitas(dataset: DiscriminationData, sensitive_param, max_global, max_local, step_size):
+
+def aequitas(dataset: DiscriminationData, sensitive_param, max_global, max_local, step_size,
+             init_prob, direction_probability_change_size, param_probability_change_size,
+             all_inputs, all_exec_times, results_df):
     """
     The implementation of AEQUITAS_Fully_Connected
     :param dataset: the name of testing dataset
@@ -184,6 +195,10 @@ def aequitas(dataset: DiscriminationData, sensitive_param, max_global, max_local
             for el in discriminations_df.to_numpy():
                 all_discrimination.add((tuple(map(int, inp_df.to_numpy()[0])), tuple(map(int, el))))
 
+        current_tsn = len(all_inputs) + len(tot_inputs)
+        current_dsn = len(all_discrimination) + sum(map(lambda x: x.shape[0], results_df))
+        logger.info(f"TSN: {current_tsn} - DSN: {current_dsn} - {current_dsn / current_tsn:.2f}")
+
         return max_discrimination, max_discrimination_row
 
     start = time.time()
@@ -199,13 +214,11 @@ def aequitas(dataset: DiscriminationData, sensitive_param, max_global, max_local
     params = len(dataset.attr_columns)
 
     # hyper-parameters for initial probabilities of directions
-    init_prob = 0.5
+
     direction_probability = [init_prob] * params
-    direction_probability_change_size = 0.001
 
     # hyper-parameters for features
     param_probability = [1.0 / params] * params
-    param_probability_change_size = 0.001
 
     # prepare the testing data and model
     preds = model.predict
@@ -229,15 +242,6 @@ def aequitas(dataset: DiscriminationData, sensitive_param, max_global, max_local
         # count = 300
         end = time.time()
         use_time = end - start
-        sec = len(count) * 300
-        if use_time >= sec:
-            print("Percentage discriminatory inputs - " + str(
-                float(len(global_disc_inputs_list) + len(local_disc_inputs_list))
-                / float(len(tot_inputs)) * 100))
-            print("Number of discriminatory inputs are " + str(len(local_disc_inputs_list)))
-            print("Total Inputs are " + str(len(tot_inputs)))
-            print('use time:' + str(end - start))
-            count.append(1)
         if use_time >= 3900:
             return float('inf')  # Return a large number instead of None
 
@@ -300,36 +304,39 @@ def aequitas(dataset: DiscriminationData, sensitive_param, max_global, max_local
     else:
         res_df = pd.DataFrame([])
 
-    # print the overview information of result
-    print("Total Inputs are " + str(len(tot_inputs)))
-    print("Total discriminatory inputs of global search- " + str(len(global_disc_inputs)))
-    print("Total discriminatory inputs of local search- " + str(len(local_disc_inputs)))
-    print("Percentage discriminatory inputs - " + str(float(len(global_disc_inputs_list) + len(local_disc_inputs_list))
-                                                      / float(len(tot_inputs)) * 100))
     end_time = time.time()
     execution_time = end_time - start
     return res_df, execution_time, tot_inputs
 
 
-def main():
-    ge, ge_schema = get_real_data('adult')
+def run_aequitas(data: DiscriminationData, max_global=100, max_local=1000, step_size=1,
+                 init_prob=0.5, direction_probability_change_size=0.001, param_probability_change_size=0.001):
     start = time.time()
     all_inputs = []
     all_exec_times = []
     results_df = []
     ITER = 1
+
+    logger.info("Starting AEQUITAS algorithm execution")
     for i in range(ITER):
-        res_df, execution_time, total_inputs = aequitas(dataset=ge,
-                                                        sensitive_param=ge.sensitive_indices,
-                                                        max_global=100,
-                                                        max_local=1000,
-                                                        step_size=1)
+        logger.info(f"Starting iteration {i + 1}/{ITER}")
+        res_df, execution_time, total_inputs = aequitas(dataset=data,
+                                                        sensitive_param=data.sensitive_indices,
+                                                        max_global=max_global,
+                                                        max_local=max_local,
+                                                        step_size=step_size,
+                                                        init_prob=init_prob,
+                                                        direction_probability_change_size=direction_probability_change_size,
+                                                        param_probability_change_size=param_probability_change_size,
+                                                        all_inputs=all_inputs,
+                                                        all_exec_times=all_exec_times,
+                                                        results_df=results_df
+                                                        )
         end = time.time()
         all_inputs.extend(total_inputs)
         all_exec_times.append(execution_time)
         results_df.append(res_df)
-
-        print('total time:' + str(end - start))
+        logger.info(f"Total time for iteration {i + 1}: {end - start:.2f}s")
 
     results_df = pd.concat(results_df)
     results_df.drop_duplicates(subset='couple_key', keep='first', inplace=True)
@@ -344,8 +351,15 @@ def main():
         "SUR": round(dsn / tsn, 2)
     }
 
+    logger.info("Algorithm execution completed")
+    logger.info(f"Final metrics: {metrics}")
+
     return results_df, metrics
 
 
 if __name__ == '__main__':
-    main()
+    ge, ge_schema = get_real_data('adult')
+    results_df, metrics = run_aequitas(ge, max_global=1000, max_local=10000, step_size=1,
+                                       init_prob=0.5, direction_probability_change_size=0.001,
+                                       param_probability_change_size=0.001)
+    print(results_df)
