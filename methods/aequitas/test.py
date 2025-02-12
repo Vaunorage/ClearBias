@@ -16,7 +16,7 @@ ge, schema = get_real_data('adult')
 
 # %%
 global_iteration_limit = 100
-local_iteration_limit = 100
+local_iteration_limit = 1000
 model_type = "rf"
 results_df, model_scores = run_aequitas(ge, model_type=model_type, threshold=0,
                                         global_iteration_limit=global_iteration_limit,

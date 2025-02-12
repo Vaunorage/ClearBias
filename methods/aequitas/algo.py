@@ -22,9 +22,7 @@ logger.addHandler(handler)
 
 
 def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
-                 threshold=0.2,
-                 global_iteration_limit=100,
-                 local_iteration_limit=100):
+                 threshold=0.2, global_iteration_limit=100, local_iteration_limit=100):
     """
     Run Aequitas Fully Directed algorithm on the given discrimination data.
     
@@ -60,11 +58,6 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
 
     # Initialize tracking variables
     start_time = time.time()
-    total_samples = 0
-    discriminatory_samples = 0
-    current_global_iter = 0
-    current_local_iter = 0
-
     global_disc_inputs = set()
     global_disc_inputs_list = []
     local_disc_inputs = set()
