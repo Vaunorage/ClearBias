@@ -42,11 +42,7 @@ direction_probability = [init_prob] * params
 direction_probability_change_size = 0.001
 
 param_probability = [1.0 / params] * params
-param_probability_change_size = 0.001
 
-name = 'sex'
-cov = 0
-perturbation_unit = 1
 threshold = 0
 
 global_disc_inputs = set()
@@ -333,91 +329,6 @@ def evaluate_local(inp):
 
     return max_discrimination
 
-class Local_Perturbation(object):
-    """
-    The  implementation of local perturbation
-    """
-
-    def __init__(self, preds, conf, sensitive_param, param_probability, param_probability_change_size,
-                 direction_probability, direction_probability_change_size, step_size):
-        """
-        Initial function of local perturbation
-        :param sess: TF session
-        :param preds: the model's symbolic output
-        :param x: input placeholder
-        :param conf: the configuration of dataset
-        :param sensitive_param: the index of sensitive feature
-        :param param_probability: the probabilities of features
-        :param param_probability_change_size: the step size for changing probability
-        :param direction_probability: the probabilities of perturbation direction
-        :param direction_probability_change_size:
-        :param step_size: the step size of perturbation
-        """
-        self.preds = preds
-        self.conf = conf
-        self.sensitive_param = sensitive_param
-        self.param_probability = param_probability
-        self.param_probability_change_size = param_probability_change_size
-        self.direction_probability = direction_probability
-        self.direction_probability_change_size = direction_probability_change_size
-        self.step_size = step_size
-        self.perturbation_unit = 1
-
-    def __call__(self, x):
-        """
-        Local perturbation
-        :param x: input instance for local perturbation
-        :return: new potential individual discriminatory instance
-        """
-        # randomly choose the feature for perturbation
-        param_choice = np.random.choice(range(self.conf.params) , p=self.param_probability)
-
-        # randomly choose the direction for perturbation
-        perturbation_options = [-1, 1]
-        direction_choice = np.random.choice(perturbation_options, p=[self.direction_probability[param_choice],
-                                                                     (1 - self.direction_probability[param_choice])])
-        if (x[param_choice] == self.conf.input_bounds[param_choice][0]) or (x[param_choice] == self.conf.input_bounds[param_choice][1]):
-            direction_choice = np.random.choice(perturbation_options)
-
-        # perturbation
-        x[param_choice] = x[param_choice] + (direction_choice * self.step_size)
-
-        # clip the generating instance with each feature to make sure it is valid
-        x[param_choice] = max(self.conf.input_bounds[param_choice][0], x[param_choice])
-        x[param_choice] = min(self.conf.input_bounds[param_choice][1], x[param_choice])
-
-        # check whether the test case is an individual discriminatory instance
-        ei = check_for_error_condition(self.conf, self.preds, x, self.sensitive_param)
-
-        # update the probabilities of directions
-        if (ei != int(x[self.sensitive_param - 1]) and direction_choice == -1) or (not (ei != int(x[self.sensitive_param- 1])) and direction_choice == 1):
-            self.direction_probability[param_choice] = min(self.direction_probability[param_choice] +
-                                                      (self.direction_probability_change_size * self.perturbation_unit),1)
-        elif (not (ei != int(x[self.sensitive_param - 1])) and direction_choice == -1) or (ei != int(x[self.sensitive_param - 1]) and direction_choice == 1):
-            self.direction_probability[param_choice] = max(self.direction_probability[param_choice] -
-                                                      (self.direction_probability_change_size * self.perturbation_unit),0)
-
-        # update the probabilities of features
-        if ei != int(x[self.sensitive_param - 1]):
-            self.param_probability[param_choice] = self.param_probability[param_choice] + self.param_probability_change_size
-            self.normalise_probability()
-        else:
-            self.param_probability[param_choice] = max(self.param_probability[param_choice] - self.param_probability_change_size, 0)
-            self.normalise_probability()
-
-        return x
-
-    def normalise_probability(self):
-        """
-        Normalize the probability
-        :return: probability
-        """
-        probability_sum = 0.0
-        for prob in self.param_probability:
-            probability_sum = probability_sum + prob
-
-        for i in range(self.conf.params):
-            self.param_probability[i] = float(self.param_probability[i]) / float(probability_sum)
 
 class Local_Perturbation(object):
 
@@ -473,11 +384,6 @@ class Global_Discovery(object):
 
         return x
 
-
-# Initialize start time and progress tracking
-start_time = time.time()
-current_global_iter = 0
-current_local_iter = 0
 
 logger.info("Starting Global Search...")
 print_progress()

@@ -6,7 +6,7 @@ import pandas as pd
 from scipy.optimize import basinhopping
 import time
 
-from data_generator.main import get_real_data, DiscriminationData
+from data_generator.main import get_real_data, DiscriminationData, generate_from_real_data
 from methods.utils import train_sklearn_model
 
 # Configure logging
@@ -191,11 +191,14 @@ def aequitas(dataset: DiscriminationData, sensitive_param, max_global, max_local
 
         inp_df['outcome'] = original_pred
 
+        for el in test_cases_df.to_numpy():
+            tot_inputs.add((tuple(map(int, inp_df.to_numpy()[0])), tuple(map(int, el))))
+
         if discriminations_df.shape[0] != 0:
             for el in discriminations_df.to_numpy():
                 all_discrimination.add((tuple(map(int, inp_df.to_numpy()[0])), tuple(map(int, el))))
 
-        current_tsn = len(all_inputs) + len(tot_inputs)
+        current_tsn = len(set(list(all_inputs) + list(tot_inputs)))
         current_dsn = len(all_discrimination) + sum(map(lambda x: x.shape[0], results_df))
         logger.info(f"TSN: {current_tsn} - DSN: {current_dsn} - {current_dsn / current_tsn:.2f}")
 
@@ -205,7 +208,7 @@ def aequitas(dataset: DiscriminationData, sensitive_param, max_global, max_local
 
     # Train the model using the new function
     model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
-        data=dataset.dataframe,
+        data=dataset.training_dataframe,
         model_type='rf',  # You can change this to 'svm', 'lr', or 'dt'
         sensitive_attrs=dataset.protected_attributes,
         target_col=dataset.outcome_column
@@ -229,7 +232,6 @@ def aequitas(dataset: DiscriminationData, sensitive_param, max_global, max_local
     local_disc_inputs = set()
     local_disc_inputs_list = []
     tot_inputs = set()
-    count = [1]
 
     minimizer = {"method": "L-BFGS-B"}
 
@@ -334,8 +336,7 @@ def run_aequitas(data: DiscriminationData, max_global=100, max_local=1000, step_
                                                         param_probability_change_size=param_probability_change_size,
                                                         all_inputs=all_inputs,
                                                         all_exec_times=all_exec_times,
-                                                        results_df=results_df
-                                                        )
+                                                        results_df=results_df)
         end = time.time()
         all_inputs.extend(total_inputs)
         all_exec_times.append(execution_time)
@@ -362,7 +363,8 @@ def run_aequitas(data: DiscriminationData, max_global=100, max_local=1000, step_
 
 
 if __name__ == '__main__':
-    ge, ge_schema = get_real_data('adult')
+    # ge, ge_schema = get_real_data('bank')
+    ge, schema = generate_from_real_data('bank')
     results_df, metrics = run_aequitas(ge, max_global=1000, max_local=10000, step_size=1,
                                        init_prob=0.5, direction_probability_change_size=0.001,
                                        param_probability_change_size=0.001)

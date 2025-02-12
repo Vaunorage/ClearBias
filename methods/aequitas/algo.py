@@ -8,7 +8,7 @@ from scipy.optimize import basinhopping
 import logging
 import sys
 
-from data_generator.main import get_real_data
+from data_generator.main import get_real_data, generate_from_real_data
 from methods.utils import train_sklearn_model
 
 logger = logging.getLogger('aequitas')
@@ -45,7 +45,7 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
 
     # Train the model using the new function
     model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
-        data=discrimination_data.dataframe,
+        data=discrimination_data.training_dataframe,
         model_type=model_type,
         sensitive_attrs=discrimination_data.protected_attributes,
         target_col=discrimination_data.outcome_column
@@ -53,7 +53,6 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
 
     params = len(feature_names)
     direction_probability = [init_prob] * params
-    param_probability = [1.0 / params] * params
 
     # Initialize tracking variables
     start_time = time.time()
@@ -64,18 +63,14 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
     tot_inputs = set()
     discrimination_cases = []
 
-    def normalise_probability():
-        """Normalize the probability distribution to ensure it sums to 1"""
-        probability_sum = 0.0
-        for prob in param_probability:
-            probability_sum = probability_sum + prob
-
-        for i in range(params):
-            param_probability[i] = float(param_probability[i]) / float(probability_sum)
+    # Initialize all counters
+    current_global_iter = 0
+    total_samples = 0
+    discriminatory_samples = 0
+    current_local_iter = 0
 
     def calculate_metrics():
         """Calculate and return the testing metrics"""
-        nonlocal start_time, total_samples, discriminatory_samples
 
         end_time = time.time()
         total_time = end_time - start_time
@@ -96,7 +91,6 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
 
     def print_progress(search_type=""):
         """Print current progress and metrics in a single line"""
-        nonlocal current_global_iter, current_local_iter
         metrics = calculate_metrics()
 
         # Clear previous line
@@ -105,9 +99,9 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
 
         # Create progress message
         if search_type == "global":
-            progress = f"Global: {current_global_iter}/{global_iteration_limit} ({(current_global_iter / global_iteration_limit) * 100:.1f}%)"
+            progress = f"Global: {current_global_iter} ({(current_global_iter / global_iteration_limit) * 100:.1f}%)"
         elif search_type == "local":
-            progress = f"Local: {current_local_iter}/{local_iteration_limit} ({(current_local_iter / local_iteration_limit) * 100:.1f}%)"
+            progress = f"Local: {current_local_iter} ({(current_local_iter / local_iteration_limit) * 100:.1f}%)"
         else:
             progress = "Initializing..."
 
@@ -127,40 +121,12 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
         """Check if a case has already been tested"""
         return (tuple(features),) in tot_inputs
 
-    def evaluate_input(inp):
-        """Evaluate discrimination for a given input"""
-        protected_attrs = discrimination_data.protected_attributes
-        results = []
-
-        # Create base input as DataFrame
-        base_input = pd.DataFrame([inp], columns=feature_names)
-        base_pred = model.predict(base_input)[0]
-
-        # Test each protected attribute
-        for attr in protected_attrs:
-            attr_idx = feature_names.index(attr)
-            unique_vals = sorted(discrimination_data.dataframe[attr].unique())
-
-            # Test all values of protected attribute
-            predictions = []
-            for val in unique_vals:
-                test_input = base_input.copy()
-                test_input[attr].iloc[0] = val
-                pred = model.predict(test_input)[0]
-                predictions.append(pred)
-
-            # Calculate maximum discrimination
-            max_disc = max(abs(p1 - p2) for p1, p2 in itertools.combinations(predictions, 2))
-            results.append(max_disc)
-
-        return max(results)
-
     def evaluate_global(inp):
         """
         Evaluate discrimination across all possible combinations of protected attributes.
         Returns the maximum discrimination found between any pair of protected attribute combinations.
         """
-        nonlocal total_samples, discriminatory_samples, current_global_iter
+        nonlocal current_global_iter, total_samples, discriminatory_samples
         current_global_iter += 1
         # Check if this input has already been tested
         if is_case_tested(inp):
@@ -177,7 +143,7 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
         # Get values for protected attributes
         protected_values = {}
         for attr in discrimination_data.protected_attributes:
-            protected_values[attr] = sorted(discrimination_data.dataframe[attr].unique())
+            protected_values[attr] = sorted(discrimination_data.training_dataframe[attr].unique())
 
         # Generate all possible combinations of protected attribute values
         value_combinations = list(
@@ -283,7 +249,7 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
         # Get values for protected attributes
         protected_values = {}
         for attr in discrimination_data.protected_attributes:
-            protected_values[attr] = sorted(discrimination_data.dataframe[attr].unique())
+            protected_values[attr] = sorted(discrimination_data.training_dataframe[attr].unique())
 
         # Create test cases by changing one protected attribute at a time
         test_cases = []
@@ -389,7 +355,7 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
             if discrimination_data.protected_attributes:  # If there are any protected attributes
                 attr = random.choice(discrimination_data.protected_attributes)
                 idx = feature_names.index(attr)
-                possible_values = sorted(discrimination_data.dataframe[attr].unique())
+                possible_values = sorted(discrimination_data.training_dataframe[attr].unique())
                 x[idx] = random.choice(possible_values)
 
             return x
@@ -409,7 +375,7 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
             # Set all protected attributes to their minimum values
             for attr in discrimination_data.protected_attributes:
                 idx = feature_names.index(attr)
-                possible_values = sorted(discrimination_data.dataframe[attr].unique())
+                possible_values = sorted(discrimination_data.training_dataframe[attr].unique())
                 x[idx] = possible_values[0]  # Use the first (minimum) value
 
             return x
@@ -525,6 +491,8 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
 
 
 if __name__ == '__main__':
-    ge, schema = get_real_data('adult')
-    ll = run_aequitas(discrimination_data=ge)
+    # ge, schema = get_real_data('adult')
+    ge, schema = generate_from_real_data('bank')
+    ll = run_aequitas(discrimination_data=ge, model_type='rf', init_prob=0.5,
+                 threshold=0.2, global_iteration_limit=100, local_iteration_limit=100)
     print('ddd')
