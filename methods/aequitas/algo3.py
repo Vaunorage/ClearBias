@@ -363,8 +363,8 @@ def run_aequitas(data: DiscriminationData, max_global=100, max_local=1000, step_
 
 
 if __name__ == '__main__':
-    # ge, ge_schema = get_real_data('bank')
-    ge, schema = generate_from_real_data('bank')
+    ge, ge_schema = get_real_data('adult')
+    # ge, schema = generate_from_real_data('adult')
     results_df, metrics = run_aequitas(ge, max_global=1000, max_local=10000, step_size=1,
                                        init_prob=0.5, direction_probability_change_size=0.001,
                                        param_probability_change_size=0.001)

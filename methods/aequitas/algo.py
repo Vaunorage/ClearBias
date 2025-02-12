@@ -491,8 +491,8 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
 
 
 if __name__ == '__main__':
-    # ge, schema = get_real_data('adult')
-    ge, schema = generate_from_real_data('bank')
+    ge, schema = get_real_data('adult')
+    # ge, schema = generate_from_real_data('bank')
     ll = run_aequitas(discrimination_data=ge, model_type='rf', init_prob=0.5,
                  threshold=0.2, global_iteration_limit=100, local_iteration_limit=100)
     print('ddd')
