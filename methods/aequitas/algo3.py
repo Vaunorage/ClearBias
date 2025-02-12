@@ -277,6 +277,10 @@ def aequitas(dataset: DiscriminationData, sensitive_param, max_global, max_local
     res_df = []
     case_id = 0
     for org, counter_org in all_discrimination:
+        # Ensure org and counter_org are properly shaped
+        org = np.array(org).reshape(1, -1)  # Reshape to 1 row with all columns
+        counter_org = np.array(counter_org).reshape(1, -1)
+        
         indv1 = pd.DataFrame(org, columns=dataset.attr_columns)
         indv2 = pd.DataFrame(counter_org, columns=dataset.attr_columns)
 
