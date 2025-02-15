@@ -269,14 +269,8 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     # Run global search
     logger.info("Starting global search...")
     minimizer = {"method": "L-BFGS-B"}
-    basinhopping(
-        evaluate_global,
-        initial_input,
-        stepsize=step_size,
-        take_step=Global_Discovery(input_bounds),
-        minimizer_kwargs=minimizer,
-        niter=max_global
-    )
+    basinhopping(evaluate_global, initial_input, stepsize=step_size, take_step=Global_Discovery(input_bounds),
+                 minimizer_kwargs=minimizer, niter=max_global)
 
     # Calculate final results
     end_time = time.time()
@@ -310,7 +304,7 @@ if __name__ == '__main__':
     results, global_cases, local_cases = run_aequitas(
         discrimination_data=discrimination_data,
         model_type='rf',
-        max_global=1000,
+        max_global=100,
         max_local=100,
         step_size=1.0
     )
