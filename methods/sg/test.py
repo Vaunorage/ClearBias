@@ -12,9 +12,10 @@ from methods.sg.main import run_sg
 #     nb_categories_outcome=4,
 #     use_cache=True)
 
+#%%
 ge, ge_schema = get_real_data('adult')
 
-res = run_sg(ge)
+res = run_sg(ge, limit=30000, iter=2)
 
 print(res)
 print("Sdsdd")

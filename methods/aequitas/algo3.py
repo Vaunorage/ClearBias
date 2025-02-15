@@ -192,11 +192,11 @@ def aequitas(dataset: DiscriminationData, sensitive_param, max_global, max_local
         inp_df['outcome'] = original_pred
 
         for el in test_cases_df.to_numpy():
-            tot_inputs.add((tuple(map(int, inp_df.to_numpy()[0])), tuple(map(int, el))))
+            tot_inputs.add((tuple(map(float, inp_df.to_numpy()[0])), tuple(map(float, el))))
 
         if discriminations_df.shape[0] != 0:
             for el in discriminations_df.to_numpy():
-                all_discrimination.add((tuple(map(int, inp_df.to_numpy()[0])), tuple(map(int, el))))
+                all_discrimination.add((tuple(map(float, inp_df.to_numpy()[0])), tuple(map(float, el))))
 
         current_tsn = len(set(list(all_inputs) + list(tot_inputs)))
         current_dsn = len(all_discrimination) + sum(map(lambda x: x.shape[0], results_df))

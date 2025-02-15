@@ -138,7 +138,7 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
         original_pred = model.predict(inp_df)[0]
 
         # Add original case to total inputs
-        tot_inputs.add((tuple(inp),))
+        tot_inputs.add(tuple(inp))
 
         # Get values for protected attributes
         protected_values = {}
@@ -165,6 +165,9 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
             if is_case_tested(new_case.iloc[0].values):
                 continue
 
+            disc_tuple = tuple(new_case.values[0])
+            tot_inputs.add(tuple(new_case.values[0]))
+
             test_cases.append(new_case)
 
         if not test_cases:  # If no new combinations were generated
@@ -189,10 +192,6 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
             print_progress("global")
 
             for _, disc_case in discriminatory_cases.iterrows():
-                disc_tuple = tuple(disc_case.values)
-
-                # Add to total inputs before processing
-                tot_inputs.add((disc_tuple,))
 
                 counter_pred = model.predict(disc_case.to_frame().T)[0]
 
@@ -204,8 +203,8 @@ def run_aequitas(discrimination_data, model_type='rf', init_prob=0.5,
                     counter_pred  # counter_outcome
                 ))
 
-                if (disc_tuple,) not in global_disc_inputs:
-                    global_disc_inputs.add((disc_tuple,))
+                if disc_tuple not in global_disc_inputs:
+                    global_disc_inputs.add(disc_tuple)
                     global_disc_inputs_list.append(list(disc_case.values))
 
                 # Calculate discrimination magnitude
