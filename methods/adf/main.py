@@ -25,64 +25,6 @@ logger = logging.getLogger('ADF')
 # Configuration constants
 PERTURBATION_SIZE = 1.0
 
-
-#
-# def check_for_error_condition(conf: DiscriminationData, preds, t):
-#     inp_df = pd.DataFrame([t], columns=conf.attr_columns)
-#     original_pred = preds(inp_df)[0]
-#
-#     # Get all unique values for each protected attribute
-#     protected_values = {}
-#     for attr in conf.protected_attributes:
-#         protected_values[attr] = sorted(conf.dataframe[attr].unique())
-#
-#     # Generate all possible combinations of protected attributes
-#     attr_names = list(protected_values.keys())
-#     attr_values = list(protected_values.values())
-#     combinations = list(itertools.product(*attr_values))
-#
-#     test_cases = []
-#     for combination in combinations:
-#         # Skip if it's identical to the input case
-#         if all(inp_df[attr].iloc[0] == value
-#                for attr, value in zip(attr_names, combination)):
-#             continue
-#
-#         new_case = inp_df.copy()
-#         for attr, value in zip(attr_names, combination):
-#             new_case[attr] = value
-#         test_cases.append(new_case)
-#
-#     if not test_cases:
-#         return 0, None
-#
-#     test_cases_df = pd.concat(test_cases)
-#     test_predictions = preds(test_cases_df)
-#     test_cases_df['outcome'] = test_predictions
-#
-#     discriminations = test_cases_df['outcome'] - original_pred
-#     max_discrimination = discriminations.max()
-#     max_discrimination_idx = discriminations.idxmax()
-#     max_discrimination_row = test_cases_df.loc[max_discrimination_idx]
-#
-#     discriminations_df = test_cases_df[discriminations > 0]
-#
-#     inp_df['outcome'] = original_pred
-#
-#     for el in test_cases_df.to_numpy():
-#         tot_inputs.add((tuple(map(int, inp_df.to_numpy()[0])), tuple(map(int, el))))
-#
-#     if discriminations_df.shape[0] != 0:
-#         for el in discriminations_df.to_numpy():
-#             all_discrimination.add((tuple(map(int, inp_df.to_numpy()[0])), tuple(map(int, el))))
-#
-#     current_tsn = len(set(list(all_inputs) + list(tot_inputs)))
-#     current_dsn = len(all_discrimination) + sum(map(lambda x: x.shape[0], results_df))
-#     logger.info(f"TSN: {current_tsn} - DSN: {current_dsn} - {current_dsn / current_tsn:.2f}")
-#
-#     return max_discrimination, max_discrimination_row
-
-
 def check_for_error_condition(
         ge: DiscriminationData,
         sess: tf.compat.v1.Session,
@@ -383,7 +325,7 @@ def dnn_fair_testing(
                     discriminatory_pairs.add(el)
 
         current_dsn = len(discriminatory_pairs)
-        logger.info(f"[Real-time Metrics] TSN: {len(tot_inputs)} DSN: {current_dsn}")
+        logger.info(f"[Real-time Metrics] TSN: {len(tot_inputs)} DSN: {current_dsn} DSS : {len(tot_inputs)/current_dsn}")
         return float(not result)
 
     clusters = seed_test_input(X, min(max_global, len(X)))
