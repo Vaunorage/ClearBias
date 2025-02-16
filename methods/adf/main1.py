@@ -19,7 +19,62 @@ logging.basicConfig(
 logger = logging.getLogger('ADF')
 
 # Configuration constants
+MIN_PERTURBATION_SIZE = 0.5
+MAX_PERTURBATION_SIZE = 2.0
+MIN_EPSILON = 1e-6
+MAX_EPSILON = 1e-4
+MIN_DISTANCE_THRESHOLD = 0.05
+MAX_DISTANCE_THRESHOLD = 0.2
 PERTURBATION_SIZE = 1.0
+MAX_SIMILAR_FEATURES = 0.9
+
+# Previous solutions for diversity checking
+previous_solutions = set()
+feature_value_counts = {}
+
+
+def is_diverse_enough(new_solution: np.ndarray) -> bool:
+    """Check if a new solution is diverse enough compared to previous ones.
+    
+    Args:
+        new_solution: New candidate solution
+        
+    Returns:
+        bool: True if solution is diverse enough
+    """
+    new_solution_tuple = tuple(new_solution)
+    if new_solution_tuple in previous_solutions:
+        return False
+
+    current_threshold = min(
+        MAX_DISTANCE_THRESHOLD,
+        MIN_DISTANCE_THRESHOLD + (len(previous_solutions) * 0.001)
+    )
+
+    if len(previous_solutions) > 0:
+        similar_solutions = 0
+        for prev_sol in previous_solutions:
+            feature_similarities = np.abs(np.array(new_solution) - np.array(prev_sol)) < current_threshold
+            similarity_ratio = np.mean(feature_similarities)
+            if similarity_ratio > MAX_SIMILAR_FEATURES:
+                similar_solutions += 1
+                if similar_solutions > 3:
+                    return False
+
+            if np.linalg.norm(np.array(new_solution) - np.array(prev_sol)) < current_threshold * 0.5:
+                return False
+
+    for i, value in enumerate(new_solution):
+        if i not in feature_value_counts:
+            feature_value_counts[i] = {}
+        rounded_value = round(value, 1)
+        feature_value_counts[i][rounded_value] = feature_value_counts[i].get(rounded_value, 0) + 1
+
+        total_count = sum(feature_value_counts[i].values())
+        if feature_value_counts[i][rounded_value] / total_count > 0.5:
+            return False
+
+    return True
 
 
 def model_prediction(model, x):
@@ -35,7 +90,6 @@ def model_prediction(model, x):
     if isinstance(x, pd.DataFrame):
         probs = model.predict_proba(x)
     else:
-        # Convert numpy array to DataFrame using the stored feature names
         x_df = pd.DataFrame(x, columns=model.feature_names_in_)
         probs = model.predict_proba(x_df)
     return probs
@@ -54,7 +108,6 @@ def model_argmax(model, x):
     if isinstance(x, pd.DataFrame):
         preds = model.predict(x)
     else:
-        # Convert numpy array to DataFrame using the stored feature names
         x_df = pd.DataFrame(x, columns=model.feature_names_in_)
         preds = model.predict(x_df)
     return preds
@@ -79,12 +132,10 @@ def check_for_error_condition(
     original_pred = model_argmax(model, inp_df)
     inp_df['outcome'] = original_pred
 
-    # Get all unique values for each protected attribute
     protected_values = {}
     for attr in data_obj.protected_attributes:
         protected_values[attr] = sorted(data_obj.training_dataframe[attr].unique())
 
-    # Generate all possible combinations
     attr_names = list(protected_values.keys())
     attr_values = list(protected_values.values())
     combinations = list(itertools.product(*attr_values))
@@ -129,24 +180,24 @@ def seed_test_input(X: np.ndarray, cluster_num: int) -> List[np.ndarray]:
     Returns:
         List of seed inputs
     """
+    cluster_num = max(min(cluster_num, X.shape[0]), 10)
 
-    # Standardize features for better clustering
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    # Perform clustering
     kmeans = KMeans(
-        n_clusters=min(cluster_num, X.shape[0]),
-        random_state=42,
-        n_init=10
+        n_clusters=cluster_num,
+        random_state=np.random.randint(0, 1000),
+        n_init=20,
+        init='k-means++',
     )
     kmeans.fit(X_scaled)
 
-    # Get indices for each cluster
     clusters = [np.where(kmeans.labels_ == i)[0] for i in range(kmeans.n_clusters)]
 
-    # Sort clusters by size to prioritize larger clusters
     clusters = sorted(clusters, key=lambda x: len(x), reverse=True)
+    for i in range(len(clusters)):
+        np.random.shuffle(clusters[i])
 
     logger.info(f"Created {len(clusters)} clusters with sizes: {[len(c) for c in clusters]}")
 
@@ -195,14 +246,13 @@ class LocalPerturbation:
         Returns:
             Perturbed instance
         """
-        s = np.random.choice([1.0, -1.0]) * PERTURBATION_SIZE
+        s = np.random.uniform(MIN_PERTURBATION_SIZE, MAX_PERTURBATION_SIZE) * np.random.choice([1.0, -1.0])
 
         n_x = x.copy()
         for sens_idx, n_value in self.n_values.items():
             n_x[sens_idx - 1] = n_value
 
-        # Get gradient approximations
-        eps = 1e-6
+        eps = np.random.uniform(MIN_EPSILON, MAX_EPSILON)
         ind_grad = np.zeros(self.input_shape)
         n_ind_grad = np.zeros(self.input_shape)
 
@@ -212,13 +262,10 @@ class LocalPerturbation:
             x_minus = x.copy()
             x_minus[i] -= eps
 
-            # Get probabilities for x
             pred_plus = model_prediction(self.model, x_plus.reshape(1, -1))[0]
             pred_minus = model_prediction(self.model, x_minus.reshape(1, -1))[0]
-            # Use the maximum probability difference as gradient
             ind_grad[i] = np.max(pred_plus - pred_minus) / (2 * eps)
 
-            # Get probabilities for n_x
             nx_plus = n_x.copy()
             nx_plus[i] += eps
             nx_minus = n_x.copy()
@@ -226,36 +273,32 @@ class LocalPerturbation:
 
             pred_plus = model_prediction(self.model, nx_plus.reshape(1, -1))[0]
             pred_minus = model_prediction(self.model, nx_minus.reshape(1, -1))[0]
-            # Use the maximum probability difference as gradient
             n_ind_grad[i] = np.max(pred_plus - pred_minus) / (2 * eps)
 
         if np.allclose(ind_grad, 0) and np.allclose(n_ind_grad, 0):
-            # Handle case where all gradients are zero
             n_sensitive = len(self.sensitive_indices)
-            if self.input_shape > n_sensitive:  # Check to avoid division by zero
+            if self.input_shape > n_sensitive:
                 probs = 1.0 / (self.input_shape - n_sensitive) * np.ones(self.input_shape)
                 for sens_idx in self.sensitive_indices:
                     probs[sens_idx - 1] = 0
             else:
-                return x  # Return unchanged if no valid features to perturb
+                return x
         else:
-            # Handle case with non-zero gradients
             grad_sum = np.abs(ind_grad) + np.abs(n_ind_grad)
-            grad_sum = np.where(grad_sum > 0, 1.0 / grad_sum, 0)  # Avoid division by zero
+            grad_sum = np.where(grad_sum > 0, 1.0 / grad_sum, 0)
             for sens_idx in self.sensitive_indices:
                 grad_sum[sens_idx - 1] = 0
             total = np.sum(grad_sum)
-            if total > 0:  # Check if we have any valid probabilities
+            if total > 0:
                 probs = grad_sum / total
             else:
-                return x  # Return unchanged if no valid probabilities
+                return x
 
-        # Normalize probabilities if they exist
         probs_sum = np.sum(probs)
         if probs_sum > 0:
             probs = probs / probs_sum
         else:
-            return x  # Return unchanged if no valid probabilities
+            return x
 
         available_indices = [i for i in range(self.input_shape) if i + 1 not in self.sensitive_indices]
         if available_indices and not np.any(np.isnan(probs[available_indices])):
@@ -270,10 +313,10 @@ class LocalPerturbation:
 
 def adf_fairness_testing(
         data_obj,
-        max_global: int = 100,
-        max_local: int = 1000,
-        max_iter: int = 10,
-        cluster_num: int = 4
+        max_global: int = 2000,
+        max_local: int = 2000,
+        max_iter: int = 100,
+        cluster_num: int = 10
 ) -> Tuple[pd.DataFrame, Dict[str, float]]:
     """Implementation of ADF fairness testing.
 
@@ -291,17 +334,14 @@ def adf_fairness_testing(
 
     start_time = time.time()
 
-    # Initialize metrics
     global_disc_inputs = []
     local_disc_inputs = []
 
-    # Get data and normalize
     data = data_obj.training_dataframe.copy()
 
     logger.info(f"Dataset shape: {data.shape}")
     logger.info(f"Protected attributes: {data_obj.protected_attributes}")
 
-    # Train model
     model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
         data=data,
         model_type='rf',
@@ -309,20 +349,17 @@ def adf_fairness_testing(
         sensitive_attrs=list(data_obj.protected_attributes)
     )
 
-    # Evaluate model performance
     train_score = model.score(X_train, y_train)
     test_score = model.score(X_test, y_test)
     logger.info(f"Model training score: {train_score:.4f}")
     logger.info(f"Model test score: {test_score:.4f}")
 
-    # Get full dataset in numpy format for testing
     X = data_obj.xdf.to_numpy()
     y = data_obj.ydf.to_numpy()
 
     logger.info(f"Testing data shape: {X.shape}")
     input_shape = X.shape[1]
 
-    # Initialize tracking sets
     tot_inputs = set()
     discriminatory_pairs = set()
 
@@ -330,14 +367,17 @@ def adf_fairness_testing(
 
     def log_metrics():
         nonlocal log_count
-        if log_count % 100 == 0:  
+        if log_count % 100 == 0:
             dsr = 100 * len(discriminatory_pairs) / len(tot_inputs) if len(
-                tot_inputs) > 0 else 0  # Discriminatory Sample Ratio
+                tot_inputs) > 0 else 0
             logger.info(f"Current Metrics - TSN: {len(tot_inputs)}, DSN: {len(discriminatory_pairs)}, DSR: {dsr:.4f}")
         log_count += 1
 
     def evaluate_local(inp):
         """Evaluate local perturbation results."""
+        # if not is_diverse_enough(inp):
+        #     return 1.0
+
         discr_key = []
         for i in range(len(inp)):
             if i not in data_obj.sensitive_indices.values():
@@ -349,8 +389,9 @@ def adf_fairness_testing(
             result, discr_res, all_tested = check_for_error_condition(data_obj, model, inp)
 
             tot_inputs.add(discr_key)
-
             if result:
+                previous_solutions.add(tuple(inp))
+
                 for el in all_tested:
                     tot_inputs.add(el)
 
@@ -361,17 +402,18 @@ def adf_fairness_testing(
 
         return float(not result)
 
-    # Get seed inputs
-    clusters = seed_test_input(X, min(max_global, len(X)))
+    clusters = seed_test_input(X, cluster_num)
 
-    # Main testing loop
     for iter_num, cluster in enumerate(clusters):
-        if iter_num > max_iter or len(tot_inputs) > max_global:
+        if iter_num > max_iter:
             break
 
+        if len(discriminatory_pairs) < 100 and len(tot_inputs) > max_global:
+            continue
+
         for index in cluster:
-            if len(tot_inputs) > max_global:
-                break
+            if len(discriminatory_pairs) < 100 and len(tot_inputs) > max_global:
+                continue
 
             sample = X[index:index + 1]
 
@@ -381,7 +423,6 @@ def adf_fairness_testing(
             max_diff = 0
             n_values = {}
 
-            # Get all possible protected attribute combinations
             sensitive_values = {}
             for sens_name, sens_idx in data_obj.sensitive_indices.items():
                 sensitive_values[sens_name] = np.unique(data_obj.xdf.iloc[:, sens_idx]).tolist()
@@ -398,6 +439,14 @@ def adf_fairness_testing(
                     tnew[name] = value
                 n_sample = tnew.to_numpy()
 
+                discr_key = []
+                for i in range(len(n_sample[0])):
+                    if i not in data_obj.sensitive_indices.values():
+                        discr_key.append(n_sample[0][i])
+                discr_key = tuple(discr_key)
+
+                tot_inputs.add(discr_key)
+
                 n_probs = model_prediction(model, n_sample)[0]
                 n_label = np.argmax(n_probs)
                 n_prob = n_probs[n_label]
@@ -405,7 +454,37 @@ def adf_fairness_testing(
                 if label != n_label:
                     for name, value in zip(sensitive_values.keys(), values):
                         n_values[data_obj.sensitive_indices[name]] = value
-                    break
+
+                    global_disc_inputs.append(discr_key)
+
+                    log_metrics()
+
+                    minimizer = {
+                        "method": "L-BFGS-B",
+                        "options": {
+                            "maxiter": 100,
+                            "ftol": 1e-6,
+                            "gtol": 1e-5
+                        }
+                    }
+
+                    local_perturbation = LocalPerturbation(
+                        model, n_values, data_obj.sensitive_indices.values(),
+                        X.shape[1], data_obj
+                    )
+
+                    basinhopping(
+                        evaluate_local,
+                        sample.flatten(),
+                        stepsize=np.random.uniform(MIN_PERTURBATION_SIZE, MAX_PERTURBATION_SIZE),
+                        take_step=local_perturbation,
+                        minimizer_kwargs=minimizer,
+                        niter=max_local,
+                        T=1.0,
+                        interval=40,
+                        niter_success=12
+                    )
+
                 else:
                     prob_diff = abs(prob - n_prob)
                     if prob_diff > max_diff:
@@ -417,63 +496,31 @@ def adf_fairness_testing(
             sample_key = [sample_key[i] for i in range(len(sample_key))
                           if i not in data_obj.sensitive_indices.values()]
 
-            if label != n_label and (tuple(sample_key) not in tot_inputs):
-                global_disc_inputs.append(sample_key)
-                tot_inputs.add(tuple(sample_key))
-
-                log_metrics()
-
-                # Local search
-                minimizer = {"method": "L-BFGS-B"}
-                local_perturbation = LocalPerturbation(
-                    model, n_values, data_obj.sensitive_indices.values(),
-                    X.shape[1], data_obj
-                )
-
-                basinhopping(
-                    evaluate_local,
-                    sample.flatten(),
-                    stepsize=1.0,
-                    take_step=local_perturbation,
-                    minimizer_kwargs=minimizer,
-                    niter=max_local
-                )
-
-                logger.info(f"Local search discriminatory inputs: {len(local_disc_inputs)}")
-                logger.info(
-                    f"Percentage discriminatory inputs of local search: "
-                    f"{float(len(local_disc_inputs)) / float(len(tot_inputs)) * 100:.2f}%"
-                )
-                break
-
             log_metrics()
 
     end_time = time.time()
     total_time = end_time - start_time
 
-    # Calculate metrics
     tsn = len(tot_inputs)
-    dsn = len(global_disc_inputs) + len(local_disc_inputs)  # Discriminatory Sample Number
-    sur = dsn / tsn if tsn > 0 else 0  # Success Rate
-    dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
+    dsn = len(global_disc_inputs) + len(local_disc_inputs)
+    sur = dsn / tsn if tsn > 0 else 0
+    dss = total_time / dsn if dsn > 0 else float('inf')
 
     metrics = {
         'tsn': tsn,
         'dsn': dsn,
         'dsr': dsn / tsn if tsn > 0 else 0,
-        'sur': dsn / tsn if tsn > 0 else 0,  # Success Rate
-        'dss': total_time / dsn if dsn > 0 else float('inf'),  # Discriminatory Sample Search time
+        'sur': dsn / tsn if tsn > 0 else 0,
+        'dss': total_time / dsn if dsn > 0 else float('inf'),
         'total_time': total_time
     }
 
-    # Final log
     logger.info("Final Results:")
     logger.info(f"Total Time: {total_time:.2f}s")
     logger.info(f"Final Metrics - TSN: {tsn}, DSN: {dsn}, DSR: {metrics['dsr']:.4f}")
     logger.info(f"Success Rate: {metrics['sur']:.4f}")
     logger.info(f"Search Time per Discriminatory Sample: {metrics['dss']:.2f}s")
 
-    # Create results dataframe
     res_df = []
     case_id = 0
     for org, counter_org in discriminatory_pairs:
@@ -501,13 +548,11 @@ def adf_fairness_testing(
     else:
         res_df = pd.DataFrame([])
 
-    # Add metrics to results
     res_df['TSN'] = tsn
     res_df['DSN'] = dsn
     res_df['SUR'] = sur
     res_df['DSS'] = dss
 
-    # Log final results
     logger.info(f"Total Inputs: {len(tot_inputs)}")
     logger.info(f"Global Search Discriminatory Inputs: {len(global_disc_inputs)}")
     logger.info(f"Local Search Discriminatory Inputs: {len(local_disc_inputs)}")
@@ -519,19 +564,16 @@ def adf_fairness_testing(
 
 
 if __name__ == "__main__":
-    # Example usage
     from data_generator.main import get_real_data, generate_from_real_data
 
-    # Generate synthetic data
     data_obj, schema = get_real_data('adult')
 
-    # Run fairness testing
     results_df, metrics = adf_fairness_testing(
         data_obj,
-        max_global=100,
-        max_local=1000,
-        max_iter=10,
-        cluster_num=4
+        max_global=5000,
+        max_local=2000,
+        max_iter=100,
+        cluster_num=50
     )
 
     print("\nTesting Metrics:")
