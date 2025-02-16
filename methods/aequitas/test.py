@@ -16,6 +16,8 @@ ge, schema = get_real_data('adult')
 
 # %%
 
-results_df, model_scores = run_aequitas(ge, model_type="rf", threshold=0, global_iteration_limit=1000,
-                                        local_iteration_limit=10000)
+results, global_cases = run_aequitas(
+    discrimination_data=ge,
+    model_type='rf', max_global=200, max_local=100, step_size=1.0
+)
 print('helo')

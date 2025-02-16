@@ -8,7 +8,7 @@ import tensorflow as tf
 import pandas as pd
 from scipy.optimize import basinhopping
 from data_generator.main import DiscriminationData
-from adf_model.tutorial_models import dnn
+from methods.adf.adf_model.tutorial_models import dnn
 from methods.adf.utils_tf import model_prediction, model_argmax, cluster, gradient_graph
 
 # Disable eager execution for TF 1.x compatibility
@@ -325,7 +325,7 @@ def dnn_fair_testing(
                     discriminatory_pairs.add(el)
 
         current_dsn = len(discriminatory_pairs)
-        logger.info(f"[Real-time Metrics] TSN: {len(tot_inputs)} DSN: {current_dsn} DSS : {len(tot_inputs)/current_dsn}")
+        logger.info(f"[Real-time Metrics] TSN: {len(tot_inputs)} DSN: {current_dsn}")
         return float(not result)
 
     clusters = seed_test_input(X, min(max_global, len(X)))

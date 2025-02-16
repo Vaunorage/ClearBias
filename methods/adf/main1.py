@@ -82,7 +82,7 @@ def check_for_error_condition(
     # Get all unique values for each protected attribute
     protected_values = {}
     for attr in data_obj.protected_attributes:
-        protected_values[attr] = sorted(data_obj.dataframe[attr].unique())
+        protected_values[attr] = sorted(data_obj.training_dataframe[attr].unique())
 
     # Generate all possible combinations
     attr_names = list(protected_values.keys())
@@ -296,7 +296,7 @@ def adf_fairness_testing(
     local_disc_inputs = []
 
     # Get data and normalize
-    data = data_obj.dataframe.copy()
+    data = data_obj.training_dataframe.copy()
 
     logger.info(f"Dataset shape: {data.shape}")
     logger.info(f"Protected attributes: {data_obj.protected_attributes}")
@@ -326,9 +326,15 @@ def adf_fairness_testing(
     tot_inputs = set()
     discriminatory_pairs = set()
 
+    log_count = 0
+
     def log_metrics():
-        dsr = 100 * len(discriminatory_pairs) / len(tot_inputs) if len(tot_inputs) > 0 else 0  # Discriminatory Sample Ratio
-        logger.info(f"Current Metrics - TSN: {len(tot_inputs)}, DSN: {len(discriminatory_pairs)}, DSR: {dsr:.4f}")
+        nonlocal log_count
+        if log_count % 100 == 0:  
+            dsr = 100 * len(discriminatory_pairs) / len(tot_inputs) if len(
+                tot_inputs) > 0 else 0  # Discriminatory Sample Ratio
+            logger.info(f"Current Metrics - TSN: {len(tot_inputs)}, DSN: {len(discriminatory_pairs)}, DSR: {dsr:.4f}")
+        log_count += 1
 
     def evaluate_local(inp):
         """Evaluate local perturbation results."""
@@ -505,8 +511,8 @@ def adf_fairness_testing(
     logger.info(f"Total Inputs: {len(tot_inputs)}")
     logger.info(f"Global Search Discriminatory Inputs: {len(global_disc_inputs)}")
     logger.info(f"Local Search Discriminatory Inputs: {len(local_disc_inputs)}")
-    logger.info(f"Success Rate (SUR): {metrics['SUR']:.4f}")
-    logger.info(f"Average Search Time per Discriminatory Sample (DSS): {metrics['DSS']:.4f} seconds")
+    logger.info(f"Success Rate (SUR): {metrics['sur']:.4f}")
+    logger.info(f"Average Search Time per Discriminatory Sample (DSS): {metrics['dss']:.4f} seconds")
     logger.info(f"Total Discriminatory Pairs Found: {len(discriminatory_pairs)}")
 
     return res_df, metrics

@@ -379,5 +379,5 @@ if __name__ == '__main__':
     # For the adult dataset
     results, global_cases = run_aequitas(
         discrimination_data=discrimination_data,
-        model_type='rf', max_global=20, max_local=100, step_size=1.0
+        model_type='rf', max_global=2000, max_local=100, step_size=1.0
     )
