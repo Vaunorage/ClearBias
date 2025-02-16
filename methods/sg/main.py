@@ -12,9 +12,7 @@ from sklearn.tree import DecisionTreeClassifier
 
 from queue import PriorityQueue
 
-from win32comext.shell.demos.servers.folder_view import onSetting1
 from z3 import *
-import os
 import copy
 
 from lime import lime_tabular
@@ -34,28 +32,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def train_model(model_type, X, y):
+def train_model(model_type, X, y, random_state=42):
     """
     Train a model based on the specified type
     :param model_type: String specifying model type ('lr', 'rf', 'svm', 'mlp')
     :param X: Feature matrix
     :param y: Target values
+    :param random_state: Random state for reproducibility
     :return: Trained model
     """
     model_type = model_type.lower()
     if model_type == 'lr':
-        model = LogisticRegression(random_state=42)
+        model = LogisticRegression(random_state=random_state)
     elif model_type == 'rf':
-        model = RandomForestClassifier(n_estimators=100, random_state=42)
+        model = RandomForestClassifier(n_estimators=100, random_state=random_state)
     elif model_type == 'svm':
-        model = SVC(kernel='rbf', probability=True, random_state=42)
+        model = SVC(kernel='rbf', probability=True, random_state=random_state)
     elif model_type == 'mlp':
-        model = MLPClassifier(hidden_layer_sizes=(100, 50), random_state=42)
+        model = MLPClassifier(hidden_layer_sizes=(100, 50), random_state=random_state)
     else:
         raise ValueError(f"Unsupported model type: {model_type}. Choose from: 'lr', 'rf', 'svm', 'mlp'")
 
-    # Split data and train model
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    # Split data and train model with same random state for consistency within iteration
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=random_state)
     model.fit(X_train, y_train)
 
     # Print basic model performance
