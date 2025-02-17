@@ -970,6 +970,20 @@ class CollisionTracker:
         self.used_combinations.add(tuple(possibility))
 
 
+@dataclass
+class GroupDefinition:
+    group_size: int
+    subgroup_bias: float
+    similarity: float
+    alea_uncertainty: float
+    epis_uncertainty: float
+    frequency: float
+    avg_diff_outcome: int
+    diff_subgroup_size: float
+    subgroup1: dict  # {'Attr1_T': 3, 'Attr2_T': 1, 'Attr3_X': 3},
+    subgroup2: dict  # {'Attr1_T': 2, 'Attr2_T': 2, 'Attr3_X': 2}
+
+
 def calculate_actual_similarity(data):
     def calculate_group_similarity(group_data):
         subgroup_keys = group_data['subgroup_key'].unique()
@@ -1135,13 +1149,18 @@ def safe_normalize(p):
     return p / sum_p
 
 
-def create_group(granularity, intersectionality,
-                 possibility, data_schema, attr_categories, W,
-                 subgroup_bias, corr_matrix_randomness,
-                 categorical_influence,
-                 min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
-                 min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
-                 min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size):
+def create_group(granularity=None, intersectionality=None,
+                 possibility=None, data_schema=None, attr_categories=None, W=None,
+                 subgroup_bias=None, corr_matrix_randomness=None,
+                 categorical_influence=None,
+                 min_similarity=0.0, max_similarity=1.0, 
+                 min_alea_uncertainty=0.0, max_alea_uncertainty=1.0,
+                 min_epis_uncertainty=0.0, max_epis_uncertainty=1.0, 
+                 min_frequency=0.0, max_frequency=1.0,
+                 min_diff_subgroup_size=0.0, max_diff_subgroup_size=0.5, 
+                 min_group_size=10, max_group_size=100,
+                 group_definition: GroupDefinition = None):
+    """Create a group either from random parameters or from a predefined GroupDefinition."""
     attr_categories, sets_attr, correlation_matrix, gen_order, categorical_distribution, attr_names = (
         data_schema.attr_categories, data_schema.protected_attr, data_schema.correlation_matrix, data_schema.gen_order,
         data_schema.categorical_distribution, data_schema.attr_names)
@@ -1172,36 +1191,59 @@ def create_group(granularity, intersectionality,
                 ress_set.append([-1])
         return ress_set
 
-    subgroup_sets = make_sets(possibility)
+    if group_definition is not None:
+        # Use values from the group definition
+        similarity = group_definition.similarity
+        alea_uncertainty = group_definition.alea_uncertainty
+        epis_uncertainty = group_definition.epis_uncertainty
+        frequency = group_definition.frequency
+        subgroup_bias = group_definition.subgroup_bias
+        total_group_size = group_definition.group_size
+        diff_percentage = group_definition.diff_subgroup_size
 
-    similarity = random.uniform(min_similarity, max_similarity)
-    alea_uncertainty = random.uniform(min_alea_uncertainty, max_alea_uncertainty)
-    epis_uncertainty = random.uniform(min_epis_uncertainty, max_epis_uncertainty)
-    frequency = random.uniform(min_frequency, max_frequency)
+        # Convert subgroup dictionaries to values list based on attr_names order
+        subgroup1_vals = []
+        subgroup2_vals = []
+        for attr in attr_names:
+            subgroup1_vals.append(group_definition.subgroup1.get(attr, -1))
+            subgroup2_vals.append(group_definition.subgroup2.get(attr, -1))
 
-    # Generate samples based on the new ordered attributes
-    subgroup1_p_vals = [random.choices(list(range(len(e))), k=len(e)) for e in subgroup_sets]
-    subgroup1_p_vals = [safe_normalize(p) for p in subgroup1_p_vals]
-    subgroup1_sample = GaussianCopulaCategorical(
-        subgroup1_p_vals, correlation_matrix, corr_matrix_randomness=corr_matrix_randomness).generate_samples(1)
-    subgroup1_vals = [subgroup_sets[i][e] for i, e in enumerate(subgroup1_sample[0])]
+        # Calculate subgroup sizes
+        diff_size = int(total_group_size * diff_percentage)
+        subgroup1_size = max(min_group_size // 2, (total_group_size + diff_size) // 2)
+        subgroup2_size = max(min_group_size // 2, total_group_size - subgroup1_size)
 
-    subgroup2_p_vals = generate_subgroup2_probabilities(subgroup1_vals, subgroup_sets, similarity, sets_attr)
-    subgroup2_sample = GaussianCopulaCategorical(subgroup2_p_vals, correlation_matrix,
-                                                 list(subgroup1_sample),
-                                                 corr_matrix_randomness=corr_matrix_randomness).generate_samples(1)
-    subgroup2_vals = [subgroup_sets[i][e] for i, e in enumerate(subgroup2_sample[0])]
+    else:
+        # Use random values as before
+        subgroup_sets = make_sets(possibility)
+        similarity = random.uniform(min_similarity, max_similarity)
+        alea_uncertainty = random.uniform(min_alea_uncertainty, max_alea_uncertainty)
+        epis_uncertainty = random.uniform(min_epis_uncertainty, max_epis_uncertainty)
+        frequency = random.uniform(min_frequency, max_frequency)
 
-    # Calculate total group size based on frequency while respecting min and max constraints
-    total_group_size = max(min_group_size, math.ceil(max_group_size * frequency))
-    total_group_size = min(total_group_size, max_group_size)
+        # Generate samples based on the ordered attributes
+        subgroup1_p_vals = [random.choices(list(range(len(e))), k=len(e)) for e in subgroup_sets]
+        subgroup1_p_vals = [safe_normalize(p) for p in subgroup1_p_vals]
+        subgroup1_sample = GaussianCopulaCategorical(
+            subgroup1_p_vals, correlation_matrix, corr_matrix_randomness=corr_matrix_randomness).generate_samples(1)
+        subgroup1_vals = [subgroup_sets[i][e] for i, e in enumerate(subgroup1_sample[0])]
 
-    diff_percentage = random.uniform(min_diff_subgroup_size, max_diff_subgroup_size)
-    diff_size = int(total_group_size * diff_percentage)
+        subgroup2_p_vals = generate_subgroup2_probabilities(subgroup1_vals, subgroup_sets, similarity, sets_attr)
+        subgroup2_sample = GaussianCopulaCategorical(subgroup2_p_vals, correlation_matrix,
+                                                    list(subgroup1_sample),
+                                                    corr_matrix_randomness=corr_matrix_randomness).generate_samples(1)
+        subgroup2_vals = [subgroup_sets[i][e] for i, e in enumerate(subgroup2_sample[0])]
 
-    # Ensure each subgroup meets minimum size requirements
-    subgroup1_size = max(min_group_size // 2, (total_group_size + diff_size) // 2)
-    subgroup2_size = max(min_group_size // 2, total_group_size - subgroup1_size)
+        # Calculate total group size based on frequency while respecting min and max constraints
+        total_group_size = max(min_group_size, math.ceil(max_group_size * frequency))
+        total_group_size = min(total_group_size, max_group_size)
+
+        diff_percentage = random.uniform(min_diff_subgroup_size, max_diff_subgroup_size)
+        diff_size = int(total_group_size * diff_percentage)
+
+        # Ensure each subgroup meets minimum size requirements
+        subgroup1_size = max(min_group_size // 2, (total_group_size + diff_size) // 2)
+        subgroup2_size = max(min_group_size // 2, total_group_size - subgroup1_size)
 
     generator = IndividualsGenerator(
         schema=data_schema,
@@ -1364,8 +1406,10 @@ def generate_data(
         corr_matrix_randomness=0.5,
         categorical_distribution: Dict[str, List[float]] = None,
         categorical_influence: float = 0.5,
-        data_schema: DataSchema = None
+        data_schema: DataSchema = None,
+        predefined_groups=None
 ) -> DiscriminationData:
+
     # Validate min_group_size
     if min_group_size >= max_group_size:
         raise ValueError("min_group_size must be less than max_group_size")
@@ -1453,8 +1497,26 @@ def generate_data(
 
     results = []
     collisions = 0
+    
+    # First, handle predefined groups if any
+    if predefined_groups:
+        for group_def in predefined_groups:
+            group = create_group(
+                data_schema=data_schema,
+                W=W,
+                corr_matrix_randomness=corr_matrix_randomness,
+                categorical_influence=categorical_influence,
+                min_group_size=min_group_size,
+                max_group_size=max_group_size,
+                group_definition=group_def
+            )
+            results.append(group)
 
-    with tqdm(total=nb_groups, desc="Generating data") as pbar:
+    # Calculate remaining groups to generate
+    remaining_groups = max(0, nb_groups - len(results))
+
+    # Then generate random groups for the remaining count
+    with tqdm(total=remaining_groups, desc="Generating data") as pbar:
         while len(results) < nb_groups:
             granularity = random.randint(min_granularity, max_granularity)
             intersectionality = random.randint(min_intersectionality, max_intersectionality)
@@ -1469,13 +1531,27 @@ def generate_data(
             if not collision_tracker.is_collision(possibility):
                 collision_tracker.add_combination(possibility)
                 group = create_group(
-                    granularity, intersectionality,
-                    possibility, data_schema, attr_categories, W,
-                    subgroup_bias, corr_matrix_randomness,
-                    categorical_influence,
-                    min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
-                    min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
-                    min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size
+                    granularity=granularity,
+                    intersectionality=intersectionality,
+                    possibility=possibility,
+                    data_schema=data_schema,
+                    attr_categories=attr_categories,
+                    W=W,
+                    subgroup_bias=subgroup_bias,
+                    corr_matrix_randomness=corr_matrix_randomness,
+                    categorical_influence=categorical_influence,
+                    min_similarity=min_similarity,
+                    max_similarity=max_similarity,
+                    min_alea_uncertainty=min_alea_uncertainty,
+                    max_alea_uncertainty=max_alea_uncertainty,
+                    min_epis_uncertainty=min_epis_uncertainty,
+                    max_epis_uncertainty=max_epis_uncertainty,
+                    min_frequency=min_frequency,
+                    max_frequency=max_frequency,
+                    min_diff_subgroup_size=min_diff_subgroup_size,
+                    max_diff_subgroup_size=max_diff_subgroup_size,
+                    min_group_size=min_group_size,
+                    max_group_size=max_group_size
                 )
                 results.append(group)
                 pbar.update(1)
@@ -1529,69 +1605,6 @@ def generate_data(
         cache.save(data, params)
 
     return data
-
-
-def generate_from_real_data(dataset_name, use_cache=False, *args, **kwargs):
-    if dataset_name == 'adult':
-        adult = fetch_ucirepo(id=2)
-        df1 = adult['data']['original']
-        df1.drop(columns=['fnlwgt'], inplace=True)
-
-        schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(df1,
-                                                                                            protected_columns=['race',
-                                                                                                               'sex'],
-                                                                                            outcome_column='income',
-                                                                                            use_attr_naming_pattern=True)
-    elif dataset_name == 'credit':
-        df1 = fetch_ucirepo(id=144)
-        df1 = df1['data']['original']
-        schema, correlation_matrix, new_cols_mapping, enc_df = generate_schema_from_dataframe(df1,
-                                                                                              protected_columns=[
-                                                                                                  'Attribute8',
-                                                                                                  'Attribute12'],
-                                                                                              outcome_column='Attribute20',
-                                                                                              use_attr_naming_pattern=True,
-                                                                                              ensure_positive_definite=True)
-    elif dataset_name == 'bank':
-        # Bank Marketing dataset
-        bank_marketing = fetch_ucirepo(id=222)
-        df = pd.concat([bank_marketing.data.features, bank_marketing.data.targets], axis=1)
-        
-        if 'protected_columns' not in kwargs:
-            kwargs['protected_columns'] = ['age', 'marital', 'education']
-        if 'outcome_column' not in kwargs:
-            kwargs['outcome_column'] = 'y'
-            
-        # Ensure all column names are valid Python identifiers
-        df.columns = [col.replace('-', '_') for col in df.columns]
-        
-        # Update protected columns if they were renamed
-        kwargs['protected_columns'] = [col.replace('-', '_') for col in kwargs['protected_columns']]
-        kwargs['outcome_column'] = kwargs['outcome_column'].replace('-', '_')
-        
-        schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(
-            df,
-            protected_columns=kwargs['protected_columns'],
-            outcome_column=kwargs['outcome_column']
-        )
-    else:
-        raise NotImplementedError(f"Dataset {dataset_name} not implemented")
-
-    # Ensure schema attribute names are unique
-    schema.attr_names = list(dict.fromkeys(schema.attr_names))
-
-    # Generate the data using the schema
-    data = generate_data(
-        correlation_matrix=correlation_matrix,
-        data_schema=schema,
-        use_cache=use_cache,
-        *args,
-        **kwargs
-    )
-
-    # data = decode_dataframe(data.dataframe, schema)
-    return data, schema
-
 
 def get_real_data(
         dataset_name: str,
@@ -1696,10 +1709,10 @@ def generate_from_real_data(dataset_name, use_cache=False, *args, **kwargs):
         # Bank Marketing dataset
         bank_marketing = fetch_ucirepo(id=222)
         df1 = pd.concat([bank_marketing.data.features, bank_marketing.data.targets], axis=1)
-        
+
         # Ensure all column names are valid Python identifiers
         df1.columns = [col.replace('-', '_') for col in df1.columns]
-        
+
         schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(
             df1,
             protected_columns=['age', 'marital', 'education'],

@@ -1,37 +1,44 @@
-from data_generator.main import generate_data, generate_data_schema, generate_from_real_data, get_real_data
-
-data, schema = generate_from_real_data('bank')
-# data, schema = get_real_data('bank')
-
-
-# %%
-# nb_attributes = 20
-#
-# schema = generate_data_schema(min_number_of_classes=2,
-#                               max_number_of_classes=9,
-#                               prop_protected_attr=0.4,
-#                               nb_attributes=nb_attributes)
-#
-# data = generate_data(
-#     nb_attributes=nb_attributes,
-#     nb_groups=100,
-#     max_group_size=100,
-#     categorical_outcome=True,
-#     nb_categories_outcome=4,
-#     corr_matrix_randomness=1,
-#     categorical_influence=1,
-#     data_schema=schema,
-#     use_cache=False
-# )
-#
-# print(f"Generated {len(data.dataframe)} samples in {data.nb_groups} groups")
-
-# %%
+from data_generator.main import generate_data, generate_data_schema, generate_from_real_data, get_real_data, \
+    GroupDefinition
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 import numpy as np
+# data, schema = generate_from_real_data('bank')
+data, schema = get_real_data('adult')
 
+
+# %%
+nb_attributes = 20
+
+# schema = generate_data_schema(min_number_of_classes=2, max_number_of_classes=9, prop_protected_attr=0.4,
+#                               nb_attributes=nb_attributes)
+
+predefined_groups = [
+    GroupDefinition(
+        group_size=50, subgroup_bias=0.3, similarity=0.8, alea_uncertainty=0.2, epis_uncertainty=0.3,
+        frequency=0.7, avg_diff_outcome=2, diff_subgroup_size=0.2,
+        subgroup1={'Attr7_T': 3, 'Attr8_T': 1},
+        subgroup2={'Attr7_T': 2, 'Attr8_T': 2}
+    )
+]
+
+data = generate_data(
+    nb_attributes=nb_attributes,
+    nb_groups=100,
+    max_group_size=100,
+    categorical_outcome=True,
+    nb_categories_outcome=4,
+    corr_matrix_randomness=1,
+    categorical_influence=1,
+    data_schema=schema,
+    use_cache=False,
+    predefined_groups=predefined_groups
+)
+
+print(f"Generated {len(data.dataframe)} samples in {data.nb_groups} groups")
+
+# %%
 
 def plot_distribution_comparison(schema, data, figsize=(15, 10)):
     """
@@ -104,6 +111,7 @@ def plot_distribution_comparison(schema, data, figsize=(15, 10)):
 
     plt.tight_layout()
     return fig
+
 
 # Create and show the plot
 fig = plot_distribution_comparison(schema, data)

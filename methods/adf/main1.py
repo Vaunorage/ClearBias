@@ -1,4 +1,3 @@
-import copy
 import itertools
 import time
 import logging
@@ -509,7 +508,6 @@ def adf_fairness_testing(
     metrics = {
         'tsn': tsn,
         'dsn': dsn,
-        'dsr': dsn / tsn if tsn > 0 else 0,
         'sur': dsn / tsn if tsn > 0 else 0,
         'dss': total_time / dsn if dsn > 0 else float('inf'),
         'total_time': total_time
@@ -517,7 +515,7 @@ def adf_fairness_testing(
 
     logger.info("Final Results:")
     logger.info(f"Total Time: {total_time:.2f}s")
-    logger.info(f"Final Metrics - TSN: {tsn}, DSN: {dsn}, DSR: {metrics['dsr']:.4f}")
+    logger.info(f"Final Metrics - TSN: {tsn}, DSN: {dsn}, DSR: {metrics['sur']:.4f}")
     logger.info(f"Success Rate: {metrics['sur']:.4f}")
     logger.info(f"Search Time per Discriminatory Sample: {metrics['dss']:.2f}s")
 
@@ -552,6 +550,8 @@ def adf_fairness_testing(
     res_df['DSN'] = dsn
     res_df['SUR'] = sur
     res_df['DSS'] = dss
+
+    res_df.drop_duplicates(subset=['indv_key'], inplace=True)
 
     return res_df, metrics
 
