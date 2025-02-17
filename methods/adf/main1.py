@@ -404,7 +404,8 @@ def adf_fairness_testing(
 
     clusters = seed_test_input(X, cluster_num)
 
-    for iter_num, cluster in enumerate(clusters):
+    iter_num = 0
+    for _, cluster in enumerate(clusters):
         if iter_num > max_iter:
             break
 
@@ -414,6 +415,9 @@ def adf_fairness_testing(
         for index in cluster:
             if len(discriminatory_pairs) < 100 and len(tot_inputs) > max_global:
                 continue
+
+            if iter_num > max_iter:
+                break
 
             sample = X[index:index + 1]
 
@@ -462,7 +466,7 @@ def adf_fairness_testing(
                     minimizer = {
                         "method": "L-BFGS-B",
                         "options": {
-                            "maxiter": 100,
+                            "maxiter": 10,
                             "ftol": 1e-6,
                             "gtol": 1e-5
                         }
@@ -491,18 +495,14 @@ def adf_fairness_testing(
                         max_diff = prob_diff
                         for name, value in zip(sensitive_values.keys(), values):
                             n_values[data_obj.sensitive_indices[name]] = value
-
-            sample_key = copy.deepcopy(sample[0].astype('int').tolist())
-            sample_key = [sample_key[i] for i in range(len(sample_key))
-                          if i not in data_obj.sensitive_indices.values()]
-
+            iter_num += 1
             log_metrics()
 
     end_time = time.time()
     total_time = end_time - start_time
 
     tsn = len(tot_inputs)
-    dsn = len(global_disc_inputs) + len(local_disc_inputs)
+    dsn = len(discriminatory_pairs)
     sur = dsn / tsn if tsn > 0 else 0
     dss = total_time / dsn if dsn > 0 else float('inf')
 
@@ -552,13 +552,6 @@ def adf_fairness_testing(
     res_df['DSN'] = dsn
     res_df['SUR'] = sur
     res_df['DSS'] = dss
-
-    logger.info(f"Total Inputs: {len(tot_inputs)}")
-    logger.info(f"Global Search Discriminatory Inputs: {len(global_disc_inputs)}")
-    logger.info(f"Local Search Discriminatory Inputs: {len(local_disc_inputs)}")
-    logger.info(f"Success Rate (SUR): {metrics['sur']:.4f}")
-    logger.info(f"Average Search Time per Discriminatory Sample (DSS): {metrics['dss']:.4f} seconds")
-    logger.info(f"Total Discriminatory Pairs Found: {len(discriminatory_pairs)}")
 
     return res_df, metrics
 
