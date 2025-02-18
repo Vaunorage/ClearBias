@@ -4,6 +4,23 @@ import numpy as np
 import pandas as pd
 from pandas import DataFrame
 
+from data_generator.main import DataSchema
+from dataclasses import dataclass
+
+
+@dataclass
+class GroupDefinition:
+    group_size: int
+    subgroup_bias: float
+    similarity: float
+    alea_uncertainty: float
+    epis_uncertainty: float
+    frequency: float
+    avg_diff_outcome: int
+    diff_subgroup_size: float
+    subgroup1: dict  # {'Attr1_T': 3, 'Attr2_T': 1, 'Attr3_X': 3}
+    subgroup2: dict  # {'Attr1_T': 2, 'Attr2_T': 2, 'Attr3_X': 2}
+
 
 def train_sklearn_model(data, model_type='rf', model_params=None, target_col='class', sensitive_attrs=None,
                         test_size=0.2, random_state=42):
@@ -95,56 +112,75 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
 
 def reformat_discrimination_results(df):
     """
-    Reformats the discrimination results into the desired format with group and subgroup columns
+    Reformats the discrimination results into the desired format with GroupDefinition objects
+    for all combinations of protected attributes ending with '_T' present in the dataset.
+    Ensures each unique subgroup pair is only included once.
     """
-    # Initialize empty lists for the new format
-    reformatted_data = []
+    # Initialize empty list for GroupDefinition objects and set for tracking unique pairs
+    group_definitions = []
+    seen_pairs = set()
 
-    # Group counter to assign group numbers
-    group_counter = 0
+    # Get all protected attribute columns ending with '_T'
+    protected_attrs = [col for col in df.columns if col.endswith('_T')]
 
-    # Get pairs using couple_key
-    paired_data = df[df['couple_key'] != -1].copy()
-
-    # Process each unique pair
-    for couple_key in paired_data['couple_key'].unique():
-        pair = paired_data[paired_data['couple_key'] == couple_key].copy()
-
-        if len(pair) != 2:
+    for el in df['case_id'].unique():
+        pair_df = df[df['case_id'] == el]
+        if pair_df.shape[0] != 2:
             continue
 
-        # Sort by outcome to ensure consistent ordering
-        pair = pair.sort_values('outcome')
+        subgroup1_protected_attr = pair_df[protected_attrs].iloc[0]
+        subgroup2_protected_attr = pair_df[protected_attrs].iloc[1]
 
-        # Extract protected attributes
-        row_data = {
-            'group': group_counter,
-            'subgroup': 0,  # First individual in pair
-            'Attr7_T': pair.iloc[0]['Attr7_T'],
-            'Attr8_T': pair.iloc[0]['Attr8_T'],
-            'average_gap': pair.iloc[1]['outcome'] - pair.iloc[0]['outcome'],
-            'num_cases': 1,  # Each pair is one case
-            'std_gap': 0,  # For individual pairs, std is 0
-            'max_gap': pair.iloc[1]['outcome'] - pair.iloc[0]['outcome'],
-            'min_gap': pair.iloc[1]['outcome'] - pair.iloc[0]['outcome']
-        }
-        reformatted_data.append(row_data)
+        # Create a hashable representation of the subgroup pair (sorted to ensure consistent ordering)
+        pair_key = tuple(sorted([
+            tuple(subgroup1_protected_attr.items()),
+            tuple(subgroup2_protected_attr.items())
+        ]))
 
-        # Add second individual of the pair
-        row_data = row_data.copy()
-        row_data['subgroup'] = 1  # Second individual in pair
-        row_data['Attr7_T'] = pair.iloc[1]['Attr7_T']
-        row_data['Attr8_T'] = pair.iloc[1]['Attr8_T']
-        reformatted_data.append(row_data)
+        # Skip if we've already processed this pair
+        if pair_key in seen_pairs:
+            continue
+        seen_pairs.add(pair_key)
 
-        group_counter += 1
+        subgroup1_data = df[(df[protected_attrs] == subgroup1_protected_attr.tolist()).all(axis=1)]
+        subgroup2_data = df[(df[protected_attrs] == subgroup2_protected_attr.tolist()).all(axis=1)]
 
-    # Convert to DataFrame
-    result_df = pd.DataFrame(reformatted_data)
+        if len(subgroup1_data) == 0 or len(subgroup2_data) == 0:
+            continue
 
-    # Ensure all columns are present and in the correct order
-    columns = ['group', 'subgroup', 'Attr7_T', 'Attr8_T', 'average_gap',
-               'num_cases', 'std_gap', 'max_gap', 'min_gap']
-    result_df = result_df[columns]
+        subgroup1_outcomes = subgroup1_data['outcome'].values
+        subgroup2_outcomes = subgroup2_data['outcome'].values
 
-    return result_df
+        avg_diff_outcome = abs(float(np.mean(subgroup2_outcomes) - np.mean(subgroup1_outcomes)))
+        if avg_diff_outcome == 0:  # Skip if no discrimination
+            continue
+
+        # Create GroupDefinition object
+        group_def = GroupDefinition(
+            group_size=len(subgroup1_data) + len(subgroup2_data),
+            subgroup_bias=abs(avg_diff_outcome),
+            similarity=np.mean([
+                len(set(subgroup1_data[attr].unique()) & set(subgroup2_data[attr].unique())) /
+                len(set(subgroup1_data[attr].unique()) | set(subgroup2_data[attr].unique()))
+                for attr in df.columns if not attr.endswith('_T') and attr != 'outcome'
+            ]),
+            alea_uncertainty=np.std(subgroup1_outcomes) + np.std(subgroup2_outcomes) / 2,
+            epis_uncertainty=abs(np.std(subgroup1_outcomes) - np.std(subgroup2_outcomes)),
+            frequency=min(len(subgroup1_data), len(subgroup2_data)) / len(df),
+            avg_diff_outcome=avg_diff_outcome,
+            diff_subgroup_size=abs(len(subgroup1_data) - len(subgroup2_data)) / (
+                    len(subgroup1_data) + len(subgroup2_data)),
+            subgroup1=subgroup1_protected_attr,
+            subgroup2=subgroup2_protected_attr
+        )
+
+        group_definitions.append(group_def)
+
+    return group_definitions
+
+
+def convert_to_non_float_rows(df: pd.DataFrame, schema: DataSchema):
+    df_copy = df[schema.attr_names].copy().astype(int)
+    df_res = df.copy()
+    df_res[schema.attr_names] = df_copy
+    return df_res

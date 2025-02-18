@@ -1,45 +1,24 @@
 from data_generator.main import get_real_data, generate_from_real_data, generate_data
 from methods.adf.main1 import adf_fairness_testing
-from methods.utils import reformat_discrimination_results
+from methods.utils import reformat_discrimination_results, convert_to_non_float_rows
 
 # %%
-# Generate synthetic data
-
-data_obj, schema = generate_from_real_data('adult')
-# data_obj, schema = get_real_data('adult')
-
-# Run fairness testing
-results_df, metrics = adf_fairness_testing(
-    data_obj,
-    max_global=5000,
-    max_local=2000,
-    max_iter=5,
-    cluster_num=50
-)
-
-#%%
-res = reformat_discrimination_results(results_df)
-
-#%%
-res_dd = generate_data(group_info_df=res)
-
-print("\nTesting Metrics:")
-for metric, value in metrics.items():
-    print(f"{metric}: {value:.4f}")
-
-# %%
-# data_obj, schema = generate_from_real_data('adult')
 data_obj, schema = get_real_data('adult')
 
 # Run fairness testing
-results_df, metrics = adf_fairness_testing(
-    data_obj,
-    max_global=5000,
-    max_local=2000,
-    max_iter=6,
-    cluster_num=50
-)
+results_df_orgin, metrics_orgin = adf_fairness_testing(data_obj, max_global=5000, max_local=2000, max_iter=1,
+                                                       cluster_num=50)
 
-print("\nTesting Metrics:")
-for metric, value in metrics.items():
-    print(f"{metric}: {value:.4f}")
+# %%
+predefined_groups_origin = reformat_discrimination_results(convert_to_non_float_rows(results_df_orgin, schema))
+nb_elements = sum([el.group_size for el in predefined_groups_origin])
+
+# %%
+data_obj, schema = generate_from_real_data('adult', predefined_groups=predefined_groups_origin,
+                                           additional_random_rows=data_obj.dataframe.shape[0] - nb_elements)
+# Run fairness testing
+results_df_synth, metrics_synth = adf_fairness_testing(data_obj, max_global=5000, max_local=2000, max_iter=2,
+                                                       cluster_num=50)
+
+# %%
+predefined_groups_synth = reformat_discrimination_results(convert_to_non_float_rows(results_df_orgin, schema))
