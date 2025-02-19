@@ -1,6 +1,7 @@
 import numpy as np
+import pandas as pd
 import plotly.express as px
-from boto import sns
+import seaborn as sns
 from matplotlib import pyplot as plt
 
 

@@ -1,3 +1,5 @@
+import os
+os.environ['PYTHONHASHSEED'] = '0'
 import itertools
 import time
 import logging
@@ -16,6 +18,16 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger('ADF')
+
+# Set global random seed for numpy
+np.random.seed(42)
+
+# Force sklearn to use a single thread
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
+os.environ['NUMEXPR_NUM_THREADS'] = '1'
 
 # Configuration constants
 MIN_PERTURBATION_SIZE = 0.5
@@ -169,16 +181,20 @@ def check_for_error_condition(
     return True, disc_pairs, all_tested
 
 
-def seed_test_input(X: np.ndarray, cluster_num: int) -> List[np.ndarray]:
+def seed_test_input(X: np.ndarray, cluster_num: int, random_seed: int = 42) -> List[np.ndarray]:
     """Select seed inputs for fairness testing.
 
     Args:
         X: Input data
         cluster_num: Number of clusters
+        random_seed: Random seed for reproducibility
 
     Returns:
         List of seed inputs
     """
+    # Set the random seed
+    np.random.seed(random_seed)
+
     cluster_num = max(min(cluster_num, X.shape[0]), 10)
 
     scaler = StandardScaler()
@@ -186,7 +202,7 @@ def seed_test_input(X: np.ndarray, cluster_num: int) -> List[np.ndarray]:
 
     kmeans = KMeans(
         n_clusters=cluster_num,
-        random_state=np.random.randint(0, 1000),
+        random_state=random_seed,  # Use the provided seed directly
         n_init=20,
         init='k-means++',
     )
@@ -194,9 +210,8 @@ def seed_test_input(X: np.ndarray, cluster_num: int) -> List[np.ndarray]:
 
     clusters = [np.where(kmeans.labels_ == i)[0] for i in range(kmeans.n_clusters)]
 
+    # Use RandomState instance for shuffling to ensure reproducibility
     clusters = sorted(clusters, key=lambda x: len(x), reverse=True)
-    for i in range(len(clusters)):
-        np.random.shuffle(clusters[i])
 
     logger.info(f"Created {len(clusters)} clusters with sizes: {[len(c) for c in clusters]}")
 
@@ -228,13 +243,15 @@ class LocalPerturbation:
             n_values: Dict[int, Any],
             sensitive_indices: List[int],
             input_shape: int,
-            data_obj
+            data_obj,
+            random_state,
     ):
         self.model = model
         self.n_values = n_values
         self.input_shape = input_shape
         self.sensitive_indices = sensitive_indices
         self.data_obj = data_obj
+        self.rng = np.random.RandomState(random_state)
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
         """Perform local perturbation.
@@ -245,13 +262,13 @@ class LocalPerturbation:
         Returns:
             Perturbed instance
         """
-        s = np.random.uniform(MIN_PERTURBATION_SIZE, MAX_PERTURBATION_SIZE) * np.random.choice([1.0, -1.0])
+        s = self.rng.uniform(MIN_PERTURBATION_SIZE, MAX_PERTURBATION_SIZE) * self.rng.choice([1.0, -1.0])
 
         n_x = x.copy()
         for sens_idx, n_value in self.n_values.items():
             n_x[sens_idx - 1] = n_value
 
-        eps = np.random.uniform(MIN_EPSILON, MAX_EPSILON)
+        eps = self.rng.uniform(MIN_EPSILON, MAX_EPSILON)
         ind_grad = np.zeros(self.input_shape)
         n_ind_grad = np.zeros(self.input_shape)
 
@@ -301,11 +318,15 @@ class LocalPerturbation:
 
         available_indices = [i for i in range(self.input_shape) if i + 1 not in self.sensitive_indices]
         if available_indices and not np.any(np.isnan(probs[available_indices])):
-            index = np.random.choice(available_indices, p=probs[available_indices])
+            index = self.rng.choice(available_indices, p=probs[available_indices])
+
             local_cal_grad = np.zeros(self.input_shape)
             local_cal_grad[index] = 1.0
 
-            x = clip(x + s * local_cal_grad, self.data_obj)
+            x_new = x + s * local_cal_grad
+            x_new = clip(x_new, self.data_obj)
+
+            return x_new
 
         return x
 
@@ -315,7 +336,8 @@ def adf_fairness_testing(
         max_global: int = 2000,
         max_local: int = 2000,
         max_iter: int = 100,
-        cluster_num: int = 10
+        cluster_num: int = 10,
+        random_seed: int = 42
 ) -> Tuple[pd.DataFrame, Dict[str, float]]:
     """Implementation of ADF fairness testing.
 
@@ -329,6 +351,11 @@ def adf_fairness_testing(
     Returns:
         Results DataFrame and metrics dictionary
     """
+
+    # Set both numpy and random seeds
+    np.random.seed(random_seed)
+    rng = np.random.RandomState(random_seed)
+
     logger = logging.getLogger("ADF")
 
     start_time = time.time()
@@ -345,7 +372,8 @@ def adf_fairness_testing(
         data=data,
         model_type='rf',
         target_col=data_obj.outcome_column,
-        sensitive_attrs=list(data_obj.protected_attributes)
+        sensitive_attrs=list(data_obj.protected_attributes),
+        random_state=random_seed
     )
 
     train_score = model.score(X_train, y_train)
@@ -401,7 +429,7 @@ def adf_fairness_testing(
 
         return float(not result)
 
-    clusters = seed_test_input(X, cluster_num)
+    clusters = seed_test_input(X, cluster_num, random_seed=random_seed)
 
     iter_num = 0
     for _, cluster in enumerate(clusters):
@@ -467,25 +495,27 @@ def adf_fairness_testing(
                         "options": {
                             "maxiter": 10,
                             "ftol": 1e-6,
-                            "gtol": 1e-5
+                            "gtol": 1e-5,
+                            "maxls": 20  # Limit line search steps for determinism
                         }
                     }
 
                     local_perturbation = LocalPerturbation(
                         model, n_values, data_obj.sensitive_indices.values(),
-                        X.shape[1], data_obj
+                        X.shape[1], data_obj, random_seed
                     )
 
                     basinhopping(
                         evaluate_local,
                         sample.flatten(),
-                        stepsize=np.random.uniform(MIN_PERTURBATION_SIZE, MAX_PERTURBATION_SIZE),
+                        stepsize=rng.uniform(MIN_PERTURBATION_SIZE, MAX_PERTURBATION_SIZE),
                         take_step=local_perturbation,
                         minimizer_kwargs=minimizer,
                         niter=max_local,
                         T=1.0,
                         interval=40,
-                        niter_success=12
+                        niter_success=12,
+                        seed=random_seed  # Add seed for basinhopping
                     )
 
                 else:

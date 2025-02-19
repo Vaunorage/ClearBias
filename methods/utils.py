@@ -1,5 +1,11 @@
 from collections import defaultdict
+from typing import List
 
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
 import numpy as np
 import pandas as pd
 from pandas import DataFrame
@@ -63,20 +69,21 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
     feature_names : list
         List of feature names in order
     """
-    from sklearn.model_selection import train_test_split
-    from sklearn.ensemble import RandomForestClassifier
-    from sklearn.svm import SVC
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.tree import DecisionTreeClassifier
 
     # Default parameters for each model type
+    np.random.seed(random_state)
+
+    # If using parallel processing (especially for RandomForest), set n_jobs=1
     default_params = {
-        'rf': {'n_estimators': 100, 'random_state': random_state},
+        'rf': {
+            'n_estimators': 100,
+            'random_state': random_state,
+            'n_jobs': 1  # Add this to ensure deterministic behavior
+        },
         'svm': {'kernel': 'rbf', 'random_state': random_state},
         'lr': {'max_iter': 1000, 'random_state': random_state},
         'dt': {'random_state': random_state}
     }
-
     # Select model parameters
     params = model_params if model_params is not None else default_params[model_type]
 
@@ -110,7 +117,7 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
     return model, X_train, X_test, y_train, y_test, feature_names
 
 
-def reformat_discrimination_results(df):
+def reformat_discrimination_results(non_float_df, original_df) -> List[GroupDefinition]:
     """
     Reformats the discrimination results into the desired format with GroupDefinition objects
     for all combinations of protected attributes ending with '_T' present in the dataset.
@@ -121,10 +128,10 @@ def reformat_discrimination_results(df):
     seen_pairs = set()
 
     # Get all protected attribute columns ending with '_T'
-    protected_attrs = [col for col in df.columns if col.endswith('_T')]
+    protected_attrs = [col for col in non_float_df.columns if col.endswith('_T')]
 
-    for el in df['case_id'].unique():
-        pair_df = df[df['case_id'] == el]
+    for el in non_float_df['case_id'].unique():
+        pair_df = non_float_df[non_float_df['case_id'] == el]
         if pair_df.shape[0] != 2:
             continue
 
@@ -142,8 +149,8 @@ def reformat_discrimination_results(df):
             continue
         seen_pairs.add(pair_key)
 
-        subgroup1_data = df[(df[protected_attrs] == subgroup1_protected_attr.tolist()).all(axis=1)]
-        subgroup2_data = df[(df[protected_attrs] == subgroup2_protected_attr.tolist()).all(axis=1)]
+        subgroup1_data = original_df[(original_df[protected_attrs] == subgroup1_protected_attr.tolist()).all(axis=1)]
+        subgroup2_data = original_df[(original_df[protected_attrs] == subgroup2_protected_attr.tolist()).all(axis=1)]
 
         if len(subgroup1_data) == 0 or len(subgroup2_data) == 0:
             continue
@@ -157,16 +164,16 @@ def reformat_discrimination_results(df):
 
         # Create GroupDefinition object
         group_def = GroupDefinition(
-            group_size=len(subgroup1_data) + len(subgroup2_data),
+            group_size=(len(subgroup1_data) + len(subgroup2_data)) / len(original_df),
             subgroup_bias=abs(avg_diff_outcome),
             similarity=np.mean([
                 len(set(subgroup1_data[attr].unique()) & set(subgroup2_data[attr].unique())) /
                 len(set(subgroup1_data[attr].unique()) | set(subgroup2_data[attr].unique()))
-                for attr in df.columns if not attr.endswith('_T') and attr != 'outcome'
+                for attr in original_df.columns if not attr.endswith('_T') and attr != 'outcome'
             ]),
-            alea_uncertainty=np.std(subgroup1_outcomes) + np.std(subgroup2_outcomes) / 2,
-            epis_uncertainty=abs(np.std(subgroup1_outcomes) - np.std(subgroup2_outcomes)),
-            frequency=min(len(subgroup1_data), len(subgroup2_data)) / len(df),
+            alea_uncertainty=0,
+            epis_uncertainty=0,
+            frequency=1,
             avg_diff_outcome=avg_diff_outcome,
             diff_subgroup_size=abs(len(subgroup1_data) - len(subgroup2_data)) / (
                     len(subgroup1_data) + len(subgroup2_data)),
@@ -184,3 +191,49 @@ def convert_to_non_float_rows(df: pd.DataFrame, schema: DataSchema):
     df_res = df.copy()
     df_res[schema.attr_names] = df_copy
     return df_res
+
+
+def compare_discriminatory_groups(original_groups, synthetic_groups):
+    """
+    Compare discriminatory groups between original and synthetic data based on protected attribute values.
+    
+    Args:
+        original_groups: List of discriminatory groups from original data
+        synthetic_groups: List of discriminatory groups from synthetic data
+        
+    Returns:
+        dict: Dictionary containing comparison metrics
+    """
+    matched_groups = []
+    unmatched_original = []
+
+    # Helper function to create a hashable representation of subgroups
+    def get_subgroups_hash(group):
+        subgroup1_items = tuple(sorted(group.subgroup1.items()))
+        subgroup2_items = tuple(sorted(group.subgroup2.items()))
+        return tuple(sorted([subgroup1_items, subgroup2_items]))
+
+    # Create dictionaries for faster lookup
+    synth_groups_dict = {get_subgroups_hash(group): group for group in synthetic_groups}
+
+    # Compare each original group with synthetic groups
+    for orig_group in original_groups:
+        orig_hash = get_subgroups_hash(orig_group)
+        if orig_hash in synth_groups_dict:
+            matched_groups.append((orig_group, synth_groups_dict[orig_hash]))
+        else:
+            unmatched_original.append(orig_group)
+
+    # Calculate metrics
+    total_original_size = sum(group.group_size for group in original_groups)
+    total_matched_size = sum(group.group_size for group, _ in matched_groups)
+
+    return {
+        'matched_groups': matched_groups,
+        'unmatched_original_groups': unmatched_original,
+        'total_groups_matched': len(matched_groups),
+        'total_original_groups': len(original_groups),
+        'coverage_ratio': total_matched_size / total_original_size if total_original_size > 0 else 0,
+        'total_matched_size': total_matched_size,
+        'total_original_size': total_original_size
+    }
