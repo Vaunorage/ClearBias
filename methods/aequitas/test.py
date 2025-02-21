@@ -1,18 +1,42 @@
-from data_generator.main import generate_data, get_real_data, generate_from_real_data
 from methods.aequitas.algo import run_aequitas
+from matplotlib import pyplot as plt
 
-# ge = generate_data(
-#     nb_attributes=6,
-#     min_number_of_classes=2,
-#     max_number_of_classes=6,
-#     prop_protected_attr=0.3,
-#     nb_groups=100,
-#     max_group_size=100,
-#     categorical_outcome=True,
-#     nb_categories_outcome=4,
-#     use_cache=True)
+from data_generator.main import get_real_data, generate_from_real_data
+from data_generator.utils import plot_distribution_comparison
+from methods.utils import reformat_discrimination_results, convert_to_non_float_rows, compare_discriminatory_groups
 
-ge, schema = get_real_data('adult')
+# %%
+data_obj, schema = get_real_data('adult')
+
+results_df_origin, metrics = run_aequitas(discrimination_data=data_obj,
+                                          model_type='rf', max_global=1,
+                                          max_local=10, step_size=1.0, random_seed=42)
+
+# %%
+non_float_df = convert_to_non_float_rows(results_df_origin, schema)
+predefined_groups_origin = reformat_discrimination_results(non_float_df, data_obj.dataframe)
+nb_elements = sum([el.group_size for el in predefined_groups_origin])
+
+# %%
+data_obj_synth, schema = generate_from_real_data('adult', predefined_groups=predefined_groups_origin)
+
+# %%
+fig = plot_distribution_comparison(schema, data_obj_synth)
+plt.show()
+
+# %% Run fairness testing
+results_df_synth, metrics_synth = run_aequitas(discrimination_data=data_obj_synth,
+                                          model_type='rf', max_global=200,
+                                          max_local=100, step_size=1.0)
+
+# %%
+predefined_groups_synth = reformat_discrimination_results(convert_to_non_float_rows(results_df_synth, schema),
+                                                          data_obj.dataframe)
+
+# %%
+comparison_results = compare_discriminatory_groups(predefined_groups_origin, predefined_groups_synth)
+
+print("Dddd")
 
 # %%
 

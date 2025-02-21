@@ -126,6 +126,7 @@ def reformat_discrimination_results(non_float_df, original_df) -> List[GroupDefi
     # Initialize empty list for GroupDefinition objects and set for tracking unique pairs
     group_definitions = []
     seen_pairs = set()
+    group_size = {}
 
     # Get all protected attribute columns ending with '_T'
     protected_attrs = [col for col in non_float_df.columns if col.endswith('_T')]
@@ -162,28 +163,47 @@ def reformat_discrimination_results(non_float_df, original_df) -> List[GroupDefi
         if avg_diff_outcome == 0:  # Skip if no discrimination
             continue
 
+        if tuple(subgroup1_protected_attr.items()) in group_size:
+            group_size[tuple(subgroup1_protected_attr.items())]['nb'] += 1
+        else:
+            group_size[tuple(subgroup1_protected_attr.items())] = {'nb': 1, 'size': len(subgroup1_data)}
+
+        if tuple(subgroup2_protected_attr.items()) in group_size:
+            group_size[tuple(subgroup2_protected_attr.items())]['nb'] += 1
+        else:
+            group_size[tuple(subgroup2_protected_attr.items())] = {'nb': 1, 'size': len(subgroup2_data)}
+
         # Create GroupDefinition object
-        group_def = GroupDefinition(
-            group_size=(len(subgroup1_data) + len(subgroup2_data)) / len(original_df),
-            subgroup_bias=abs(avg_diff_outcome),
-            similarity=np.mean([
+        group_def = {
+            'group_size': (len(subgroup1_data) + len(subgroup2_data)) / len(original_df),
+            'subgroup_bias': abs(avg_diff_outcome),
+            'similarity': np.mean([
                 len(set(subgroup1_data[attr].unique()) & set(subgroup2_data[attr].unique())) /
                 len(set(subgroup1_data[attr].unique()) | set(subgroup2_data[attr].unique()))
                 for attr in original_df.columns if not attr.endswith('_T') and attr != 'outcome'
             ]),
-            alea_uncertainty=0,
-            epis_uncertainty=0,
-            frequency=1,
-            avg_diff_outcome=avg_diff_outcome,
-            diff_subgroup_size=abs(len(subgroup1_data) - len(subgroup2_data)) / (
+            'alea_uncertainty': 0, 'epis_uncertainty': 0, 'frequency': 1,
+            'avg_diff_outcome': avg_diff_outcome,
+            'diff_subgroup_size': abs(len(subgroup1_data) - len(subgroup2_data)) / (
                     len(subgroup1_data) + len(subgroup2_data)),
-            subgroup1=subgroup1_protected_attr,
-            subgroup2=subgroup2_protected_attr
-        )
+            'subgroup1': subgroup1_protected_attr,
+            'subgroup2': subgroup2_protected_attr
+        }
 
         group_definitions.append(group_def)
 
-    return group_definitions
+    group_definitions_res = []
+    for gr in group_definitions:
+        subgroup1_key_pair = tuple(gr['subgroup1'].items())
+        subgroup2_key_pair = tuple(gr['subgroup2'].items())
+
+        subgroup1_size = group_size[subgroup1_key_pair]['size'] / group_size[subgroup1_key_pair]['nb']
+        subgroup2_size = group_size[subgroup2_key_pair]['size'] / group_size[subgroup2_key_pair]['nb']
+
+        gr['group_size'] = subgroup1_size + subgroup2_size
+        group_definitions_res.append(GroupDefinition(**gr))
+
+    return group_definitions_res
 
 
 def convert_to_non_float_rows(df: pd.DataFrame, schema: DataSchema):

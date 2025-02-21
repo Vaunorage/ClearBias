@@ -1378,7 +1378,8 @@ def generate_data(
         categorical_distribution: Dict[str, List[float]] = None,
         categorical_influence: float = 0.5,
         data_schema: DataSchema = None,
-        predefined_groups=None
+        predefined_groups=None,
+        extra_rows=None
 ) -> DiscriminationData:
     # Validate min_group_size
     if min_group_size >= max_group_size:
@@ -1504,6 +1505,68 @@ def generate_data(
 
     results = pd.concat(results, ignore_index=True)
     results['collisions'] = collisions
+
+    # Generate extra rows if requested
+    if extra_rows > 0:
+        # Initialize the generator for individual samples using the schema and correlation matrix
+        generator = IndividualsGenerator(
+            schema=data_schema,
+            graph=correlation_matrix,
+            gen_order=gen_order,
+            outcome_weights=W[-1],
+            outcome_bias=0,
+            subgroup_bias=0,  # Neutral bias for extra rows
+            epis_uncertainty=np.mean([min_epis_uncertainty, max_epis_uncertainty]),
+            alea_uncertainty=np.mean([min_alea_uncertainty, max_alea_uncertainty]),
+            corr_matrix_randomness=corr_matrix_randomness,
+            categorical_distribution=categorical_distribution,
+            categorical_influence=categorical_influence
+        )
+
+        print(f"\nGenerating {extra_rows} additional rows...")
+
+        # Generate extra samples with a balanced approach (half with is_subgroup1=True, half with False)
+        half_extra = extra_rows // 2
+        remaining_extra = extra_rows - half_extra
+
+        # Generate the first half with is_subgroup1=True
+        extra_data1 = generator.generate_dataset_with_outcome(half_extra, None, is_subgroup1=True)
+        extra_samples1 = [sample for sample, _, _, _ in extra_data1]
+        extra_df1 = pd.DataFrame(extra_samples1, columns=data_schema.attr_names)
+        extra_df1['outcome'] = [outcome for _, outcome, _, _ in extra_data1]
+        extra_df1['epis_uncertainty'] = [epis for _, _, epis, _ in extra_data1]
+        extra_df1['alea_uncertainty'] = [alea for _, _, _, alea in extra_data1]
+
+        # Generate the second half with is_subgroup1=False
+        extra_data2 = generator.generate_dataset_with_outcome(remaining_extra, None, is_subgroup1=False)
+        extra_samples2 = [sample for sample, _, _, _ in extra_data2]
+        extra_df2 = pd.DataFrame(extra_samples2, columns=data_schema.attr_names)
+        extra_df2['outcome'] = [outcome for _, outcome, _, _ in extra_data2]
+        extra_df2['epis_uncertainty'] = [epis for _, _, epis, _ in extra_data2]
+        extra_df2['alea_uncertainty'] = [alea for _, _, _, alea in extra_data2]
+
+        # Combine both halves
+        extra_df = pd.concat([extra_df1, extra_df2], ignore_index=True)
+
+        # Add necessary columns to match the main dataframe structure
+        extra_df['group_key'] = 'extra'
+        extra_df['subgroup_key'] = extra_df.index.map(lambda i: f'extra_subgroup{i % 2 + 1}')
+        extra_df['indv_key'] = extra_df[attr_names].apply(lambda x: '|'.join(list(x.astype(str))), axis=1)
+
+        # Add the parameters columns with average values
+        extra_df['granularity_param'] = (min_granularity + max_granularity) / 2
+        extra_df['intersectionality_param'] = (min_intersectionality + max_intersectionality) / 2
+        extra_df['similarity_param'] = (min_similarity + max_similarity) / 2
+        extra_df['epis_uncertainty_param'] = (min_epis_uncertainty + max_epis_uncertainty) / 2
+        extra_df['alea_uncertainty_param'] = (min_alea_uncertainty + max_alea_uncertainty) / 2
+        extra_df['frequency_param'] = (min_frequency + max_frequency) / 2
+        extra_df['group_size'] = extra_rows
+        extra_df['diff_subgroup_size'] = (min_diff_subgroup_size + max_diff_subgroup_size) / 2
+        extra_df['collisions'] = collisions
+
+        # Append the extra rows to the main dataframe
+        results = pd.concat([results, extra_df], ignore_index=True)
+        print(f"Added {extra_rows} extra rows to the dataset.")
 
     for column in attr_names + [outcome_column]:
         results[column] = pd.to_numeric(results[column], errors='ignore')
@@ -1686,7 +1749,7 @@ def get_real_data(
     return data, schema
 
 
-def generate_from_real_data(dataset_name, use_cache=False, *args, **kwargs):
+def generate_from_real_data(dataset_name, use_cache=False, extra_rows=None, *args, **kwargs):
     if dataset_name == 'adult':
         adult = fetch_ucirepo(id=2)
         df1 = adult['data']['original']
@@ -1736,6 +1799,7 @@ def generate_from_real_data(dataset_name, use_cache=False, *args, **kwargs):
         correlation_matrix=correlation_matrix,
         data_schema=schema,
         use_cache=use_cache,
+        extra_rows=extra_rows,
         *args, **kwargs
     )
 

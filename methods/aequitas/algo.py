@@ -31,10 +31,23 @@ def get_input_bounds(discrimination_data):
 
 
 def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_global=1000, max_local=1000,
-                 step_size=1.0, init_prob=0.5):
+                 step_size=1.0, init_prob=0.5, random_seed=None):
     """
     Main AEQUITAS implementation using custom data generation and model training
+
+    Args:
+        discrimination_data: DiscriminationData object containing training data and metadata
+        model_type: Type of model to train ('rf' for Random Forest)
+        max_global: Maximum number of global search iterations
+        max_local: Maximum number of local search iterations
+        step_size: Step size for local perturbation
+        init_prob: Initial probability for direction choice
+        random_seed: Random seed for reproducibility (default: None)
     """
+    if random_seed is not None:
+        np.random.seed(random_seed)
+        random.seed(random_seed)
+
     start_time = time.time()
     # Train model using provided training function
     model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
@@ -70,8 +83,8 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         """
         Check for discrimination across all combinations of protected attributes
         """
-        instance = np.array(instance).astype("int")
-        label = model.predict(np.array([instance]))[0]
+        instance = pd.DataFrame([instance], columns=discrimination_data.attr_columns)
+        label = model.predict(instance)[0]
 
         # Generate all possible combinations of protected attribute values
         protected_values = []
@@ -80,21 +93,26 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
             protected_values.append(list(values))
 
         # Try all combinations
+        new_df = []
         for values in product(*protected_values):
-            new_instance = copy.deepcopy(instance)
-            changed = False
-            for idx, val in zip(protected_indices, values):
-                if val != instance[idx]:
-                    new_instance[idx] = val
-                    changed = True
+            if tuple(instance[discrimination_data.protected_attributes]) != values:
+                new_instance = instance.copy()
+                new_instance[discrimination_data.protected_attributes] = values
+                new_df.append(new_instance)
+        new_df = pd.concat(new_df)
+        new_df['outcome'] = model.predict(new_df)
 
-            if changed:  # Only check if at least one attribute changed
-                label_new = model.predict(np.array([new_instance]))[0]
-                if label_new != label:
-                    all_discriminations.add(tuple((tuple(instance), int(label), tuple(new_instance), int(label_new))))
-                    return values  # Return the discriminatory combination
+        for row in new_df.to_numpy():
+            tot_inputs.add(tuple(row.astype(int)))
 
-        return tuple(instance[idx] for idx in protected_indices)
+        discrimination_df = new_df[new_df['outcome'] != label]
+
+        for _, row in discrimination_df.iterrows():
+            all_discriminations.add(tuple((tuple(instance), int(label),
+                                           tuple(row[discrimination_data.attr_columns]),
+                                           int(row['outcome']))))
+
+        return discrimination_df.shape[0] != 0
 
     class Local_Perturbation:
         """
@@ -140,11 +158,11 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                                   min(self.input_bounds[param_choice][1], x[param_choice]))
 
             # Check for discrimination
-            error_values = check_for_error_condition(self.model, x, self.sensitive_params, self.input_bounds)
+            error_condition = check_for_error_condition(self.model, x, self.sensitive_params, self.input_bounds)
 
             # Check if any protected attribute values changed
-            error_condition = any(error_values[i] != int(x[self.sensitive_params[i]])
-                                  for i in range(len(self.sensitive_params)))
+            # error_condition = any(error_values[i] != int(x[self.sensitive_params[i]])
+            #                       for i in range(len(self.sensitive_params)))
 
             # Update direction probabilities
             if (error_condition and direction_choice == -1) or \
@@ -198,13 +216,13 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
     def evaluate_global(inp):
         """Global search evaluation function"""
-        result = check_for_error_condition(model, inp, sensitive_params, input_bounds)
+        error_condition = check_for_error_condition(model, inp, sensitive_params, input_bounds)
 
         # Check if any protected attribute values changed
-        error_condition = any(result[i] != int(inp[sensitive_params[i]])
-                              for i in range(len(sensitive_params)))
+        # error_condition = any(result[i] != int(inp[sensitive_params[i]])
+        #                       for i in range(len(sensitive_params)))
 
-        temp = tuple(inp.astype('int').tolist())
+        temp = tuple(inp.tolist())
         tot_inputs.add(temp)
 
         # More frequent logging - every 2 seconds
@@ -256,13 +274,13 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
     def evaluate_local(inp):
         """Local search evaluation function"""
-        result = check_for_error_condition(model, inp, sensitive_params, input_bounds)
+        error_condition = check_for_error_condition(model, inp, sensitive_params, input_bounds)
 
         # Check if any protected attribute values changed
-        error_condition = any(result[i] != int(inp[sensitive_params[i]])
-                              for i in range(len(sensitive_params)))
+        # error_condition = any(result[i] != int(inp[sensitive_params[i]])
+        #                       for i in range(len(sensitive_params)))
 
-        temp = tuple(inp.astype('int').tolist())
+        temp = tuple(inp.tolist())
         tot_inputs.add(temp)
 
         if error_condition and temp not in global_disc_inputs and temp not in local_disc_inputs:
@@ -379,5 +397,5 @@ if __name__ == '__main__':
     # For the adult dataset
     results, global_cases = run_aequitas(
         discrimination_data=discrimination_data,
-        model_type='rf', max_global=2000, max_local=100, step_size=1.0
+        model_type='rf', max_global=200, max_local=1000, step_size=1.0
     )
