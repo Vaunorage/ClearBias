@@ -9,6 +9,9 @@ import logging
 import sys
 from data_generator.main import get_real_data, generate_from_real_data, DiscriminationData
 from methods.utils import train_sklearn_model
+from sklearnex import patch_sklearn
+
+patch_sklearn()
 
 logger = logging.getLogger('aequitas')
 logger.setLevel(logging.INFO)
@@ -31,7 +34,7 @@ def get_input_bounds(discrimination_data):
 
 
 def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_global=1000, max_local=1000,
-                 step_size=1.0, init_prob=0.5, random_seed=None):
+                 step_size=1.0, init_prob=0.5, random_seed=None, max_total_iterations=None):
     """
     Main AEQUITAS implementation using custom data generation and model training
 
@@ -43,6 +46,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         step_size: Step size for local perturbation
         init_prob: Initial probability for direction choice
         random_seed: Random seed for reproducibility (default: None)
+        max_total_iterations: Maximum total number of iterations across both global and local search (default: None)
     """
     if random_seed is not None:
         np.random.seed(random_seed)
@@ -78,6 +82,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     tot_inputs = set()
     count = [1]  # For tracking periodic output
     all_discriminations = set()
+    total_iterations = [0]  # Track total iterations across both phases
 
     def check_for_error_condition(model, instance, protected_indices, input_bounds):
         """
@@ -108,7 +113,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         discrimination_df = new_df[new_df['outcome'] != label]
 
         for _, row in discrimination_df.iterrows():
-            all_discriminations.add(tuple((tuple(instance), int(label),
+            all_discriminations.add(tuple((tuple(instance.to_numpy()[0]), int(label),
                                            tuple(row[discrimination_data.attr_columns]),
                                            int(row['outcome']))))
 
@@ -159,10 +164,6 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
             # Check for discrimination
             error_condition = check_for_error_condition(self.model, x, self.sensitive_params, self.input_bounds)
-
-            # Check if any protected attribute values changed
-            # error_condition = any(error_values[i] != int(x[self.sensitive_params[i]])
-            #                       for i in range(len(self.sensitive_params)))
 
             # Update direction probabilities
             if (error_condition and direction_choice == -1) or \
@@ -216,6 +217,10 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
     def evaluate_global(inp):
         """Global search evaluation function"""
+        if max_total_iterations and total_iterations[0] >= max_total_iterations:
+            return 0.0  # Stop the search when max total iterations is reached
+            
+        total_iterations[0] += 1
         error_condition = check_for_error_condition(model, inp, sensitive_params, input_bounds)
 
         # Check if any protected attribute values changed
@@ -274,11 +279,11 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
     def evaluate_local(inp):
         """Local search evaluation function"""
+        if max_total_iterations and total_iterations[0] >= max_total_iterations:
+            return 0.0  # Stop the search when max total iterations is reached
+            
+        total_iterations[0] += 1
         error_condition = check_for_error_condition(model, inp, sensitive_params, input_bounds)
-
-        # Check if any protected attribute values changed
-        # error_condition = any(result[i] != int(inp[sensitive_params[i]])
-        #                       for i in range(len(sensitive_params)))
 
         temp = tuple(inp.tolist())
         tot_inputs.add(temp)

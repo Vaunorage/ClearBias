@@ -1,4 +1,5 @@
 import os
+
 os.environ['PYTHONHASHSEED'] = '0'
 import itertools
 import time
@@ -10,6 +11,9 @@ from scipy.optimize import basinhopping
 from methods.utils import train_sklearn_model
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
+from sklearnex import patch_sklearn
+
+patch_sklearn()
 
 # Configure logging
 logging.basicConfig(

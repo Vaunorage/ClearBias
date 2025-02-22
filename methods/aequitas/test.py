@@ -9,8 +9,9 @@ from methods.utils import reformat_discrimination_results, convert_to_non_float_
 data_obj, schema = get_real_data('adult')
 
 results_df_origin, metrics = run_aequitas(discrimination_data=data_obj,
-                                          model_type='rf', max_global=1,
-                                          max_local=10, step_size=1.0, random_seed=42)
+                                          model_type='rf', max_global=100,
+                                          max_local=1000, step_size=1.0, random_seed=42,
+                                          max_total_iterations=1000)
 
 # %%
 non_float_df = convert_to_non_float_rows(results_df_origin, schema)
