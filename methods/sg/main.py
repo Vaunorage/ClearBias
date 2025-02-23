@@ -2,12 +2,7 @@ import logging
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from sklearn.neural_network import MLPClassifier
-from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVC
+import itertools
 from sklearn.tree import DecisionTreeClassifier
 from methods.utils import train_sklearn_model
 from queue import PriorityQueue
@@ -53,24 +48,22 @@ def cluster(data, cluster_num):
     return kmeans
 
 
-def global_discovery(iteration, config):
+def global_discovery(iteration, config, random_state=42):
+    random.seed(random_state)  # Set seed for random
+    np.random.seed(random_state)  # Set seed for numpy
     input_bounds = config.input_bounds
     params = config.params
-
     samples = []
     for j in range(iteration):
         x = np.zeros(params)
         for i in range(params):
-            # random.seed(time.time())
             x[i] = random.randint(input_bounds[i][0], input_bounds[i][1])
-        x = np.array(x)
         samples.append(x)
-    # print x
     samples = np.array(samples)
     return samples
 
 
-def seed_test_input(dataset, cluster_num=None, random_seed=42):
+def seed_test_input(dataset, cluster_num=None, random_seed=42, iter=0):
     """
     Select the seed inputs for fairness testing
     :param dataset: the name of dataset
@@ -79,25 +72,25 @@ def seed_test_input(dataset, cluster_num=None, random_seed=42):
     :return: a sequence of seed inputs
     """
     # build the clustering model
-    np.random.seed(random_seed)
+    np.random.seed(random_seed + iter)
     if cluster_num is None:
         cluster_num = max(min(cluster_num, X.shape[0]), 10)
 
-
     clf = KMeans(
         n_clusters=cluster_num,
-        random_state=random_seed,  # Use the provided seed directly
+        random_state=random_seed + iter,  # Use the provided seed directly
         # n_init=20,
         init='k-means++',
     )
     clf.fit(dataset)
 
     clusters = [np.where(clf.labels_ == i)[0] for i in range(cluster_num)]
+    random.seed(random_seed + iter)
     clusters = sorted(clusters, key=len)  # len(clusters[0][0])==32561
-    return clusters[0]
+    return clusters
 
 
-def extract_lime_decision_constraints(ge, model, input):
+def extract_lime_decision_constraints(ge, model, input, random_state=42):
     """
     Get the path from Local Interpretable Model-agnostic Explanation Tree
     :param X: the whole inputs
@@ -125,14 +118,15 @@ def extract_lime_decision_constraints(ge, model, input):
         feature_names=feature_names,
         class_names=class_names,
         categorical_features=categorical_features,
-        discretize_continuous=True
+        discretize_continuous=True,
+        random_state=random_state  # Add random state parameter
     )
     o_data, g_data = explainer._LimeTabularExplainer__data_inverse(input, num_samples=5000)
     # print(g_data)
     g_labels = model.predict(g_data)
 
     # build the interpretable tree
-    tree = DecisionTreeClassifier(random_state=2019)  # min_samples_split=0.05, min_samples_leaf =0.01
+    tree = DecisionTreeClassifier(random_state=random_state)  # min_samples_split=0.05, min_samples_leaf =0.01
     tree.fit(g_data, g_labels)
 
     # get the path for decision
@@ -163,7 +157,6 @@ def check_for_discrimination_case(ge, model, t, sensitive_indices):
     :param sensitive_indices: dictionary of sensitive attribute names and their indices
     :return: whether it is an individual discriminatory instance
     """
-    import itertools
 
     # Get original prediction
     org_df = pd.DataFrame([t], columns=ge.attr_columns)
@@ -311,17 +304,18 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
     local_disc_inputs_list = []
     tot_inputs = set()
 
-    def symbolic_generation(ge: DiscriminationData, model_type, cluster_num, limit):
-        """
-        The implementation of symbolic generation
-        :param ge: the name of dataset
-        :param sensitive_param: the index of sensitive feature
-        :param model_type: model type
-        :param cluster_num: the number of clusters to form as well as the number of
-                centroids to generate
-        :param limit: the maximum number of test case
-        """
+    np.random.seed(random_state)
+    random.seed(random_state)
 
+    if not cluster_num:
+        cluster_num = len(ge.ydf.unique())
+
+    start = time.time()
+    f_results = []
+
+    all_inputs = seed_test_input(ge.xdf, max([cluster_num, iter]))
+
+    for num_iter in range(iter):
         start = time.time()
 
         model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
@@ -339,7 +333,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
         T1 = 0.3
 
         # select the seed input for fairness testing
-        inputs = seed_test_input(ge.xdf, cluster_num)
+        inputs = all_inputs[num_iter]
 
         # Get all input data at once and convert to numpy for faster processing
         input_data = copy.deepcopy(ge.xdf.iloc[inputs])
@@ -361,7 +355,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
 
         results = []
 
-        while len(tot_inputs) < limit and targets_queue.qsize() != 0:
+        while len(tot_inputs) < limit * (num_iter + 1) and targets_queue.qsize() != 0:
             dss = len(local_disc_inputs) + len(global_disc_inputs_list)
             dsr = dss / len(tot_inputs) if len(tot_inputs) > 0 else 0
             logger.info(f"TSS : {len(tot_inputs)} DSS: {dss} DSR : {dsr}")
@@ -374,7 +368,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
             org_input = np.array(org_input[1])
 
             found, org_df, found_df = check_for_discrimination_case(ge, model, org_input, ge.sensitive_indices)
-            decision_rules = extract_lime_decision_constraints(ge, model, org_input)
+            decision_rules = extract_lime_decision_constraints(ge, model, org_input, random_state)
 
             # Create a version of the input without any sensitive parameters
             input_without_sensitive = remove_sensitive_attributes(org_input.tolist(), ge.sensitive_indices)
@@ -472,25 +466,12 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
                 if use_time >= 3900:  # Check time limit after each global search iteration
                     break
 
-        return results
-
-    if not cluster_num:
-        cluster_num = len(ge.ydf.unique())
-
-    start = time.time()
-    results = []
-    for i in range(iter):
-        f_results = symbolic_generation(ge=ge,
-                                        model_type=model_type,
-                                        cluster_num=cluster_num,
-                                        limit=limit)
-
-        results.extend(f_results)
+        f_results.extend(results)
 
     end = time.time()
     res_df = []
     case_id = 0
-    for org, counter_org in results:
+    for org, counter_org in f_results:
         for _, counter_examples in counter_org.iterrows():
             indv1 = org.copy()
             indv2 = pd.DataFrame([counter_examples])
@@ -538,5 +519,5 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
 if __name__ == '__main__':
     ge, ge_schema = get_real_data('adult')
 
-    res = run_sg(ge)
+    res = run_sg(ge, iter=4, cluster_num=100)
     print(res)
