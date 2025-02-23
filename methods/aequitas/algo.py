@@ -4,7 +4,6 @@ import time
 from itertools import product
 import pandas as pd
 from scipy.optimize import basinhopping
-import copy
 import logging
 import sys
 from data_generator.main import get_real_data, generate_from_real_data, DiscriminationData
@@ -58,7 +57,8 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         data=discrimination_data.training_dataframe,
         model_type=model_type,
         sensitive_attrs=discrimination_data.protected_attributes,
-        target_col=discrimination_data.outcome_column
+        target_col=discrimination_data.outcome_column,
+        random_state=random_seed
     )
 
     # Get input bounds and number of parameters
@@ -66,7 +66,8 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     params = len(input_bounds)
 
     # Get sensitive parameter indices for all protected attributes
-    sensitive_params = [feature_names.index(attr) for attr in discrimination_data.protected_attributes]
+    sensitive_params = [discrimination_data.attr_columns.index(attr) for attr in
+                        discrimination_data.protected_attributes]
 
     # Initialize probabilities
     param_probability = [1.0 / params] * params
@@ -100,10 +101,14 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         # Try all combinations
         new_df = []
         for values in product(*protected_values):
-            if tuple(instance[discrimination_data.protected_attributes]) != values:
+            if tuple(instance[discrimination_data.protected_attributes].values[0]) != values:
                 new_instance = instance.copy()
                 new_instance[discrimination_data.protected_attributes] = values
                 new_df.append(new_instance)
+
+        if not new_df:  # If no combinations were found
+            return False
+
         new_df = pd.concat(new_df)
         new_df['outcome'] = model.predict(new_df)
 
@@ -113,7 +118,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         discrimination_df = new_df[new_df['outcome'] != label]
 
         for _, row in discrimination_df.iterrows():
-            all_discriminations.add(tuple((tuple(instance.to_numpy()[0]), int(label),
+            all_discriminations.add(tuple((tuple(instance.values[0]), int(label),
                                            tuple(row[discrimination_data.attr_columns]),
                                            int(row['outcome']))))
 
@@ -121,12 +126,12 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
     class Local_Perturbation:
         """
-        Local perturbation class modified to handle multiple protected attributes
+        Local perturbation class modified to handle multiple protected attributes with controlled randomness
         """
 
         def __init__(self, model, input_bounds, sensitive_params, param_probability,
                      param_probability_change_size, direction_probability,
-                     direction_probability_change_size, step_size):
+                     direction_probability_change_size, step_size, random_seed=None):
             self.model = model
             self.input_bounds = input_bounds
             self.sensitive_params = sensitive_params
@@ -137,14 +142,35 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
             self.step_size = step_size
             self.perturbation_unit = 1
             self.params = len(input_bounds)
+            self.random_seed = random_seed
+            self.call_count = 0  # Add a counter to create deterministic "randomness"
+
+            # Initialize with a fixed random state
+            if random_seed is not None:
+                self.random_state = np.random.RandomState(random_seed)
+            else:
+                self.random_state = np.random.RandomState()
 
         def __call__(self, x):
-            # Randomly choose the feature for perturbation
-            param_choice = np.random.choice(range(self.params), p=self.param_probability)
+            # Increment call count for deterministic seeding
+            self.call_count += 1
+
+            # If using a seed, we create a deterministic seed for each call
+            # by combining the original seed with the call count
+            if self.random_seed is not None:
+                derived_seed = self.random_seed + self.call_count
+                # Reset the random state for deterministic behavior
+                self.random_state = np.random.RandomState(derived_seed)
+                # Also set the global random generators
+                np.random.seed(derived_seed)
+                random.seed(derived_seed)
+
+            # Use self.random_state instead of np.random for all random operations
+            param_choice = self.random_state.choice(range(self.params), p=self.param_probability)
 
             # Randomly choose direction for perturbation
             perturbation_options = [-1, 1]
-            direction_choice = np.random.choice(
+            direction_choice = self.random_state.choice(
                 perturbation_options,
                 p=[self.direction_probability[param_choice],
                    1 - self.direction_probability[param_choice]]
@@ -153,7 +179,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
             # If at bounds, choose random direction
             if (x[param_choice] == self.input_bounds[param_choice][0]) or \
                     (x[param_choice] == self.input_bounds[param_choice][1]):
-                direction_choice = np.random.choice(perturbation_options)
+                direction_choice = self.random_state.choice(perturbation_options)
 
             # Perform perturbation
             x[param_choice] = x[param_choice] + (direction_choice * self.step_size)
@@ -201,15 +227,35 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
     class Global_Discovery:
         """
-        Direct port of the original Global_Discovery class
+        Global discovery with controlled randomness
         """
 
-        def __init__(self, input_bounds):
+        def __init__(self, input_bounds, random_seed=None):
             self.input_bounds = input_bounds
+            self.random_seed = random_seed
+            self.call_count = 0
+
+            # Initialize random state
+            if random_seed is not None:
+                self.random_state = random.Random(random_seed)
+            else:
+                self.random_state = random.Random()
 
         def __call__(self, x):
+            # Increment call count for deterministic seeding
+            self.call_count += 1
+
+            # If using a seed, create a new seed for each call
+            if self.random_seed is not None:
+                derived_seed = self.random_seed + self.call_count
+                # Reset the random state
+                self.random_state = random.Random(derived_seed)
+                # Also set global random state
+                random.seed(derived_seed)
+                np.random.seed(derived_seed)
+
             for i in range(len(x)):
-                x[i] = random.randint(
+                x[i] = self.random_state.randint(
                     int(self.input_bounds[i][0]),
                     int(self.input_bounds[i][1])
                 )
@@ -219,7 +265,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         """Global search evaluation function"""
         if max_total_iterations and total_iterations[0] >= max_total_iterations:
             return 0.0  # Stop the search when max total iterations is reached
-            
+
         total_iterations[0] += 1
         error_condition = check_for_error_condition(model, inp, sensitive_params, input_bounds)
 
@@ -259,6 +305,11 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
             # Run local search
             try:
                 local_minimizer = {"method": "L-BFGS-B"}
+
+                if random_seed is not None:
+                    np.random.seed(random_seed)
+                    random.seed(random_seed)
+
                 basinhopping(
                     evaluate_local,
                     inp,
@@ -267,10 +318,12 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                         model, input_bounds, sensitive_params,
                         param_probability.copy(), param_probability_change_size,
                         direction_probability.copy(), direction_probability_change_size,
-                        step_size
+                        step_size,
+                        random_seed=random_seed  # Pass the random seed
                     ),
                     minimizer_kwargs=local_minimizer,
-                    niter=max_local
+                    niter=max_local,
+                    seed=random_seed if random_seed is not None else None
                 )
             except Exception as e:
                 logger.error(f"Local search error: {e}")
@@ -281,7 +334,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         """Local search evaluation function"""
         if max_total_iterations and total_iterations[0] >= max_total_iterations:
             return 0.0  # Stop the search when max total iterations is reached
-            
+
         total_iterations[0] += 1
         error_condition = check_for_error_condition(model, inp, sensitive_params, input_bounds)
 
@@ -315,11 +368,29 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     # Initial input - use first training example
     initial_input = X_train.iloc[0].values.astype('int')
 
-    # Run global search
+    # Run global search with fixed random seed for basinhopping
     logger.info("Starting global search...")
-    minimizer = {"method": "L-BFGS-B"}
-    basinhopping(evaluate_global, initial_input, stepsize=step_size, take_step=Global_Discovery(input_bounds),
-                 minimizer_kwargs=minimizer, niter=max_global)
+    minimizer = {
+        "method": "L-BFGS-B",
+        "args": (),
+        "options": {"maxiter": 100}
+    }
+
+    # Create a seeded random number generator for basinhopping
+    if random_seed is not None:
+        np.random.seed(random_seed)
+        random.seed(random_seed)
+
+    basinhopping(
+        evaluate_global,
+        initial_input,
+        niter=max_global,
+        T=1.0,
+        stepsize=step_size,
+        minimizer_kwargs=minimizer,
+        take_step=Global_Discovery(input_bounds, random_seed=random_seed),  # Pass the random seed
+        seed=random_seed if random_seed is not None else None
+    )
 
     # Calculate final results
     end_time = time.time()
@@ -336,7 +407,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     logger.info(f"Total time: {total_time:.2f} seconds")
 
     tsn = len(tot_inputs)  # Total Sample Number
-    dsn = len(global_disc_inputs) + len(local_disc_inputs)  # Discriminatory Sample Number
+    dsn = len(all_discriminations)  # Discriminatory Sample Number
     sur = dsn / tsn if tsn > 0 else 0  # Success Rate
     dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
 
@@ -348,8 +419,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     }
 
     logger.info(f"Total Inputs: {len(tot_inputs)}")
-    logger.info(f"Global Search Discriminatory Inputs: {len(global_disc_inputs)}")
-    logger.info(f"Local Search Discriminatory Inputs: {len(local_disc_inputs)}")
+    logger.info(f"Discriminatory Inputs: {len(all_discriminations)}")
     logger.info(f"Success Rate (SUR): {metrics['SUR']:.4f}")
     logger.info(f"Average Search Time per Discriminatory Sample (DSS): {metrics['DSS']:.4f} seconds")
     logger.info(f"Total Discriminatory Pairs Found: {len(all_discriminations)}")

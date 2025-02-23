@@ -1,6 +1,7 @@
 from collections import defaultdict
 from typing import List
 
+import sklearn
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
@@ -72,6 +73,7 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
 
     # Default parameters for each model type
     np.random.seed(random_state)
+    sklearn.utils.check_random_state(random_state)
 
     # If using parallel processing (especially for RandomForest), set n_jobs=1
     default_params = {
@@ -100,7 +102,6 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
 
     # Prepare features and target
     drop_cols = [target_col]
-
     X = data.drop(drop_cols, axis=1)
     feature_names = list(X.columns)  # Store feature names
     y = data[target_col]

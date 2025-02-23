@@ -1,5 +1,4 @@
 import logging
-import sys
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
@@ -7,9 +6,10 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPClassifier
+from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
-
+from methods.utils import train_sklearn_model
 from queue import PriorityQueue
 
 from z3 import *
@@ -22,49 +22,23 @@ import random
 from data_generator.main import get_real_data, DiscriminationData
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('SG')
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler(sys.stdout)
+handler.setLevel(logging.INFO)
+formatter = logging.Formatter('%(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 
-def train_model(model_type, X, y, random_state=42):
-    """
-    Train a model based on the specified type
-    :param model_type: String specifying model type ('lr', 'rf', 'svm', 'mlp')
-    :param X: Feature matrix
-    :param y: Target values
-    :param random_state: Random state for reproducibility
-    :return: Trained model
-    """
-    model_type = model_type.lower()
-    if model_type == 'lr':
-        model = LogisticRegression(random_state=random_state)
-    elif model_type == 'rf':
-        model = RandomForestClassifier(n_estimators=100, random_state=random_state)
-    elif model_type == 'svm':
-        model = SVC(kernel='rbf', probability=True, random_state=random_state)
-    elif model_type == 'mlp':
-        model = MLPClassifier(hidden_layer_sizes=(100, 50), random_state=random_state)
-    else:
-        raise ValueError(f"Unsupported model type: {model_type}. Choose from: 'lr', 'rf', 'svm', 'mlp'")
+# Suppress Intel Extension messages
+class SklearnexFilter(logging.Filter):
+    def filter(self, record):
+        return 'sklearnex' not in record.name and 'sklearn.utils.validation._assert_all_finite' not in record.msg
 
-    # Split data and train model with same random state for consistency within iteration
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=random_state)
-    model.fit(X_train, y_train)
 
-    # Print basic model performance
-    train_score = model.score(X_train, y_train)
-    test_score = model.score(X_test, y_test)
-    logger.info(f"Model training complete:")
-    logger.info(f"Training accuracy: {train_score:.4f}")
-    logger.info(f"Testing accuracy: {test_score:.4f}")
-
-    return model
+logging.getLogger().addFilter(SklearnexFilter())
+logging.getLogger('sklearnex').setLevel(logging.WARNING)
 
 
 def cluster(data, cluster_num):
@@ -96,7 +70,7 @@ def global_discovery(iteration, config):
     return samples
 
 
-def seed_test_input(dataset, cluster_num, limit):
+def seed_test_input(dataset, cluster_num=None, random_seed=42):
     """
     Select the seed inputs for fairness testing
     :param dataset: the name of dataset
@@ -105,7 +79,19 @@ def seed_test_input(dataset, cluster_num, limit):
     :return: a sequence of seed inputs
     """
     # build the clustering model
-    clf = cluster(dataset, cluster_num)
+    np.random.seed(random_seed)
+    if cluster_num is None:
+        cluster_num = max(min(cluster_num, X.shape[0]), 10)
+
+
+    clf = KMeans(
+        n_clusters=cluster_num,
+        random_state=random_seed,  # Use the provided seed directly
+        # n_init=20,
+        init='k-means++',
+    )
+    clf.fit(dataset)
+
     clusters = [np.where(clf.labels_ == i)[0] for i in range(cluster_num)]
     clusters = sorted(clusters, key=len)  # len(clusters[0][0])==32561
     return clusters[0]
@@ -317,26 +303,7 @@ def gen_arguments(ge):
     return arguments
 
 
-def symbolic_generation(ge: DiscriminationData, model_type, cluster_num, limit):
-    """
-    The implementation of symbolic generation
-    :param ge: the name of dataset
-    :param sensitive_param: the index of sensitive feature
-    :param model_type: model type
-    :param cluster_num: the number of clusters to form as well as the number of
-            centroids to generate
-    :param limit: the maximum number of test case
-    """
-
-    start = time.time()
-
-    model = train_model(model_type, ge.xdf, ge.ydf)
-    # the rank for priority queue, rank1 is for seed inputs, rank2 for local, rank3 for global
-    rank1 = 5
-    rank2 = 1
-    rank3 = 10
-    T1 = 0.3
-
+def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100, iter=2, random_state=42):
     # store the result of fairness testing
     global_disc_inputs = set()
     global_disc_inputs_list = []
@@ -344,77 +311,141 @@ def symbolic_generation(ge: DiscriminationData, model_type, cluster_num, limit):
     local_disc_inputs_list = []
     tot_inputs = set()
 
-    # select the seed input for fairness testing
-    inputs = seed_test_input(ge.xdf, cluster_num, limit)
-    print(len(inputs))
-    print(inputs)
+    def symbolic_generation(ge: DiscriminationData, model_type, cluster_num, limit):
+        """
+        The implementation of symbolic generation
+        :param ge: the name of dataset
+        :param sensitive_param: the index of sensitive feature
+        :param model_type: model type
+        :param cluster_num: the number of clusters to form as well as the number of
+                centroids to generate
+        :param limit: the maximum number of test case
+        """
 
-    # Get all input data at once and convert to numpy for faster processing
-    input_data = copy.deepcopy(ge.xdf.iloc[inputs])
-    input_data['key'] = input_data[ge.non_protected_attributes].apply(lambda x: ''.join(x.astype(str)), axis=1)
-    input_data = input_data.drop_duplicates(subset=['key'])
-    input_data.drop(columns=['key'], inplace=True)
+        start = time.time()
 
-    # Initialize queue with optimized data insertion
-    targets_queue = PriorityQueue()
-    [targets_queue.put((rank1, row.tolist())) for row in input_data[::-1].to_numpy()]
+        model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
+            data=ge.training_dataframe,
+            model_type=model_type,
+            sensitive_attrs=ge.protected_attributes,
+            target_col=ge.outcome_column,
+            random_state=random_state,
+        )
 
-    visited_path = []
-    l_count = 0
-    g_count = 0
-    count = 300
+        # the rank for priority queue, rank1 is for seed inputs, rank2 for local, rank3 for global
+        rank1 = 5
+        rank2 = 1
+        rank3 = 10
+        T1 = 0.3
 
-    # Generate arguments for Z3 solver
-    arguments = gen_arguments(ge)
+        # select the seed input for fairness testing
+        inputs = seed_test_input(ge.xdf, cluster_num)
 
-    results = []
-    use_time = 0  # Initialize use_time
+        # Get all input data at once and convert to numpy for faster processing
+        input_data = copy.deepcopy(ge.xdf.iloc[inputs])
+        input_data['key'] = input_data[ge.non_protected_attributes].apply(lambda x: ''.join(x.astype(str)), axis=1)
+        input_data = input_data.drop_duplicates(subset=['key'])
+        input_data.drop(columns=['key'], inplace=True)
 
-    while len(tot_inputs) < limit and targets_queue.qsize() != 0:
-        use_time = time.time() - start  # Update use_time at the start of each iteration
-        if use_time >= 3900:  # Check time limit at the start of each iteration
-            break
+        # Initialize queue with optimized data insertion
+        targets_queue = PriorityQueue()
+        [targets_queue.put((rank1, row.tolist())) for row in input_data[::-1].to_numpy()]
 
-        org_input = targets_queue.get()
-        org_input_rank = org_input[0]
-        org_input = np.array(org_input[1])
+        visited_path = []
+        l_count = 0
+        g_count = 0
+        count = 300
 
-        found, org_df, found_df = check_for_discrimination_case(ge, model, org_input, ge.sensitive_indices)
-        decision_rules = extract_lime_decision_constraints(ge, model, org_input)
+        # Generate arguments for Z3 solver
+        arguments = gen_arguments(ge)
 
-        # Create a version of the input without any sensitive parameters
-        input_without_sensitive = remove_sensitive_attributes(org_input.tolist(), ge.sensitive_indices)
-        input_key = tuple(input_without_sensitive)
+        results = []
 
-        # Track unique inputs and check for discrimination
-        tot_inputs.add(input_key)
-        if found:
-            print(input_key, found, len(tot_inputs), len(results))
-            results.append((org_df, found_df))
-            if (input_key not in global_disc_inputs) and (input_key not in local_disc_inputs):
-                if org_input_rank > 2:
-                    global_disc_inputs.add(input_key)
-                    global_disc_inputs_list.append(input_key)
-                else:
-                    local_disc_inputs.add(input_key)
-                    local_disc_inputs_list.append(input_key)
+        while len(tot_inputs) < limit and targets_queue.qsize() != 0:
+            dss = len(local_disc_inputs) + len(global_disc_inputs_list)
+            dsr = dss / len(tot_inputs) if len(tot_inputs) > 0 else 0
+            logger.info(f"TSS : {len(tot_inputs)} DSS: {dss} DSR : {dsr}")
+            use_time = time.time() - start
+            if use_time >= 3900:  # Check time limit at the start of each iteration
+                break
 
-                if len(tot_inputs) == limit:
-                    break
+            org_input = targets_queue.get()
+            org_input_rank = org_input[0]
+            org_input = np.array(org_input[1])
 
-            # local search
-            for decision_rule_index in range(len(decision_rules)):
-                path_constraint = copy.deepcopy(decision_rules)
-                c = path_constraint[decision_rule_index]
+            found, org_df, found_df = check_for_discrimination_case(ge, model, org_input, ge.sensitive_indices)
+            decision_rules = extract_lime_decision_constraints(ge, model, org_input)
+
+            # Create a version of the input without any sensitive parameters
+            input_without_sensitive = remove_sensitive_attributes(org_input.tolist(), ge.sensitive_indices)
+            input_key = tuple(input_without_sensitive)
+
+            # Track unique inputs and check for discrimination
+            tot_inputs.add(input_key)
+            if found:
+                results.append((org_df, found_df))
+                if (input_key not in global_disc_inputs) and (input_key not in local_disc_inputs):
+                    if org_input_rank > 2:
+                        global_disc_inputs.add(input_key)
+                        global_disc_inputs_list.append(input_key)
+                    else:
+                        local_disc_inputs.add(input_key)
+                        local_disc_inputs_list.append(input_key)
+
+                    if len(tot_inputs) == limit:
+                        break
+
+                # local search
+                for decision_rule_index in range(len(decision_rules)):
+                    path_constraint = copy.deepcopy(decision_rules)
+                    c = path_constraint[decision_rule_index]
+                    if c[0] in ge.sensitive_indices.values():
+                        continue
+
+                    if c[1] == "<=":
+                        c[1] = ">"
+                        c[3] = 1.0 - c[3]
+                    else:
+                        c[1] = "<="
+                        c[3] = 1.0 - c[3]
+
+                    end = time.time()
+                    use_time = end - start
+                    if use_time >= count:
+                        print("Percentage discriminatory inputs - " + str(
+                            float(len(global_disc_inputs_list) + len(local_disc_inputs_list))
+                            / float(len(tot_inputs)) * 100))
+                        print("Number of discriminatory inputs are " + str(len(local_disc_inputs_list)))
+                        print("Total Inputs are " + str(len(tot_inputs)))
+                        print('use time:' + str(end - start))
+                        count += 300
+
+                    if use_time >= 3900:  # Check time limit after each local search
+                        break
+                    if path_constraint not in visited_path:
+                        visited_path.append(path_constraint)
+                        input = local_solve(path_constraint, arguments, org_input, decision_rule_index, ge)
+                        l_count += 1
+                        if input != None:
+                            r = average_confidence(path_constraint)
+                            targets_queue.put((rank2 + r, input))
+
+            # global search
+            prefix_pred = []
+            for c in decision_rules:
                 if c[0] in ge.sensitive_indices.values():
                     continue
+                if c[3] < T1:
+                    break
 
-                if c[1] == "<=":
-                    c[1] = ">"
-                    c[3] = 1.0 - c[3]
+                n_c = copy.deepcopy(c)
+                if n_c[1] == "<=":
+                    n_c[1] = ">"
+                    n_c[3] = 1.0 - c[3]
                 else:
-                    c[1] = "<="
-                    c[3] = 1.0 - c[3]
+                    n_c[1] = "<="
+                    n_c[3] = 1.0 - c[3]
+                path_constraint = prefix_pred + [n_c]
 
                 end = time.time()
                 use_time = end - start
@@ -427,57 +458,36 @@ def symbolic_generation(ge: DiscriminationData, model_type, cluster_num, limit):
                     print('use time:' + str(end - start))
                     count += 300
 
-                if use_time >= 3900:  # Check time limit after each local search
-                    break
+                # filter out the path_constraint already solved before
                 if path_constraint not in visited_path:
                     visited_path.append(path_constraint)
-                    input = local_solve(path_constraint, arguments, org_input, decision_rule_index, ge)
-                    l_count += 1
+                    input = global_solve(path_constraint, arguments, org_input, ge)
+                    g_count += 1
                     if input != None:
                         r = average_confidence(path_constraint)
-                        targets_queue.put((rank2 + r, input))
+                        targets_queue.put((rank3 - r, input))
 
-        # global search
-        prefix_pred = []
-        for c in decision_rules:
-            if c[0] in ge.sensitive_indices.values():
-                continue
-            if c[3] < T1:
-                break
+                prefix_pred = prefix_pred + [c]
 
-            n_c = copy.deepcopy(c)
-            if n_c[1] == "<=":
-                n_c[1] = ">"
-                n_c[3] = 1.0 - c[3]
-            else:
-                n_c[1] = "<="
-                n_c[3] = 1.0 - c[3]
-            path_constraint = prefix_pred + [n_c]
+                if use_time >= 3900:  # Check time limit after each global search iteration
+                    break
 
-            end = time.time()
-            use_time = end - start
-            if use_time >= count:
-                print("Percentage discriminatory inputs - " + str(
-                    float(len(global_disc_inputs_list) + len(local_disc_inputs_list))
-                    / float(len(tot_inputs)) * 100))
-                print("Number of discriminatory inputs are " + str(len(local_disc_inputs_list)))
-                print("Total Inputs are " + str(len(tot_inputs)))
-                print('use time:' + str(end - start))
-                count += 300
+        return results
 
-            # filter out the path_constraint already solved before
-            if path_constraint not in visited_path:
-                visited_path.append(path_constraint)
-                input = global_solve(path_constraint, arguments, org_input, ge)
-                g_count += 1
-                if input != None:
-                    r = average_confidence(path_constraint)
-                    targets_queue.put((rank3 - r, input))
+    if not cluster_num:
+        cluster_num = len(ge.ydf.unique())
 
-            prefix_pred = prefix_pred + [c]
+    start = time.time()
+    results = []
+    for i in range(iter):
+        f_results = symbolic_generation(ge=ge,
+                                        model_type=model_type,
+                                        cluster_num=cluster_num,
+                                        limit=limit)
 
-            if use_time >= 3900:  # Check time limit after each global search iteration
-                break
+        results.extend(f_results)
+
+    end = time.time()
     res_df = []
     case_id = 0
     for org, counter_org in results:
@@ -505,44 +515,21 @@ def symbolic_generation(ge: DiscriminationData, model_type, cluster_num, limit):
             case_id += 1
 
     if len(res_df) != 0:
-        res_df = pd.concat(res_df)
+        results_df = pd.concat(res_df)
     else:
-        res_df = pd.DataFrame([])
+        results_df = pd.DataFrame([])
 
     # Calculate metrics similar to Aequitas
-    end_time = time.time()
-    execution_time = end_time - start
+    execution_time = end - start
 
-    return res_df, execution_time, tot_inputs, results
-
-
-def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100, iter=2):
-    if not cluster_num:
-        cluster_num = len(ge.ydf.unique())
-
-    start = time.time()
-    results = []
-    for i in range(iter):
-        res_df, execution_time, tot_inputs, f_results = symbolic_generation(ge=ge,
-                                                                 model_type=model_type,
-                                                                 cluster_num=cluster_num,
-                                                                 limit=limit)
-        end = time.time()
-
-        print('total time:' + str(end - start))
-        results.append((res_df, execution_time, tot_inputs, f_results))
-
-    results_df = pd.concat([res[0] for res in results])
-    results_df.drop_duplicates(subset='couple_key', keep='first', inplace=True)
-
-    tsn = sum([len(res[2]) for res in results])
-    dsn = sum([len(res[3]) for res in results])
+    tsn = len(tot_inputs)
+    dsn = len(local_disc_inputs_list) + len(global_disc_inputs_list)
 
     metrics = {
         "TSN": tsn,
         "DSN": dsn,
-        "DSS": round(sum([res[1] for res in results])/len(results), 2),
-        "SUR": round(dsn/tsn, 2)
+        "DSS": round(execution_time / dsn, 2),
+        "SUR": round(dsn / tsn, 2)
     }
 
     return results_df, metrics

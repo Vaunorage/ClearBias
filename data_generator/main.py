@@ -1507,7 +1507,7 @@ def generate_data(
     results['collisions'] = collisions
 
     # Generate extra rows if requested
-    if extra_rows > 0:
+    if extra_rows and extra_rows > 0:
         # Initialize the generator for individual samples using the schema and correlation matrix
         generator = IndividualsGenerator(
             schema=data_schema,
