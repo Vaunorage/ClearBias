@@ -3,63 +3,29 @@ import datetime
 import hashlib
 import json
 import math
-import os
 import pickle
 import random
+from collections import defaultdict
 from pathlib import Path
-
 import numpy as np
-from numpy.linalg import norm
-from scipy.linalg import eigh
-from sklearn.preprocessing import LabelEncoder
-from tqdm import tqdm
-from dataclasses import dataclass, field
-from pandas import DataFrame
-from typing import Literal, TypeVar, Any, List, Dict, Tuple, Optional, Union
-from scipy.stats import norm, multivariate_normal, spearmanr, gaussian_kde
 import pandas as pd
-import warnings
-from typing import Tuple, Optional, Dict, List
-from dataclasses import dataclass
+from typing import List, Dict, Tuple, Optional, Any
 from sklearn.preprocessing import LabelEncoder
-from sklearn.cluster import KMeans
+from dataclasses import dataclass, field
+from scipy.stats import spearmanr
+from sdv.metadata import SingleTableMetadata
+from sdv.single_table import GaussianCopulaSynthesizer
+from sdv.sampling import Condition
+from tqdm import tqdm
 from ucimlrepo import fetch_ucirepo
 
-from data_generator.main_old import DiscriminationData
-from path import HERE
-from uncertainty_quantification.main import UncertaintyRandomForest, AleatoricUncertainty, EpistemicUncertainty
-
-warnings.filterwarnings("ignore")
-# Ignore specific warnings
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-warnings.filterwarnings("ignore", category=RuntimeWarning)
-warnings.filterwarnings("ignore", category=UserWarning)
-
-
-def generate_cache_key(params: dict) -> str:
-    # Sort the parameters to ensure consistent ordering
-    ordered_params = dict(sorted(params.items()))
-
-    # Convert numpy arrays and other complex types to serializable format
-    def make_serializable(obj):
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        elif isinstance(obj, (list, tuple, dict, str, int, float, bool, type(None))):
-            return obj
-        return str(obj)
-
-    serializable_params = {k: make_serializable(v) for k, v in ordered_params.items()}
-
-    # Create a hash of the parameters
-    param_str = json.dumps(serializable_params, sort_keys=True)
-    return hashlib.md5(param_str.encode()).hexdigest()
+from data_generator.main_old2 import safe_normalize, GaussianCopulaCategorical, generate_subgroup2_probabilities, \
+    bin_array_values, coefficient_of_variation, calculate_actual_metrics
 
 
 class DataCache:
-
     def __init__(self):
-        self.cache_dir = HERE.joinpath(".cache/discrimination_data")
+        self.cache_dir = Path(".cache/discrimination_data")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Create a metadata file to track cache contents
@@ -82,7 +48,7 @@ class DataCache:
         """Get the full path for a cache file."""
         return self.cache_dir / f"{cache_key}.pkl"
 
-    def save(self, data: DiscriminationData, params: dict):
+    def save(self, data, params: dict):
         cache_key = generate_cache_key(params)
         cache_path = self.get_cache_path(cache_key)
 
@@ -98,7 +64,7 @@ class DataCache:
         }
         self._save_metadata()
 
-    def load(self, params: dict) -> Optional[DiscriminationData]:
+    def load(self, params: dict) -> Optional:
         cache_key = generate_cache_key(params)
         cache_path = self.get_cache_path(cache_key)
 
@@ -111,553 +77,122 @@ class DataCache:
                 return None
         return None
 
-    def clear(self):
-        """Clear all cached data."""
-        for cache_file in self.cache_dir.glob("*.pkl"):
-            cache_file.unlink()
-        self.metadata = {}
-        self._save_metadata()
 
-    def get_cache_info(self) -> dict:
-        """Get information about the cache contents."""
-        return {
-            'cache_dir': str(self.cache_dir),
-            'num_cached_items': len(self.metadata),
-            'total_size_mb': sum(os.path.getsize(f) for f in self.cache_dir.glob("*.pkl")) / (1024 * 1024),
-            'items': self.metadata
-        }
+def generate_cache_key(params: dict) -> str:
+    # Sort the parameters to ensure consistent ordering
+    ordered_params = dict(sorted(params.items()))
 
+    # Convert numpy arrays and other complex types to serializable format
+    def make_serializable(obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (list, tuple, dict, str, int, float, bool, type(None))):
+            return obj
+        return str(obj)
 
-class GaussianCopulaCategorical:
-    def __init__(self, marginals, correlation_matrix, excluded_combinations=None, corr_matrix_randomness=1.0):
-        self.marginals = [np.array(m) for m in marginals]
-        self.correlation_matrix = np.array(correlation_matrix)
-        self.dim = len(marginals)
-        self.excluded_combinations = set(map(tuple, excluded_combinations or []))
-        self.corr_matrix_randomness = np.clip(corr_matrix_randomness, 0.0, 1.0)
+    serializable_params = {k: make_serializable(v) for k, v in ordered_params.items()}
 
-        # Validate and normalize probability distributions
-        self.validate_and_normalize_marginals()
-
-        # Convert marginal probabilities to cumulative probabilities
-        self.cum_probabilities = []
-        for m in self.marginals:
-            cum_prob = np.cumsum(m)
-            # Ensure last probability is exactly 1
-            cum_prob = cum_prob / cum_prob[-1]
-            self.cum_probabilities.append(cum_prob[:-1])
-
-    def validate_and_normalize_marginals(self):
-        """Validate and normalize probability distributions, handling edge cases."""
-        for i in range(len(self.marginals)):
-            m = self.marginals[i]
-
-            # Replace any NaN values with 0
-            m = np.nan_to_num(m, nan=0.0)
-
-            # Ensure all probabilities are non-negative
-            m = np.maximum(m, 0.0)
-
-            # If sum is 0, create uniform distribution
-            if np.sum(m) == 0:
-                m = np.ones_like(m) / len(m)
-            else:
-                # Normalize to sum to 1
-                m = m / np.sum(m)
-
-            self.marginals[i] = m
-
-    def is_excluded(self, sample):
-        return tuple(sample) in self.excluded_combinations
-
-    def generate_samples(self, n_samples):
-        samples = []
-        attempts = 0
-        max_attempts = n_samples * 10
-
-        while len(samples) < n_samples and attempts < max_attempts:
-            try:
-                if self.corr_matrix_randomness == 1.0:
-                    # Completely random sampling
-                    categorical_sample = np.array([
-                        np.random.choice(len(m), p=m)
-                        for m in self.marginals
-                    ])
-                elif self.corr_matrix_randomness == 0.0:
-                    # Strict correlation-based sampling
-                    gaussian_samples = np.random.multivariate_normal(
-                        mean=np.zeros(self.dim),
-                        cov=self.correlation_matrix,
-                        size=1
-                    ).flatten()
-                    uniform_samples = norm.cdf(gaussian_samples)
-                    categorical_sample = np.array([
-                        np.searchsorted(cum_prob, u)
-                        for cum_prob, u in zip(self.cum_probabilities, uniform_samples)
-                    ])
-                else:
-                    # Blend between random and correlated sampling
-                    if np.random.random() < self.corr_matrix_randomness:
-                        # Random sampling
-                        categorical_sample = np.array([
-                            np.random.choice(len(m), p=m)
-                            for m in self.marginals
-                        ])
-                    else:
-                        # Correlation-based sampling
-                        gaussian_samples = np.random.multivariate_normal(
-                            mean=np.zeros(self.dim),
-                            cov=self.correlation_matrix,
-                            size=1
-                        ).flatten()
-                        uniform_samples = norm.cdf(gaussian_samples)
-                        categorical_sample = np.array([
-                            np.searchsorted(cum_prob, u)
-                            for cum_prob, u in zip(self.cum_probabilities, uniform_samples)
-                        ])
-
-                if not self.is_excluded(categorical_sample):
-                    samples.append(categorical_sample)
-
-            except (ValueError, IndexError) as e:
-                print(f"Warning: Caught error during sample generation: {str(e)}")
-                # Re-normalize probabilities and try again
-                self.validate_and_normalize_marginals()
-
-            attempts += 1
-
-        if len(samples) < n_samples:
-            raise RuntimeError(f"Could only generate {len(samples)} valid samples out of {n_samples} requested")
-
-        return np.array(samples)
-
-
-def coefficient_of_variation(data):
-    mean = np.mean(data)
-    std_dev = np.std(data)
-    if mean == 0 or np.isnan(mean) or np.isnan(std_dev):
-        return 0  # or another appropriate value
-    cv = (std_dev / mean) * 100
-    return cv
-
-
-def is_numeric_column(series: pd.Series) -> bool:
-    """
-    Check if a column should be treated as numeric for KDE.
-    """
-    if not np.issubdtype(series.dtype, np.number):
-        return False
-
-    n_unique = len(series.dropna().unique())
-    return n_unique >= 5
-
-
-def is_integer_column(series: pd.Series) -> bool:
-    """
-    Check if a numeric column contains only integers.
-    """
-    return np.all(series.dropna() == series.dropna().astype(int))
-
-
-def get_unique_samples(kde: gaussian_kde, n_samples: int, is_integer: bool = False,
-                       max_attempts: int = 1000) -> np.ndarray:
-    """
-    Get unique samples from KDE with appropriate type handling.
-    """
-    samples = kde.resample(min(n_samples * 2, max_attempts))[0]
-
-    if is_integer:
-        samples = np.round(samples).astype(int)
-
-    unique_samples = np.unique(samples)
-
-    attempts = 1
-    while len(unique_samples) < n_samples and attempts < max_attempts:
-        new_samples = kde.resample(n_samples)[0]
-        if is_integer:
-            new_samples = np.round(new_samples).astype(int)
-        unique_samples = np.unique(np.concatenate([unique_samples, new_samples]))
-        attempts += 1
-
-    if len(unique_samples) > n_samples:
-        indices = np.linspace(0, len(unique_samples) - 1, n_samples).astype(int)
-        unique_samples = np.sort(unique_samples)[indices]
-
-    return unique_samples
+    # Create a hash of the parameters
+    param_str = json.dumps(serializable_params, sort_keys=True)
+    return hashlib.md5(param_str.encode()).hexdigest()
 
 
 @dataclass
 class DataSchema:
     attr_categories: List[List[str]]
-    protected_attr: List[str]
+    protected_attr: List[bool]
     attr_names: List[str]
     categorical_distribution: Dict[str, List[float]]
     correlation_matrix: np.ndarray
     gen_order: List[str]
-    category_maps: Dict[str, Dict[int, str]] = None  # Add category maps to store encoding/decoding mappings
+    category_maps: Dict[str, Dict[int, str]] = None  # Add category maps for encoding/decoding
     column_mapping: Dict[str, str] = None
+    synthesizer: Any = None  # Store the trained SDV synthesizer
+    sdv_metadata: Any = None  # Store the SDV metadata
 
+    def to_sdv_metadata(self) -> SingleTableMetadata:
+        """Convert this schema to SDV SingleTableMetadata."""
+        if self.sdv_metadata is not None:
+            return self.sdv_metadata
 
-def create_kde_encoding(series: pd.Series, n_samples: int = 100) -> Tuple[
-    np.ndarray, gaussian_kde, List[Union[int, float]], Dict[Union[int, float], str], np.ndarray]:
-    """
-    Create KDE from the series and sample fixed points from it.
+        metadata = SingleTableMetadata()
 
-    Args:
-        series: Input pandas Series containing numeric values
-        n_samples: Number of points to sample from the KDE
+        # Add columns to the metadata
+        for i, (attr_name, attr_cats, is_protected) in enumerate(zip(
+                self.attr_names, self.attr_categories, self.protected_attr)):
 
-    Returns:
-        Tuple containing:
-        - encoded values (np.ndarray)
-        - KDE object (gaussian_kde)
-        - categories list (List[Union[int, float]])
-        - category map (Dict[Union[int, float], str])
-        - probability distribution (np.ndarray)
-    """
-    non_nan_mask = pd.notna(series)
-    values = series[non_nan_mask].to_numpy()
-
-    if len(values) == 0:
-        # Handle empty/all-NaN series
-        return (np.full(len(series), -1),
-                None,
-                [-1, 0],
-                {-1: 'nan', 0: '0'},
-                np.array([1.0]))  # Default probability for empty series
-
-    # Reshape values for KDE if necessary
-    values = values.reshape(-1, 1) if len(values.shape) == 1 else values
-
-    # Create and fit KDE
-    kde = gaussian_kde(values.T)
-    is_integer = is_integer_column(series)
-
-    # Get sampled points
-    sampled_points = get_unique_samples(kde, n_samples, is_integer)
-
-    # Calculate probabilities at sampled points
-    sampled_points_reshaped = sampled_points.reshape(1, -1)
-    probabilities = kde.evaluate(sampled_points_reshaped)
-
-    # Normalize probabilities to sum to 1
-    probabilities = probabilities / np.sum(probabilities)
-
-    # Create categories starting from -1 (missing) then 0 to n-1
-    categories = [-1] + list(range(len(sampled_points)))
-
-    # Create mapping dictionary
-    if is_integer:
-        category_map = {
-            -1: 'nan',
-            **{i: str(int(point)) for i, point in enumerate(sampled_points)}
-        }
-    else:
-        category_map = {
-            -1: 'nan',
-            **{i: f"{point:.3f}" for i, point in enumerate(sampled_points)}
-        }
-
-    # Encode original values
-    encoded = np.full(len(series), -1)  # Default to -1 for missing values
-    valid_mask = non_nan_mask
-    if valid_mask.any():
-        valid_values = series[valid_mask].to_numpy()
-        # Find nearest sampled point for each value
-        nearest_indices = np.array([
-            np.abs(sampled_points - val).argmin()
-            for val in valid_values
-        ])
-        encoded[valid_mask] = nearest_indices
-
-    return encoded, kde, categories, category_map, probabilities
-
-
-def generate_schema_from_dataframe(
-        df: pd.DataFrame,
-        protected_columns: List[str] = None,
-        attr_prefix: str = None,
-        outcome_column: str = 'outcome',
-        ensure_positive_definite: bool = True,
-        n_samples: int = 100,
-        use_attr_naming_pattern: bool = False
-) -> Tuple[DataSchema, np.ndarray, Dict[str, str]]:
-    """Generate a DataSchema and correlation matrix from a pandas DataFrame using KDE for numeric columns."""
-    if outcome_column not in df.columns:
-        raise ValueError(f"Outcome column '{outcome_column}' not found in DataFrame")
-
-    new_cols = []
-    for k, v in enumerate(df.columns):
-        if v == outcome_column:
-            attr_col = 'outcome'
-        else:
-            attr_col = f"Attr{k}_{'T' if v in protected_columns else 'X'}"
-
-        new_cols.append(attr_col)
-
-    new_cols_mapping = {k: v for k, v in zip(new_cols, df.columns)}
-    reverse_cols_mapping = {v: k for k, v in zip(new_cols, df.columns)}
-
-    if use_attr_naming_pattern:
-        df.columns = new_cols
-
-    # Handle attribute naming pattern
-    if use_attr_naming_pattern:
-        protected_columns = [col for col in df.columns if col.endswith('_T')]
-        attr_columns = [col for col in df.columns if col.endswith('_X') or col.endswith('_T')]
-    else:
-        if attr_prefix:
-            attr_columns = [col for col in df.columns if col.startswith(attr_prefix)]
-        else:
-            attr_columns = [col for col in df.columns if col != outcome_column]
-
-    if not attr_columns:
-        raise ValueError("No attribute columns found")
-
-    attr_categories = []
-    encoded_df = pd.DataFrame(index=df.index)
-    binning_info = {}
-    kde_distributions = {}
-    label_encoders = {}
-    category_maps = {}  # Store category maps for each column
-    categorical_distribution = {}  # Initialize categorical_distribution here
-
-    for col in attr_columns:
-        if is_numeric_column(df[col]):
-            encoded_vals, kde, categories, category_map, probs = create_kde_encoding(df[col], n_samples)
-
-            encoded_df[col] = encoded_vals
-
-            attr_categories.append(categories)
-            category_maps[col] = category_map
-            categorical_distribution[col] = probs.tolist()  # Store the KDE-based probabilities
-
-            if kde is not None:
-                kde_distributions[col] = kde
-                binning_info[col] = {
-                    'strategy': 'kde',
-                    'n_samples': n_samples,
-                    'is_integer': is_integer_column(df[col])
-                }
-        else:
-            le = LabelEncoder()
-            non_nan_vals = df[col].dropna().unique()
-
-            if len(non_nan_vals) > 0:
-                str_vals = [str(x) for x in non_nan_vals]
-                str_vals = list(dict.fromkeys(str_vals))
-
-                le.fit(str_vals)
-                encoded = np.full(len(df), -1)
-
-                mask = df[col].notna()
-                if mask.any():
-                    encoded[mask] = le.transform([str(x) for x in df[col][mask]])
-
-                categories = [-1] + list(range(len(str_vals)))
-                category_map = {-1: 'nan', **{i: val for i, val in enumerate(str_vals)}}
-
-                label_encoders[col] = le
-                category_maps[col] = category_map
+            # Determine the SDV column type
+            if -1 in attr_cats:  # If -1 is in categories, it handles missing values
+                cats_without_missing = [c for c in attr_cats if c != -1]
             else:
-                encoded = np.full(len(df), -1)
-                categories = [-1, 0]
-                category_map = {-1: 'nan', 0: 'empty'}
-                category_maps[col] = category_map
+                cats_without_missing = attr_cats
 
-            encoded_df[col] = encoded
-            attr_categories.append(categories)
-
-            # Calculate categorical distribution for non-numeric columns
-            valid_counts = encoded_df[col][encoded_df[col] >= 0].value_counts().sort_index()
-            total_valid = valid_counts.sum()
-            probs = np.zeros(len(categories) - 1)  # -1 to exclude the -1 category
-            if total_valid > 0:
-                for idx, count in valid_counts.items():
-                    probs[int(idx)] = count / total_valid
-            categorical_distribution[col] = probs.tolist()
-
-    # Calculate correlation matrix
-    correlation_matrix = calculate_correlation_matrix(encoded_df, attr_columns, ensure_positive_definite)
-
-    schema = DataSchema(
-        attr_categories=attr_categories,
-        protected_attr=[col in protected_columns for col in attr_columns],
-        attr_names=attr_columns,
-        categorical_distribution=categorical_distribution,
-        correlation_matrix=correlation_matrix,
-        gen_order=list(range(len(attr_columns))),
-        category_maps=category_maps,
-        column_mapping=new_cols_mapping
-    )
-
-    n_encoded_df = copy.deepcopy(encoded_df)
-    n_encoded_df['outcome'] = LabelEncoder().fit_transform(df['outcome'].astype(str))
-
-    return schema, correlation_matrix, new_cols_mapping, n_encoded_df
-
-
-def decode_dataframe(df: pd.DataFrame, schema: DataSchema) -> pd.DataFrame:
-    """
-    Decode a dataframe using the schema's category maps.
-    """
-    decoded_df = pd.DataFrame(index=df.index)
-
-    for col in schema.attr_names:
-        if col in df.columns:
-            category_map = schema.category_maps[col]
-            decoded_df[col] = df[col].map(
-                lambda x: category_map.get(int(x) if isinstance(x, (int, float)) else x, 'unknown'))
-
-    # Copy any columns that weren't in the schema
-    for col in df.columns:
-        if col not in schema.attr_names:
-            decoded_df[col] = df[col]
-
-    return decoded_df
-
-
-def calculate_correlation_matrix(encoded_df, attr_columns, ensure_positive_definite):
-    """Helper function to calculate the correlation matrix"""
-    correlation_matrix = np.zeros((len(attr_columns), len(attr_columns)))
-    for i, col1 in enumerate(attr_columns):
-        for j, col2 in enumerate(attr_columns):
-            if i == j:
-                correlation_matrix[i, j] = 1.0
+            # Check if this is a categorical or numerical column
+            if all(isinstance(v, (int, float)) for v in cats_without_missing):
+                # This is a numerical column
+                metadata.add_column(attr_name, sdtype='numerical')
             else:
-                # Update mask to check for non-negative values (exclude missing values)
-                mask = (encoded_df[col1] >= 0) & (encoded_df[col2] >= 0)
-                if mask.any():
-                    corr, _ = spearmanr(encoded_df[col1][mask], encoded_df[col2][mask])
-                    correlation_matrix[i, j] = corr if not np.isnan(corr) else 0.0
-                    correlation_matrix[j, i] = correlation_matrix[i, j]
-                else:
-                    correlation_matrix[i, j] = 0.0
-                    correlation_matrix[j, i] = 0.0
+                # This is a categorical column
+                metadata.add_column(attr_name, sdtype='categorical')
 
-    if ensure_positive_definite:
-        eigenvalues, eigenvectors = np.linalg.eigh(correlation_matrix)
-        if np.any(eigenvalues < 0):
-            eigenvalues[eigenvalues < 0] = 1e-6
-            correlation_matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
-            scaling = np.sqrt(np.diag(correlation_matrix))
-            correlation_matrix = correlation_matrix / scaling[:, None] / scaling[None, :]
+        # Add outcome column
+        metadata.add_column('outcome', sdtype='categorical')
 
-    return correlation_matrix
+        return metadata
 
+    def sample(self, num_rows=100, conditions=None):
+        """Sample from the fitted synthesizer if available."""
+        if self.synthesizer is None:
+            raise ValueError("No synthesizer has been fitted to this schema")
 
-def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attributes,
-                         prop_protected_attr) -> DataSchema:
-    attr_categories = []
-    attr_names = []
-
-    if nb_attributes < 2:
-        raise ValueError("nb_attributes must be at least 2 to ensure both protected and unprotected attributes.")
-
-    protected_attr = [True, False]
-
-    for _ in range(nb_attributes - 2):
-        protected_attr.append(random.random() < prop_protected_attr)
-
-    random.shuffle(protected_attr)
-
-    i_t = 1
-    i_x = 1
-
-    for i in range(nb_attributes):
-        num_classes = random.randint(min_number_of_classes, max_number_of_classes)
-        attribute_set = [-1] + list(range(0, num_classes))
-        attr_categories.append(attribute_set)
-
-        if protected_attr[i]:
-            attr_names.append(f"Attr{i_t}_T")
-            i_t += 1
+        if conditions:
+            return self.synthesizer.sample_from_conditions(conditions=conditions)
         else:
-            attr_names.append(f"Attr{i_x}_X")
-            i_x += 1
+            return self.synthesizer.sample(num_rows=num_rows)
 
-    correlation_matrix = generate_valid_correlation_matrix(nb_attributes)
+    def decode_dataframe(self, df):
+        """Decode a dataframe using the category maps."""
+        if not self.category_maps:
+            return df
 
-    categorical_distribution = generate_categorical_distribution(attr_categories, attr_names)
+        decoded_df = pd.DataFrame(index=df.index)
 
-    # Generate generation order if not provided
-    gen_order = list(range(1, nb_attributes + 1))
-    random.shuffle(gen_order)
+        for col in self.attr_names:
+            if col in df.columns and col in self.category_maps:
+                category_map = self.category_maps[col]
+                decoded_df[col] = df[col].map(
+                    lambda x: category_map.get(int(x) if isinstance(x, (int, float)) else x, 'unknown'))
 
-    res = DataSchema(attr_categories=attr_categories, protected_attr=protected_attr, attr_names=attr_names,
-                     categorical_distribution=categorical_distribution, correlation_matrix=correlation_matrix,
-                     gen_order=gen_order)
-    return res
+        # Copy non-schema columns
+        for col in df.columns:
+            if col not in decoded_df.columns:
+                decoded_df[col] = df[col]
 
-
-def bin_array_values(array, num_bins):
-    min_val = np.min(array)
-    max_val = np.max(array)
-    bins = np.linspace(min_val, max_val, num_bins + 1)
-    binned_indices = np.digitize(array, bins) - 1
-    return binned_indices
+        return decoded_df
 
 
-AttrCol = TypeVar('AttrCol', bound=str)
+@dataclass
+class DiscriminationDataFrame(pd.DataFrame):
+    """A custom DataFrame subclass for discrimination data."""
 
-
-class DiscriminationDataFrame(DataFrame):
-    group_key: str
-    subgroup_key: str
-    indv_key: str
-    group_size: int
-    min_number_of_classes: int
-    max_number_of_classes: int
-    nb_attributes: int
-    prop_protected_attr: float
-    nb_groups: int
-    max_group_size: int
-    hiddenlayers_depth: int
-    granularity: int
-    intersectionality: int
-    similarity: float
-    alea_uncertainty: float
-    epis_uncertainty: float
-    magnitude: float
-    frequency: float
-    outcome: float
-    collisions: int
-    diff_outcome: float
-    diff_variation: float
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-
-    def __getitem__(self, key: AttrCol) -> Any:
-        return super().__getitem__(key)
-
-    def get_attr_columns(self) -> list[str]:
-        return [col for col in self.columns if col.startswith('Attr')]
-
-    def get_attr_column(self, index: int, protected: bool) -> Any:
-        suffix = '_T' if protected else '_X'
-        col_name = f'Attr{index}{suffix}'
-        return self[col_name] if col_name in self.columns else None
-
-
-def sort_two_strings(str1: str, str2: str) -> tuple[str, str]:
-    if str1 <= str2:
-        return (str1, str2)
-    return (str2, str1)
+    @property
+    def _constructor(self):
+        return DiscriminationDataFrame
 
 
 @dataclass
 class DiscriminationData:
-    dataframe: DiscriminationDataFrame
+    dataframe: pd.DataFrame
     categorical_columns: List[str]
     attributes: Dict[str, bool]
     collisions: int
     nb_groups: int
     max_group_size: int
     hiddenlayers_depth: int
-    outcome_column: Literal['outcome']
+    schema: DataSchema
+    outcome_column: str = 'outcome'
     relevance_metrics: pd.DataFrame = field(default_factory=pd.DataFrame)
-    attr_possible_values: Dict[str, List[int]] = field(default_factory=dict)  # Add possible values for each attribute
+    attr_possible_values: Dict[str, List[int]] = field(default_factory=dict)
 
     @property
     def attr_columns(self) -> List[str]:
@@ -691,10 +226,10 @@ class DiscriminationData:
     def ydf(self):
         return self.dataframe[self.outcome_column]
 
-    @property
-    def schema(self):
-        return '|'.join(
-            [''.join(list(map(str, e))).replace('-1', '') for e in self.attr_possible_values.values()])
+    # @property
+    # def schema(self):
+    #     return '|'.join(
+    #         [''.join(list(map(str, e))).replace('-1', '') for e in self.attr_possible_values.values()])
 
     def __post_init__(self):
         self.input_bounds = []
@@ -703,449 +238,421 @@ class DiscriminationData:
             max_val = math.ceil(self.xdf[col].max())
             self.input_bounds.append([min_val, max_val])
 
-    @staticmethod
-    def generate_individual_synth_combinations(df: pd.DataFrame) -> pd.DataFrame:
-        feature_cols = list(filter(lambda x: 'Attr' in x, df.columns))
 
-        all_combinations = []
+def create_sdv_numerical_distributions(data_schema):
+    """Create numerical distributions configuration for SDV GaussianCopulaSynthesizer."""
+    numerical_distributions = {}
 
-        grouped = df.groupby('group_key')
-
-        for group_key, group_data in grouped:
-            subgroups = group_data['subgroup_key'].unique()
-
-            if len(subgroups) != 2:
-                raise ValueError(f"Group {group_key} does not have exactly 2 subgroups")
-
-            subgroup1_data = df[
-                (df['group_key'] == group_key) &
-                (df['subgroup_key'] == subgroups[0])
-                ]
-
-            subgroup2_data = df[
-                (df['group_key'] == group_key) &
-                (df['subgroup_key'] == subgroups[1])
-                ]
-
-            for idx1, row1 in subgroup1_data.iterrows():
-                for idx2, row2 in subgroup2_data.iterrows():
-                    # Sort the individual keys
-                    sorted_keys = sort_two_strings(row1['indv_key'], row2['indv_key'])
-
-                    combination = {
-                        'group_key': group_key,
-                        'subgroup1_key': subgroups[0],
-                        'subgroup2_key': subgroups[1],
-                        'indv_key_1': sorted_keys[0],
-                        'indv_key_2': sorted_keys[1]
-                    }
-
-                    # Need to match the features with the correct sorted individual
-                    if sorted_keys[0] == row1['indv_key']:
-                        # Keys are already in original order
-                        for feature in feature_cols:
-                            combination[f'{feature}_1'] = row1[feature]
-                            combination[f'{feature}_2'] = row2[feature]
-                    else:
-                        # Keys were swapped, so swap the features too
-                        for feature in feature_cols:
-                            combination[f'{feature}_1'] = row2[feature]
-                            combination[f'{feature}_2'] = row1[feature]
-
-                    all_combinations.append(combination)
-
-        result_df = pd.DataFrame(all_combinations)
-
-        result_df['couple_key'] = result_df.apply(lambda x: f"{x['indv_key_1']}-{x['indv_key_2']}", axis=1)
-
-        column_order = ['group_key', 'subgroup1_key', 'subgroup2_key',
-                        'indv_key_1', 'indv_key_2', 'couple_key']
-
-        column_order.extend([f'{feature}_1' for feature in feature_cols])
-        column_order.extend([f'{feature}_2' for feature in feature_cols])
-
-        res = result_df[column_order]
-
-        return res.drop_duplicates()
-
-
-def generate_subgroup2_probabilities(subgroup1_sample, subgroup_sets, similarity, sets_attr):
-    subgroup2_probabilities = []
-
-    for i, (sample_value, possible_values) in enumerate(zip(subgroup1_sample, subgroup_sets)):
-        n = len(possible_values)
-        probs = np.zeros(n)
-
-        if sets_attr[i]:  # If the attribute is protected
-            # Ensure that subgroup2 has a different value than subgroup1 for protected attributes
-            sample_index = possible_values.index(sample_value)
-            different_indices = [j for j in range(n) if j != sample_index]
-
-            # If the protected attribute has only one possible value, skip changing it
-            if len(possible_values) == 1:
-                probs[sample_index] = 1.0  # Only one value available, assign it
-            elif not different_indices:
-                # If no different values are available, use the same value as subgroup1
-                probs[sample_index] = 1.0
+    for attr_name, attr_cats in zip(data_schema.attr_names, data_schema.attr_categories):
+        # Check if attribute is numerical
+        if all(isinstance(c, (int, float)) for c in attr_cats if c != -1):
+            # Use beta distribution for protected attributes and normal for non-protected
+            is_protected = data_schema.protected_attr[data_schema.attr_names.index(attr_name)]
+            if is_protected:
+                numerical_distributions[attr_name] = 'beta'
             else:
-                chosen_index = random.choice(different_indices)
-                probs[chosen_index] = 1.0
+                numerical_distributions[attr_name] = 'truncnorm'
+
+    return numerical_distributions
+
+
+def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attributes,
+                         prop_protected_attr, fit_synthesizer=True, n_samples=1000) -> DataSchema:
+    """Generate a data schema for synthetic data."""
+    attr_categories = []
+    attr_names = []
+
+    if nb_attributes < 2:
+        raise ValueError("nb_attributes must be at least 2 to ensure both protected and unprotected attributes.")
+
+    protected_attr = [True, False]
+
+    for _ in range(nb_attributes - 2):
+        protected_attr.append(random.random() < prop_protected_attr)
+
+    random.shuffle(protected_attr)
+
+    i_t = 1
+    i_x = 1
+
+    for i in range(nb_attributes):
+        num_classes = random.randint(min_number_of_classes, max_number_of_classes)
+        attribute_set = [-1] + list(range(0, num_classes))
+        attr_categories.append(attribute_set)
+
+        if protected_attr[i]:
+            attr_names.append(f"Attr{i_t}_T")
+            i_t += 1
         else:
-            # Apply similarity for non-protected attributes
-            sample_index = possible_values.index(sample_value)
-            probs[sample_index] = similarity
-            remaining_prob = 1 - similarity
-            for j in range(n):
-                if j != sample_index:
-                    probs[j] = remaining_prob / (n - 1)
+            attr_names.append(f"Attr{i_x}_X")
+            i_x += 1
 
-            # Add noise to the probabilities to simulate realistic variation
-            noise = np.random.dirichlet(np.ones(n) * (1 - similarity) * 10)
-            probs = (1 - (1 - similarity) / 2) * probs + (1 - similarity) / 2 * noise
-            probs /= probs.sum()
+    correlation_matrix = generate_valid_correlation_matrix(nb_attributes)
+    categorical_distribution = generate_categorical_distribution(attr_categories, attr_names)
 
-        subgroup2_probabilities.append(probs.tolist())
+    # Generate generation order if not provided
+    gen_order = list(range(1, nb_attributes + 1))
+    random.shuffle(gen_order)
 
-    return subgroup2_probabilities
+    # Create SDV metadata
+    sdv_metadata = SingleTableMetadata()
 
-
-class OutcomeGenerator:
-    def __init__(self, weights: np.ndarray, bias: float, subgroup_bias: float):
-        self.weights = weights
-        self.bias = bias
-        self.subgroup_bias = subgroup_bias
-
-    def generate_outcome(self, sample: List[int], is_subgroup1: bool) -> float:
-        x = np.array(sample, dtype=float)
-        x = (x - np.mean(x)) / (np.std(x) + 1e-8)
-        weighted_sum = np.dot(x, self.weights) + self.bias
-        if is_subgroup1:
-            weighted_sum += self.subgroup_bias
+    # Add columns to the metadata
+    for attr_name, attr_cats, is_protected in zip(attr_names, attr_categories, protected_attr):
+        # Determine if this is categorical or numerical
+        if all(isinstance(v, (int, float)) for v in attr_cats if v != -1):
+            sdv_metadata.add_column(attr_name, sdtype='numerical')
         else:
-            weighted_sum -= self.subgroup_bias
-        sigmoid = 1 / (1 + np.exp(-weighted_sum))
-        return norm.cdf(norm.ppf(sigmoid) * 0.5)
+            sdv_metadata.add_column(attr_name, sdtype='categorical')
 
+    # Add outcome column
+    sdv_metadata.add_column('outcome', sdtype='categorical')
 
-class IndividualsGenerator:
-    def __init__(self, schema: DataSchema, graph, gen_order, outcome_weights, outcome_bias, subgroup_bias,
-                 epis_uncertainty, alea_uncertainty, corr_matrix_randomness=1.0, n_estimators=50,
-                 categorical_distribution=None, categorical_influence=0.5):
-        self.schema = schema
-        self.graph = np.array(graph)
-        self.gen_order = [i - 1 for i in gen_order]
-        self.n_attributes = len(schema.attr_names)
-        self.outcome_weights = outcome_weights
-        self.outcome_bias = outcome_bias
-        self.subgroup_bias = subgroup_bias
-        self.epis_uncertainty = epis_uncertainty
-        self.alea_uncertainty = alea_uncertainty
-        self.n_estimators = n_estimators
-        self.corr_matrix_randomness = np.clip(corr_matrix_randomness, 0.0, 1.0)
-        self.categorical_distribution = categorical_distribution or {}
-        self.categorical_influence = np.clip(categorical_influence, 0.0, 1.0)
+    # Initialize schema
+    res = DataSchema(attr_categories=attr_categories,
+                     protected_attr=protected_attr,
+                     attr_names=attr_names,
+                     categorical_distribution=categorical_distribution,
+                     correlation_matrix=correlation_matrix,
+                     gen_order=gen_order,
+                     sdv_metadata=sdv_metadata)
 
-    def _get_attribute_probabilities(self, attr_idx, n_values):
-        """
-        Get the probability distribution for a specific attribute.
+    # Create and fit synthesizer if requested
+    if fit_synthesizer:
+        # Create numerical distribution settings
+        numerical_distributions = create_sdv_numerical_distributions(res)
 
-        Args:
-            attr_idx (int): Index of the attribute
-            n_values (int): Number of possible values for the attribute
-
-        Returns:
-            np.ndarray: Probability distribution for the attribute
-        """
-        attr_name = self.schema.attr_names[attr_idx]
-        if attr_name in self.categorical_distribution:
-            return np.array(self.categorical_distribution[attr_name])
-        return np.ones(n_values) / n_values  # Uniform distribution if not specified
-
-    def generate_dataset_with_outcome(self, n_samples, predetermined_values, is_subgroup1):
-        samples = np.full((n_samples, self.n_attributes), -1, dtype=int)
-
-        # Fill in predetermined values
-        if predetermined_values:
-            mask = np.array(predetermined_values) != -1
-            samples[:, mask] = np.array(predetermined_values)[mask][None, :]
-
-        # Generate remaining values
-        for attr in self.gen_order:
-            mask = samples[:, attr] == -1
-            if not np.any(mask):
-                continue
-
-            n_to_generate = np.sum(mask)
-            n_values = len(self.schema.attr_categories[attr]) - 1
-
-            # Get categorical probabilities
-            base_categorical_probs = self._get_attribute_probabilities(attr, n_values)
-            categorical_probs = np.tile(base_categorical_probs, (n_to_generate, 1))
-
-            # Calculate correlation-based probabilities
-            other_attrs = np.arange(self.n_attributes) != attr
-            other_attrs_indices = np.where(other_attrs)[0]
-            other_values = samples[mask][:, other_attrs]
-            correlations = self.graph[attr][other_attrs]
-            correlations = np.clip(correlations, 0.001, 0.999)  # Avoid extreme values
-
-            # Initialize correlation probabilities
-            corr_probs = np.ones((n_to_generate, n_values))
-            for value in range(n_values):
-                prob_multipliers = np.ones(n_to_generate)
-                for i, other_attr_idx in enumerate(other_attrs_indices):
-                    corr = correlations[i]
-                    attr_values = other_values[:, i]
-                    matches = (attr_values == value)
-                    divisor = max(n_values - 1, 1e-10)
-                    prob_multipliers *= np.where(matches, corr, (1 - corr) / divisor)
-                corr_probs[:, value] = prob_multipliers
-
-            # Handle NaN and zero values in correlation probabilities
-            corr_probs = np.nan_to_num(corr_probs, nan=1.0 / n_values)
-            zero_rows = np.all(corr_probs == 0, axis=1)
-            corr_probs[zero_rows] = 1.0 / n_values
-
-            # Normalize correlation probabilities
-            row_sums = corr_probs.sum(axis=1, keepdims=True)
-            row_sums = np.where(row_sums == 0, 1, row_sums)
-            corr_probs /= row_sums
-
-            uniform_probs = np.ones((n_to_generate, n_values)) / n_values
-
-            # Step 1: Blend correlation matrix with uniform distribution
-            correlation_blend = (1 - self.corr_matrix_randomness) * corr_probs + \
-                                self.corr_matrix_randomness * uniform_probs
-
-            # Step 2: Blend the result with categorical distribution
-            final_probs = ((1 - self.categorical_influence) * uniform_probs
-                           + self.categorical_influence + categorical_probs)
-
-            # Add small noise to prevent identical outcomes
-            # noise = np.random.normal(0, 0.01, final_probs.shape)
-            # final_probs = np.abs(final_probs + noise)
-
-            # Ensure valid probabilities
-            final_probs = np.maximum(final_probs, 0)
-            row_sums = final_probs.sum(axis=1, keepdims=True)
-            final_probs /= row_sums
-
-            # Generate values
-            samples[mask, attr] = np.array([np.random.choice(n_values, p=p) for p in final_probs])
-
-        # Generate outcomes
-        X = (samples - np.mean(samples, axis=0)) / (np.std(samples, axis=0) + 1e-8)
-
-        ensemble_preds = []
-        for i in range(self.n_estimators):
-            weight_noise = np.random.normal(0, self.epis_uncertainty, size=self.outcome_weights.shape)
-            perturbed_weights = self.outcome_weights * (1 + weight_noise)
-            base_pred = np.dot(X, perturbed_weights) + self.outcome_bias
-            base_pred += self.subgroup_bias if is_subgroup1 else -self.subgroup_bias
-            noisy_pred = base_pred + np.random.normal(0, self.alea_uncertainty, size=n_samples)
-            probs = 1 / (1 + np.exp(-noisy_pred))
-            ensemble_preds.append(probs)
-
-        ensemble_preds = np.array(ensemble_preds).T
-        final_predictions = np.mean(ensemble_preds, axis=1)
-        epistemic_uncertainty = np.var(ensemble_preds, axis=1)
-        aleatoric_uncertainty = np.mean(ensemble_preds * (1 - ensemble_preds), axis=1)
-
-        return [(samples[i].tolist(),
-                 final_predictions[i],
-                 epistemic_uncertainty[i],
-                 aleatoric_uncertainty[i])
-                for i in range(n_samples)]
-
-
-class CollisionTracker:
-    def __init__(self, nb_attributes):
-        self.used_combinations = set()
-        self.nb_attributes = nb_attributes
-
-    def is_collision(self, possibility):
-        return tuple(possibility) in self.used_combinations
-
-    def add_combination(self, possibility):
-        self.used_combinations.add(tuple(possibility))
-
-
-class GroupDefinition:
-    group_size: int
-    subgroup_bias: int
-    similarity: float
-    alea_uncertainty: float
-    epis_uncertainty: float
-    frequency: float
-    avg_diff_outcome: int
-    diff_subgroup_size: float
-    subgroup1: dict  # {'Attr1_T': 3, 'Attr2_T': 1, 'Attr3_X': 3},
-    subgroup2: dict  # {'Attr1_T': 2, 'Attr2_T': 2, 'Attr3_X': 2}
-
-
-def calculate_actual_similarity(data):
-    def calculate_group_similarity(group_data):
-        subgroup_keys = group_data['subgroup_key'].unique()
-        if len(subgroup_keys) != 2:
-            return np.nan
-
-        subgroup1 = subgroup_keys[0].split('|')
-        subgroup2 = subgroup_keys[1].split('|')
-
-        matching_attrs = sum(a == b for a, b in zip(subgroup1, subgroup2) if a != '*' and b != '*')
-        total_fixed_attrs = sum(a != '*' and b != '*' for a, b in zip(subgroup1, subgroup2))
-
-        return matching_attrs / total_fixed_attrs if total_fixed_attrs > 0 else 1.0
-
-    return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_similarity)
-
-
-def calculate_actual_uncertainties(data):
-    X = data.dataframe[data.feature_names].values  # Convert to numpy array
-    y = data.dataframe[data.outcome_column].values  # Convert to numpy array
-
-    # Initialize base random forest for comparison
-    urf = UncertaintyRandomForest(n_estimators=50, random_state=42)
-    urf.fit(X, y)
-    mean_pred, base_epistemic, base_aleatoric = urf.predict_with_uncertainty(X)
-
-    # Initialize result columns
-    data.dataframe['calculated_epistemic_random_forest'] = base_epistemic
-    data.dataframe['calculated_aleatoric_random_forest'] = base_aleatoric
-
-    # Calculate all Aleatoric Uncertainties
-    aleatoric_methods = ['entropy', 'probability_margin', 'label_smoothing']
-    for method in aleatoric_methods:
-        aleatoric_model = AleatoricUncertainty(
-            method=method,
-            temperature=1.0
+        # Create the synthesizer with appropriate settings
+        synthesizer = GaussianCopulaSynthesizer(
+            sdv_metadata,
+            enforce_min_max_values=True,
+            enforce_rounding=True,
+            numerical_distributions=numerical_distributions,
+            default_distribution='beta'
         )
-        aleatoric_model.fit(X, y)
-        probs, aleatoric_uncertainty = aleatoric_model.predict_uncertainty(X)
-        data.dataframe[f'calculated_aleatoric_{method}'] = aleatoric_uncertainty
 
-    # Calculate all Epistemic Uncertainties
-    epistemic_methods = ['ensemble', 'mc_dropout', 'evidential']
-    epistemic_params = {
-        'ensemble': {'n_estimators': 5, 'dropout_rate': None, 'n_forward_passes': None},
-        'mc_dropout': {'n_estimators': None, 'dropout_rate': 0.5, 'n_forward_passes': 30},
-        'evidential': {'n_estimators': None, 'dropout_rate': None, 'n_forward_passes': None}
-    }
+        # Generate some initial data to fit the synthesizer
+        # This creates a small sample dataset based on the schema
+        initial_data = {}
+        for k, v in categorical_distribution.items():
+            initial_data[k] = random.choices(list(range(len(v))), weights=v, k=n_samples)
+        initial_data = pd.DataFrame(initial_data)
+        # Generate simple outcome values (0/1)
+        initial_data['outcome'] = random.choices([0, 1], k=n_samples)
 
-    for method in epistemic_methods:
-        params = epistemic_params[method]
-        epistemic_model = EpistemicUncertainty(
-            method=method,
-            n_estimators=params['n_estimators'],
-            dropout_rate=params['dropout_rate'],
-            n_forward_passes=params['n_forward_passes']
-        )
-        epistemic_model.fit(X, y)
-        probs, epistemic_uncertainty = epistemic_model.predict_uncertainty(X)
-        data.dataframe[f'calculated_epistemic_{method}'] = epistemic_uncertainty
+        # Convert to DataFrame
+        initial_df = pd.DataFrame(initial_data)
 
-    # Aggregate results by group
-    uncertainty_columns = [col for col in data.dataframe.columns
-                           if col.startswith('calculated_')]
+        # Fit the synthesizer
+        print("Fitting initial GaussianCopulaSynthesizer...")
+        synthesizer.fit(initial_df)
 
-    res = data.dataframe.groupby('group_key')[uncertainty_columns].agg('mean')
+        # Add the synthesizer to the schema
+        res.synthesizer = synthesizer
 
-    # Add combined uncertainty metrics for all combinations
-    for epistemic_method in epistemic_methods:
-        for aleatoric_method in aleatoric_methods:
-            combined_col = f'combined_{epistemic_method}_{aleatoric_method}'
-            res[combined_col] = (
-                    res[f'calculated_epistemic_{epistemic_method}'] +
-                    res[f'calculated_aleatoric_{aleatoric_method}']
-            )
-
-    # Add summary statistics
-    res['calculated_epistemic'] = res[[col for col in res.columns
-                                       if col.startswith('calculated_epistemic')]].mean(axis=1)
-    res['calculated_aleatoric'] = res[[col for col in res.columns
-                                       if col.startswith('calculated_aleatoric')]].mean(axis=1)
-    res['calculated_combined'] = res[[col for col in res.columns
-                                      if col.startswith('combined')]].mean(axis=1)
     return res
 
 
-def calculate_actual_mean_diff_outcome(data):
-    def calculate_group_diff(group_data):
-        subgroup_keys = group_data['subgroup_key'].unique()
-        if len(subgroup_keys) != 2:
-            return np.nan
+def generate_valid_correlation_matrix(n):
+    """Generate a valid correlation matrix."""
+    A = np.random.rand(n, n)
+    A = (A + A.T) / 2
+    eigenvalues, eigenvectors = np.linalg.eigh(A)
+    eigenvalues = np.maximum(eigenvalues, 1e-8)
+    A = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+    D = np.diag(1 / np.sqrt(np.diag(A)))
+    correlation_matrix = D @ A @ D
 
-        subgroup1_outcome = group_data[group_data['subgroup_key'] == subgroup_keys[0]][data.outcome_column].mean()
-        subgroup2_outcome = group_data[group_data['subgroup_key'] == subgroup_keys[1]][data.outcome_column].mean()
-
-        return abs(subgroup1_outcome - subgroup2_outcome) / max(subgroup1_outcome, subgroup2_outcome)
-
-    return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_diff)
-
-
-def calculate_actual_diff_outcome_from_avg(data):
-    avg_outcome = data.dataframe[data.outcome_column].mean()
-
-    def calculate_group_diff(group_data):
-        unique_subgroups = group_data['subgroup_key'].unique()
-        subgroup1_outcome = group_data[group_data['subgroup_key'] == unique_subgroups[0]][data.outcome_column]
-        subgroup2_outcome = group_data[group_data['subgroup_key'] == unique_subgroups[1]][data.outcome_column]
-        res = (abs(avg_outcome - subgroup1_outcome.mean()) + abs(avg_outcome - subgroup2_outcome.mean())) / 2
-        return res
-
-    return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_diff)
+    return correlation_matrix
 
 
-def calculate_actual_metrics(data):
+def generate_categorical_distribution(attr_categories, attr_names, bias_strength=0.5):
     """
-    Calculate the actual metrics and relevance for each group.
+    Generate a categorical distribution for attributes with controlled randomness.
+
+    Args:
+        attr_categories (List[List[int]]): List of possible values for each attribute
+        attr_names (List[str]): List of attribute names
+        bias_strength (float): Controls how biased the distributions are (0.0 to 1.0)
+                             0.0 = nearly uniform, 1.0 = strongly biased to one category
+
+    Returns:
+        Dict[str, List[float]]: Dictionary mapping attribute names to probability distributions
     """
-    actual_similarity = calculate_actual_similarity(data)
-    actual_uncertainties = calculate_actual_uncertainties(data)
-    actual_mean_diff_outcome = calculate_actual_mean_diff_outcome(data)
-    actual_diff_outcome_from_avg = calculate_actual_diff_outcome_from_avg(data)
+    distribution = {}
 
-    # Merge these metrics into the main dataframe
-    data.dataframe['calculated_similarity'] = data.dataframe['group_key'].map(actual_similarity)
-    data.dataframe['calculated_epistemic_group'] = data.dataframe['group_key'].map(
-        actual_uncertainties['calculated_epistemic'])
-    data.dataframe['calculated_aleatoric_group'] = data.dataframe['group_key'].map(
-        actual_uncertainties['calculated_aleatoric'])
-    data.dataframe['calculated_magnitude'] = data.dataframe['group_key'].map(actual_mean_diff_outcome)
-    data.dataframe['calculated_mean_demographic_disparity'] = data.dataframe['group_key'].map(
-        actual_diff_outcome_from_avg)
-    data.dataframe['calculated_uncertainty_group'] = data.dataframe.apply(
-        lambda x: (x['calculated_epistemic_group'] + x['calculated_aleatoric_group']) / 2, axis=1)
+    for attr_name, categories in zip(attr_names, attr_categories):
+        n_categories = len(categories) - 1  # Exclude -1 which represents missing values
 
-    data.dataframe['calculated_intersectionality'] = data.dataframe['intersectionality_param'].copy() / len(
-        data.protected_attributes)
-    data.dataframe['calculated_granularity'] = data.dataframe['granularity_param'].copy() / len(
-        data.non_protected_attributes)
-    data.dataframe['calculated_group_size'] = data.dataframe['group_size'].copy()
-    data.dataframe['calculated_subgroup_ratio'] = data.dataframe['diff_subgroup_size'].copy()
-    data.dataframe = data.dataframe.loc[:, ~data.dataframe.columns.duplicated()]
+        # Generate random probabilities
+        if bias_strength > 0:
+            # Generate biased probabilities
+            probs = np.random.dirichlet([1 - bias_strength] * n_categories)
 
-    return data
+            # Make one category dominant based on bias_strength
+            dominant_idx = np.random.randint(n_categories)
+            probs = (1 - bias_strength) * probs + bias_strength * np.eye(n_categories)[dominant_idx]
+        else:
+            # Generate nearly uniform probabilities
+            probs = np.ones(n_categories) / n_categories
+            probs += np.random.uniform(-0.1, 0.1, n_categories)
+
+        # Ensure probabilities sum to 1
+        probs = probs / np.sum(probs)
+
+        distribution[attr_name] = probs.tolist()
+
+    return distribution
 
 
-def calculate_weights(n):
-    return [1 / (i + 1) for i in range(n)]
+def generate_data_from_distribution(distribution, attr_categories, attr_names, n_samples=1000,
+                                    preset_values=None, excluded_values=None):
+    """
+    Generate synthetic data using categorical distributions.
+
+    Args:
+        distribution (Dict[str, List[float]]): Dictionary mapping attribute names to probability distributions
+                                             (output from generate_categorical_distribution function)
+        attr_categories (List[List[int]]): List of possible values for each attribute
+        attr_names (List[str]): List of attribute names
+        n_samples (int): Number of samples to generate
+        preset_values (List[List]): List of lists of possible values for each attribute.
+                                  Each position corresponds to the attr_names position.
+                                  If None for an attribute, random values will be generated.
+                                  If a list is provided, values will be randomly selected from that list.
+                                  Default is None (no preset values).
+        excluded_values (List[List]): List of lists of values to exclude for each attribute.
+                                     Each position corresponds to the attr_names position.
+                                     If None for an attribute, no values will be excluded.
+                                     If a list is provided, those values will be excluded.
+                                     Default is None (no excluded values).
+
+    Returns:
+        pd.DataFrame: DataFrame with generated categorical data
+    """
+
+    # Initialize default values for preset_values and excluded_values if not provided
+    if preset_values is None:
+        preset_values = [None] * len(attr_names)
+    elif len(preset_values) < len(attr_names):
+        preset_values.extend([None] * (len(attr_names) - len(preset_values)))
+
+    if excluded_values is None:
+        excluded_values = [None] * len(attr_names)
+    elif len(excluded_values) < len(attr_names):
+        excluded_values.extend([None] * (len(attr_names) - len(excluded_values)))
+
+    # Initialize dataframe to store generated data
+    generated_data = defaultdict(list)
+
+    for _ in range(n_samples):
+        for i, attr_name in enumerate(attr_names):
+            # Get the distribution for the current attribute
+            valid_probs = distribution.get(attr_name, [])
+            probs = distribution.get(attr_name, [])
+            valid_categories = list(filter(lambda x: x != -1, attr_categories[i]))
+            categories = list(filter(lambda x: x != -1, attr_categories[i]))
+
+            if preset_values[i] == [-1]:
+                generated_data[attr_name].append(-1)
+            else:
+                # Apply preset values filter if specified
+                if preset_values[i] is not None and len(preset_values[i]) > 0 and preset_values[i] != [-1]:
+                    # Get indices of categories that are in preset_values
+                    valid_indices = [idx for idx, cat in enumerate(categories)
+                                     if cat in preset_values[i]]
+
+                    if not valid_indices:
+                        raise ValueError(f"None of the preset values for attribute {attr_name} exist in its categories")
+
+                    # Filter categories to only include preset values
+                    valid_categories = [categories[idx] for idx in valid_indices]
+                    valid_probs = [probs[idx] for idx in valid_indices]
+
+                # Apply excluded values filter if specified
+                if excluded_values[i] and excluded_values[i] != [-1]:
+                    # Keep indices of categories that are not in excluded_values
+                    keep_indices = [idx for idx, cat in enumerate(valid_categories)
+                                    if cat not in excluded_values[i]]
+
+                    if not keep_indices:
+                        raise ValueError(f"All possible values for attribute {attr_name} are excluded")
+
+                    # Update categories and probabilities
+                    valid_categories = [valid_categories[idx] for idx in keep_indices]
+                    valid_probs = [valid_probs[idx] for idx in keep_indices]
+
+                # Normalize probabilities
+                sum_probs = sum(valid_probs)
+                if sum_probs > 0:
+                    valid_probs = [p / sum_probs for p in valid_probs]
+                else:
+                    raise ValueError(f"Sum of probabilities for attribute {attr_name} is zero after filtering")
+
+                # Generate a random value based on the distribution
+                value = np.random.choice(valid_categories, p=valid_probs)
+
+                # Add the generated value to the dataframe
+                generated_data[attr_name].append(value)
+
+    # Convert the dictionary to a pandas DataFrame
+    return pd.DataFrame(generated_data)
 
 
-def safe_normalize(p):
-    """Safely normalize an array, handling the case where sum is zero."""
-    sum_p = np.sum(p)
-    if sum_p == 0:
-        # If all probabilities are zero, return a uniform distribution
-        return np.ones_like(p) / len(p)
-    elif np.isnan(sum_p):
-        # If the sum is NaN, replace NaNs with 0 and normalize
-        p = np.nan_to_num(p)
-        sum_p = np.sum(p)
-        if sum_p == 0:
-            return np.ones_like(p) / len(p)
-        return p / sum_p
-    return p / sum_p
+def estimate_min_attributes_and_classes(num_groups, max_iterations=1000):
+    """Estimate minimum attributes and classes needed for the desired number of groups."""
+
+    def calculate_combinations(num_attributes, num_classes):
+        return sum(math.comb(num_attributes, i) * (num_classes - 1) ** i for i in range(1, num_attributes + 1))
+
+    min_attributes = 2
+    min_classes = 2
+
+    for _ in range(max_iterations):
+        combinations = calculate_combinations(min_attributes, min_classes)
+
+        if combinations >= num_groups:
+            return min_attributes, min_classes
+
+        if min_attributes <= min_classes:
+            min_attributes += 1
+        else:
+            min_classes += 1
+
+    return min_attributes, min_classes
+
+
+def generate_outcomes_with_uncertainty(
+        df: pd.DataFrame,
+        feature_columns: List[str],
+        weights: Optional[np.ndarray] = None,
+        bias: float = 0.0,
+        group_column: Optional[str] = None,
+        group_bias: float = 0.0,
+        epistemic_uncertainty: float = 0.1,
+        aleatoric_uncertainty: float = 0.1,
+        n_estimators: int = 50,
+        random_state: Optional[int] = None
+):
+    """
+    Generate prediction outcomes with epistemic and aleatoric uncertainty
+    for a pandas DataFrame.
+
+    Args:
+        df: Input DataFrame containing features
+        feature_columns: List of column names to use as features
+        weights: Optional weight vector for features. If None, random weights are generated
+        bias: Bias term to add to the linear combination
+        group_column: Optional column name for group membership (for group bias)
+        group_bias: Bias to apply based on group membership
+        epistemic_uncertainty: Amount of model uncertainty (weight perturbation)
+        aleatoric_uncertainty: Amount of irreducible noise in predictions
+        n_estimators: Number of models in the ensemble
+        random_state: Optional random seed for reproducibility
+
+    Returns:
+        DataFrame with original data plus prediction, epistemic_uncertainty,
+        and aleatoric_uncertainty columns
+    """
+    if random_state is not None:
+        np.random.seed(random_state)
+
+    # Extract features and standardize
+    X = df[feature_columns].values
+    X = (X - np.mean(X, axis=0)) / (np.std(X, axis=0) + 1e-8)
+
+    # Generate random weights if not provided
+    if weights is None:
+        weights = np.random.normal(0, 1, size=X.shape[1])
+
+    # Get group information if specified
+    group_effects = np.zeros(len(df))
+    if group_column is not None and group_column in df.columns:
+        group_values = df[group_column].values
+        unique_groups = np.unique(group_values)
+        if len(unique_groups) == 2:
+            # Binary group case
+            group_effects = np.where(group_values == unique_groups[0],
+                                     group_bias, -group_bias)
+        else:
+            # Multi-group case (assign random biases)
+            group_map = {g: np.random.normal(0, group_bias)
+                         for g in unique_groups}
+            group_effects = np.array([group_map[g] for g in group_values])
+
+    # Generate ensemble predictions
+    ensemble_preds = []
+    for i in range(n_estimators):
+        # Add epistemic uncertainty through weight perturbation
+        weight_noise = np.random.normal(0, epistemic_uncertainty, size=weights.shape)
+        perturbed_weights = weights * (1 + weight_noise)
+
+        # Compute base prediction
+        base_pred = np.dot(X, perturbed_weights) + bias + group_effects
+
+        # Add aleatoric uncertainty
+        noisy_pred = base_pred + np.random.normal(0, aleatoric_uncertainty, size=len(df))
+
+        # Convert to probability
+        probs = 1 / (1 + np.exp(-noisy_pred))
+        ensemble_preds.append(probs)
+
+    # Calculate final predictions and uncertainties
+    ensemble_preds = np.array(ensemble_preds).T
+    final_predictions = np.mean(ensemble_preds, axis=1)
+    epistemic_uncertainty = np.var(ensemble_preds, axis=1)
+    aleatoric_uncertainty = np.mean(ensemble_preds * (1 - ensemble_preds), axis=1)
+
+    if np.isnan(final_predictions).any() or np.isnan(epistemic_uncertainty).any() or np.isnan(aleatoric_uncertainty).any():
+        print('ddd')
+
+    return final_predictions, epistemic_uncertainty, aleatoric_uncertainty
+
+
+def fill_nan_values(df, data_schema=None):
+    """
+    Fill NaN values in a dataframe using smart defaults.
+
+    Args:
+        df: DataFrame containing NaN values to fill
+        data_schema: Optional DataSchema object for schema-aware defaults
+
+    Returns:
+        DataFrame with NaN values filled
+    """
+    # Create a copy to avoid modifying the original
+    filled_df = df.copy()
+
+    # Process each column
+    for col in filled_df.columns:
+        # Skip columns with no NaN values
+        if not filled_df[col].isna().any():
+            continue
+
+        # For numeric columns
+        if pd.api.types.is_numeric_dtype(filled_df[col]):
+            # Try to use the median of non-NaN values
+            median_val = filled_df[col].median()
+            # If median is also NaN, use 0
+            filled_df[col].fillna(0 if pd.isna(median_val) else median_val, inplace=True)
+
+        # For categorical columns
+        else:
+            # Try to use mode first
+            if not filled_df[col].mode().empty:
+                mode_val = filled_df[col].mode().iloc[0]
+                filled_df[col].fillna(mode_val, inplace=True)
+            # If no mode or schema is available, use a schema-based default
+            elif data_schema is not None and col in data_schema.attr_names:
+                col_idx = data_schema.attr_names.index(col)
+                valid_values = [v for v in data_schema.attr_categories[col_idx] if v != -1]
+                default_val = valid_values[0] if valid_values else "unknown"
+                filled_df[col].fillna(default_val, inplace=True)
+            # Last resort - use "unknown"
+            else:
+                filled_df[col].fillna("unknown", inplace=True)
+
+    return filled_df
 
 
 def create_group(granularity, intersectionality,
@@ -1193,17 +700,16 @@ def create_group(granularity, intersectionality,
     frequency = random.uniform(min_frequency, max_frequency)
 
     # Generate samples based on the new ordered attributes
-    subgroup1_p_vals = [random.choices(list(range(len(e))), k=len(e)) for e in subgroup_sets]
-    subgroup1_p_vals = [safe_normalize(p) for p in subgroup1_p_vals]
-    subgroup1_sample = GaussianCopulaCategorical(
-        subgroup1_p_vals, correlation_matrix, corr_matrix_randomness=corr_matrix_randomness).generate_samples(1)
-    subgroup1_vals = [subgroup_sets[i][e] for i, e in enumerate(subgroup1_sample[0])]
 
-    subgroup2_p_vals = generate_subgroup2_probabilities(subgroup1_vals, subgroup_sets, similarity, sets_attr)
-    subgroup2_sample = GaussianCopulaCategorical(subgroup2_p_vals, correlation_matrix,
-                                                 list(subgroup1_sample),
-                                                 corr_matrix_randomness=corr_matrix_randomness).generate_samples(1)
-    subgroup2_vals = [subgroup_sets[i][e] for i, e in enumerate(subgroup2_sample[0])]
+    subgroup1_vals = generate_data_from_distribution(data_schema.categorical_distribution, attr_categories,
+                                                     data_schema.attr_names, n_samples=1,
+                                                     preset_values=subgroup_sets).values.tolist()[0]
+
+    subgroup2_vals = generate_data_from_distribution(data_schema.categorical_distribution, attr_categories,
+                                                     data_schema.attr_names, n_samples=1,
+                                                     preset_values=subgroup_sets,
+                                                     excluded_values=list(
+                                                         map(lambda x: [x], subgroup1_vals))).values.tolist()[0]
 
     # Calculate total group size based on frequency while respecting min and max constraints
     total_group_size = max(min_group_size, math.ceil(max_group_size * frequency))
@@ -1216,34 +722,40 @@ def create_group(granularity, intersectionality,
     subgroup1_size = max(min_group_size // 2, (total_group_size + diff_size) // 2)
     subgroup2_size = max(min_group_size // 2, total_group_size - subgroup1_size)
 
-    generator = IndividualsGenerator(
-        schema=data_schema,
-        graph=correlation_matrix,
-        gen_order=gen_order,
-        outcome_weights=W[-1],
-        outcome_bias=0,
-        subgroup_bias=subgroup_bias,
-        epis_uncertainty=epis_uncertainty,
-        alea_uncertainty=alea_uncertainty,
-        corr_matrix_randomness=corr_matrix_randomness,
-        categorical_distribution=categorical_distribution,
-        categorical_influence=categorical_influence
-    )
-
     # Generate dataset for subgroup 1 and subgroup 2
-    subgroup1_data = generator.generate_dataset_with_outcome(subgroup1_size, subgroup1_vals, is_subgroup1=True)
-    subgroup1_individuals = [sample for sample, _, _, _ in subgroup1_data]
-    subgroup1_individuals_df = pd.DataFrame(subgroup1_individuals, columns=data_schema.attr_names)
-    subgroup1_individuals_df['outcome'] = [outcome for _, outcome, _, _ in subgroup1_data]
-    subgroup1_individuals_df['epis_uncertainty'] = [epis for _, _, epis, _ in subgroup1_data]
-    subgroup1_individuals_df['alea_uncertainty'] = [alea for _, _, _, alea in subgroup1_data]
+    subgroup1_individuals_df = data_schema.synthesizer.sample_from_conditions(conditions=[Condition(
+        num_rows=subgroup1_size,
+        column_values={k: v for k, v in zip(data_schema.attr_names, subgroup1_vals) if v != -1}
+    )])
+    subgroup1_individuals_df = fill_nan_values(subgroup1_individuals_df, data_schema)
 
-    subgroup2_data = generator.generate_dataset_with_outcome(subgroup2_size, subgroup2_vals, is_subgroup1=False)
-    subgroup2_individuals = [sample for sample, _, _, _ in subgroup2_data]
-    subgroup2_individuals_df = pd.DataFrame(subgroup2_individuals, columns=data_schema.attr_names)
-    subgroup2_individuals_df['outcome'] = [outcome for _, outcome, _, _ in subgroup2_data]
-    subgroup2_individuals_df['epis_uncertainty'] = [epis for _, _, epis, _ in subgroup2_data]
-    subgroup2_individuals_df['alea_uncertainty'] = [alea for _, _, _, alea in subgroup2_data]
+    subgroup1_outcome, subgroup1_epistemic_uncertainty, subgroup1_aleatoric_uncertainty = generate_outcomes_with_uncertainty(
+        df=subgroup1_individuals_df,
+        feature_columns=data_schema.attr_names,
+        weights=W[-1], bias=0.0, group_column=None,
+        group_bias=0.0, epistemic_uncertainty=epis_uncertainty,
+        aleatoric_uncertainty=alea_uncertainty, n_estimators=50, random_state=None)
+
+    subgroup1_individuals_df['outcome'] = subgroup1_outcome
+    subgroup1_individuals_df['epis_uncertainty'] = subgroup1_epistemic_uncertainty
+    subgroup1_individuals_df['alea_uncertainty'] = subgroup1_aleatoric_uncertainty
+
+    subgroup2_individuals_df = data_schema.synthesizer.sample_from_conditions(conditions=[Condition(
+        num_rows=subgroup2_size,
+        column_values={k: v for k, v in zip(data_schema.attr_names, subgroup2_vals) if v != -1}
+    )])
+    subgroup2_individuals_df = fill_nan_values(subgroup2_individuals_df, data_schema)
+
+    subgroup2_outcome, subgroup2_epistemic_uncertainty, subgroup2_aleatoric_uncertainty = generate_outcomes_with_uncertainty(
+        df=subgroup2_individuals_df,
+        feature_columns=data_schema.attr_names,
+        weights=W[-1], bias=subgroup_bias, group_column=None,
+        group_bias=0.0, epistemic_uncertainty=epis_uncertainty,
+        aleatoric_uncertainty=alea_uncertainty, n_estimators=50, random_state=None)
+
+    subgroup2_individuals_df['outcome'] = subgroup2_outcome
+    subgroup2_individuals_df['epis_uncertainty'] = subgroup2_epistemic_uncertainty
+    subgroup2_individuals_df['alea_uncertainty'] = subgroup2_aleatoric_uncertainty
 
     # Create keys based on the ordered attribute values
     subgroup1_key = '|'.join(list(map(lambda x: '*' if x == -1 else str(x), subgroup1_vals)))
@@ -1268,82 +780,22 @@ def create_group(granularity, intersectionality,
     result_df['epis_uncertainty_param'] = epis_uncertainty
     result_df['alea_uncertainty_param'] = alea_uncertainty
     result_df['frequency_param'] = frequency
-    result_df['group_size'] = len(subgroup1_individuals + subgroup2_individuals)
+    result_df['group_size'] = subgroup1_individuals_df.shape[0] + subgroup2_individuals_df.shape[0]
     result_df['diff_subgroup_size'] = diff_percentage
 
     return result_df
 
 
-def generate_categorical_distribution(attr_categories, attr_names, bias_strength=0.5):
-    """
-    Generates a categorical distribution for attributes with controlled randomness.
+class CollisionTracker:
+    def __init__(self, nb_attributes):
+        self.used_combinations = set()
+        self.nb_attributes = nb_attributes
 
-    Args:
-        attr_categories (List[List[int]]): List of possible values for each attribute
-        attr_names (List[str]): List of attribute names
-        bias_strength (float): Controls how biased the distributions are (0.0 to 1.0)
-                             0.0 = nearly uniform, 1.0 = strongly biased to one category
+    def is_collision(self, possibility):
+        return tuple(possibility) in self.used_combinations
 
-    Returns:
-        Dict[str, List[float]]: Dictionary mapping attribute names to probability distributions
-    """
-    distribution = {}
-
-    for attr_name, categories in zip(attr_names, attr_categories):
-        n_categories = len(categories) - 1
-
-        # Generate random probabilities
-        if bias_strength > 0:
-            # Generate biased probabilities
-            probs = np.random.dirichlet([1 - bias_strength] * n_categories)
-
-            # Make one category dominant based on bias_strength
-            dominant_idx = np.random.randint(n_categories)
-            probs = (1 - bias_strength) * probs + bias_strength * np.eye(n_categories)[dominant_idx]
-        else:
-            # Generate nearly uniform probabilities
-            probs = np.ones(n_categories) / n_categories
-            probs += np.random.uniform(-0.1, 0.1, n_categories)
-
-        # Ensure probabilities sum to 1
-        probs = probs / np.sum(probs)
-
-        distribution[attr_name] = probs.tolist()
-
-    return distribution
-
-
-def generate_valid_correlation_matrix(n):
-    A = np.random.rand(n, n)
-    A = (A + A.T) / 2
-    eigenvalues, eigenvectors = eigh(A)
-    eigenvalues = np.maximum(eigenvalues, 1e-8)
-    A = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
-    D = np.diag(1 / np.sqrt(np.diag(A)))
-    correlation_matrix = D @ A @ D
-
-    return correlation_matrix
-
-
-def estimate_min_attributes_and_classes(num_groups, max_iterations=1000):
-    def calculate_combinations(num_attributes, num_classes):
-        return sum(math.comb(num_attributes, i) * (num_classes - 1) ** i for i in range(1, num_attributes + 1))
-
-    min_attributes = 2
-    min_classes = 2
-
-    for _ in range(max_iterations):
-        combinations = calculate_combinations(min_attributes, min_classes)
-
-        if combinations >= num_groups:
-            return min_attributes, min_classes
-
-        if min_attributes <= min_classes:
-            min_attributes += 1
-        else:
-            min_classes += 1
-
-    return min_attributes, min_classes
+    def add_combination(self, possibility):
+        self.used_combinations.add(tuple(possibility))
 
 
 def generate_data(
@@ -1506,68 +958,6 @@ def generate_data(
     results = pd.concat(results, ignore_index=True)
     results['collisions'] = collisions
 
-    # Generate extra rows if requested
-    if extra_rows and extra_rows > 0:
-        # Initialize the generator for individual samples using the schema and correlation matrix
-        generator = IndividualsGenerator(
-            schema=data_schema,
-            graph=correlation_matrix,
-            gen_order=gen_order,
-            outcome_weights=W[-1],
-            outcome_bias=0,
-            subgroup_bias=0,  # Neutral bias for extra rows
-            epis_uncertainty=np.mean([min_epis_uncertainty, max_epis_uncertainty]),
-            alea_uncertainty=np.mean([min_alea_uncertainty, max_alea_uncertainty]),
-            corr_matrix_randomness=corr_matrix_randomness,
-            categorical_distribution=categorical_distribution,
-            categorical_influence=categorical_influence
-        )
-
-        print(f"\nGenerating {extra_rows} additional rows...")
-
-        # Generate extra samples with a balanced approach (half with is_subgroup1=True, half with False)
-        half_extra = extra_rows // 2
-        remaining_extra = extra_rows - half_extra
-
-        # Generate the first half with is_subgroup1=True
-        extra_data1 = generator.generate_dataset_with_outcome(half_extra, None, is_subgroup1=True)
-        extra_samples1 = [sample for sample, _, _, _ in extra_data1]
-        extra_df1 = pd.DataFrame(extra_samples1, columns=data_schema.attr_names)
-        extra_df1['outcome'] = [outcome for _, outcome, _, _ in extra_data1]
-        extra_df1['epis_uncertainty'] = [epis for _, _, epis, _ in extra_data1]
-        extra_df1['alea_uncertainty'] = [alea for _, _, _, alea in extra_data1]
-
-        # Generate the second half with is_subgroup1=False
-        extra_data2 = generator.generate_dataset_with_outcome(remaining_extra, None, is_subgroup1=False)
-        extra_samples2 = [sample for sample, _, _, _ in extra_data2]
-        extra_df2 = pd.DataFrame(extra_samples2, columns=data_schema.attr_names)
-        extra_df2['outcome'] = [outcome for _, outcome, _, _ in extra_data2]
-        extra_df2['epis_uncertainty'] = [epis for _, _, epis, _ in extra_data2]
-        extra_df2['alea_uncertainty'] = [alea for _, _, _, alea in extra_data2]
-
-        # Combine both halves
-        extra_df = pd.concat([extra_df1, extra_df2], ignore_index=True)
-
-        # Add necessary columns to match the main dataframe structure
-        extra_df['group_key'] = 'extra'
-        extra_df['subgroup_key'] = extra_df.index.map(lambda i: f'extra_subgroup{i % 2 + 1}')
-        extra_df['indv_key'] = extra_df[attr_names].apply(lambda x: '|'.join(list(x.astype(str))), axis=1)
-
-        # Add the parameters columns with average values
-        extra_df['granularity_param'] = (min_granularity + max_granularity) / 2
-        extra_df['intersectionality_param'] = (min_intersectionality + max_intersectionality) / 2
-        extra_df['similarity_param'] = (min_similarity + max_similarity) / 2
-        extra_df['epis_uncertainty_param'] = (min_epis_uncertainty + max_epis_uncertainty) / 2
-        extra_df['alea_uncertainty_param'] = (min_alea_uncertainty + max_alea_uncertainty) / 2
-        extra_df['frequency_param'] = (min_frequency + max_frequency) / 2
-        extra_df['group_size'] = extra_rows
-        extra_df['diff_subgroup_size'] = (min_diff_subgroup_size + max_diff_subgroup_size) / 2
-        extra_df['collisions'] = collisions
-
-        # Append the extra rows to the main dataframe
-        results = pd.concat([results, extra_df], ignore_index=True)
-        print(f"Added {extra_rows} extra rows to the dataset.")
-
     for column in attr_names + [outcome_column]:
         results[column] = pd.to_numeric(results[column], errors='ignore')
 
@@ -1586,18 +976,17 @@ def generate_data(
 
     attr_possible_values = {attr_name: values for attr_name, values in zip(attr_names, attr_categories)}
 
-    results_d = DiscriminationDataFrame(results)
-
     data = DiscriminationData(
-        dataframe=results_d,
+        dataframe=results,
         categorical_columns=list(attr_names) + [outcome_column],
         attributes=protected_attr,
         collisions=collisions,
-        nb_groups=results_d['group_key'].nunique(),
+        nb_groups=results['group_key'].nunique(),
         max_group_size=max_group_size,
         hiddenlayers_depth=W.shape[0],
         outcome_column=outcome_column,
-        attr_possible_values=attr_possible_values
+        attr_possible_values=attr_possible_values,
+        schema=data_schema
     )
 
     data = calculate_actual_metrics(data)
@@ -1608,65 +997,554 @@ def generate_data(
     return data
 
 
-def generate_from_real_data(dataset_name, use_cache=False, *args, **kwargs):
-    if dataset_name == 'adult':
-        adult = fetch_ucirepo(id=2)
-        df1 = adult['data']['original']
-        df1.drop(columns=['fnlwgt'], inplace=True)
+def is_numeric_type(series):
+    """
+    Check if a pandas Series contains numeric data suitable for SDV numerical modeling.
+    """
+    # Check if dtype is numeric
+    if pd.api.types.is_numeric_dtype(series):
+        # Check if it has enough unique values to be treated as numerical
+        n_unique = series.nunique()
+        if n_unique >= 5:  # SDV typically treats columns with 5+ values as numeric
+            return True
+    return False
 
-        schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(df1,
-                                                                                            protected_columns=['race',
-                                                                                                               'sex'],
-                                                                                            outcome_column='income',
-                                                                                            use_attr_naming_pattern=True)
+
+def calculate_sdv_correlation_matrix(encoded_df, attr_columns, ensure_positive_definite=True):
+    """
+    Calculate a correlation matrix suitable for SDV from encoded data.
+
+    Args:
+        encoded_df: DataFrame with encoded values
+        attr_columns: List of attribute column names
+        ensure_positive_definite: Whether to ensure the matrix is positive definite
+
+    Returns:
+        Correlation matrix as numpy array
+    """
+    n_cols = len(attr_columns)
+    correlation_matrix = np.zeros((n_cols, n_cols))
+
+    # Fill the diagonal with 1.0
+    np.fill_diagonal(correlation_matrix, 1.0)
+
+    # Calculate pairwise correlations
+    for i, col1 in enumerate(attr_columns):
+        for j in range(i + 1, n_cols):  # Only need to calculate upper triangle
+            col2 = attr_columns[j]
+
+            # Filter out missing values (-1)
+            mask = (encoded_df[col1] >= 0) & (encoded_df[col2] >= 0)
+
+            if mask.sum() > 1:  # Need at least 2 points for correlation
+                try:
+                    # Use Spearman correlation as it works better with ordinal data
+                    corr, _ = spearmanr(encoded_df[col1][mask], encoded_df[col2][mask])
+
+                    # Handle NaN or infinity
+                    if np.isnan(corr) or np.isinf(corr):
+                        corr = 0.0
+
+                    # Keep correlations in reasonable bounds
+                    corr = np.clip(corr, -0.99, 0.99)
+
+                    correlation_matrix[i, j] = corr
+                    correlation_matrix[j, i] = corr  # Mirror to lower triangle
+                except:
+                    # If correlation calculation fails, use zero
+                    correlation_matrix[i, j] = 0.0
+                    correlation_matrix[j, i] = 0.0
+            else:
+                correlation_matrix[i, j] = 0.0
+                correlation_matrix[j, i] = 0.0
+
+    # Ensure the matrix is positive definite if requested
+    if ensure_positive_definite:
+        # Check eigenvalues
+        eigenvalues, eigenvectors = np.linalg.eigh(correlation_matrix)
+
+        # If any eigenvalues are negative or very close to zero, adjust them
+        if np.any(eigenvalues < 1e-6):
+            # Set small eigenvalues to a small positive number
+            eigenvalues[eigenvalues < 1e-6] = 1e-6
+
+            # Reconstruct the correlation matrix
+            correlation_matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+
+            # Normalize to ensure diagonal is 1
+            d = np.sqrt(np.diag(correlation_matrix))
+            correlation_matrix = correlation_matrix / np.outer(d, d)
+
+            # Ensure it's symmetric (might have small numerical errors)
+            correlation_matrix = (correlation_matrix + correlation_matrix.T) / 2
+
+            # Final check for diagonal elements
+            np.fill_diagonal(correlation_matrix, 1.0)
+
+    return correlation_matrix
+
+
+def create_sdv_numerical_distributions(schema):
+    """Create numerical distributions configuration for SDV GaussianCopulaSynthesizer."""
+    numerical_distributions = {}
+
+    for attr_name, attr_cats in zip(schema.attr_names, schema.attr_categories):
+        # Check if attribute is numerical
+        if all(isinstance(c, (int, float)) for c in attr_cats if c != -1):
+            # Use beta distribution for protected attributes and truncnorm for non-protected
+            is_protected = schema.protected_attr[schema.attr_names.index(attr_name)]
+            if is_protected:
+                numerical_distributions[attr_name] = 'beta'
+            else:
+                numerical_distributions[attr_name] = 'truncnorm'
+
+    return numerical_distributions
+
+
+def generate_schema_from_dataframe(
+        df: pd.DataFrame,
+        protected_columns: List[str] = None,
+        attr_prefix: str = None,
+        outcome_column: str = 'outcome',
+        ensure_positive_definite: bool = True,
+        n_samples: int = 100,
+        use_attr_naming_pattern: bool = False,
+        fit_synthesizer: bool = True,
+        synthesizer_params: Dict = None
+) -> Tuple[DataSchema, np.ndarray, Dict[str, str], pd.DataFrame]:
+    """
+    Generate a DataSchema with fitted copula synthesizer from a pandas DataFrame.
+
+    Args:
+        df: Input DataFrame
+        protected_columns: List of column names that are protected attributes
+        attr_prefix: Prefix for attribute columns if not using naming pattern
+        outcome_column: Name of the outcome column
+        ensure_positive_definite: Whether to ensure the correlation matrix is positive definite
+        n_samples: Number of samples to use for binning of numerical columns
+        use_attr_naming_pattern: Whether to use attribute naming pattern (Attr{n}_T/X)
+        fit_synthesizer: Whether to fit a GaussianCopulaSynthesizer
+        synthesizer_params: Parameters for the GaussianCopulaSynthesizer
+
+    Returns:
+        Tuple of (DataSchema, correlation_matrix, column_mapping, encoded_dataframe, simple_encoded_dataframe)
+    """
+    if outcome_column not in df.columns:
+        raise ValueError(f"Outcome column '{outcome_column}' not found in DataFrame")
+
+    # Create column mapping
+    new_cols = []
+    for k, v in enumerate(df.columns):
+        if v == outcome_column:
+            attr_col = 'outcome'
+        else:
+            attr_col = f"Attr{k + 1}_{'T' if v in protected_columns else 'X'}"
+        new_cols.append(attr_col)
+
+    new_cols_mapping = {k: v for k, v in zip(new_cols, df.columns)}
+
+    # Create a copy of the dataframe to avoid modifying the original
+    df_copy = df.copy()
+
+    # Rename columns if using attribute naming pattern
+    if use_attr_naming_pattern:
+        df_copy.columns = new_cols
+        protected_columns = [col for col in df_copy.columns if col.endswith('_T')]
+        attr_columns = [col for col in df_copy.columns if col.endswith('_X') or col.endswith('_T')]
+    else:
+        if attr_prefix:
+            attr_columns = [col for col in df_copy.columns if col.startswith(attr_prefix)]
+        else:
+            attr_columns = [col for col in df_copy.columns if col != outcome_column]
+
+    if not attr_columns:
+        raise ValueError("No attribute columns found")
+
+    # Initialize data structures
+    attr_categories = []
+    encoded_df = pd.DataFrame(index=df_copy.index)
+    simple_encoded_df = pd.DataFrame(index=df_copy.index)
+    category_maps = {}  # Store category maps for each column
+    categorical_distribution = {}  # Store categorical distributions
+
+    # Store simple encoding maps for reference
+    simple_category_maps = {}
+
+    # Process each attribute column
+    for col in attr_columns:
+        # Check if column is numeric
+        is_numeric = is_numeric_type(df_copy[col])
+
+        if is_numeric:
+            # Handle numeric column - use SDV-compatible binning approach
+            values = df_copy[col].dropna().values
+
+            if len(values) > 0:
+                # Create bins based on quantiles for more uniform distribution
+                num_bins = min(n_samples, len(np.unique(values)))
+
+                # Use quantiles to create bins for numerical data
+                quantiles = np.linspace(0, 1, num_bins + 1)
+                bins = np.quantile(values, quantiles)
+
+                # Handle edge case where all values are the same
+                if len(np.unique(bins)) == 1:
+                    bins = np.array([bins[0] - 1, bins[0], bins[0] + 1])
+                    num_bins = 2
+
+                # Encode values
+                encoded = np.full(len(df_copy), -1)
+                mask = df_copy[col].notna()
+
+                if mask.any():
+                    # Get bin indices (0 to num_bins-1)
+                    bin_indices = np.digitize(df_copy[col][mask], bins) - 1
+                    bin_indices = np.clip(bin_indices, 0, num_bins - 1)  # Ensure within range
+                    encoded[mask] = bin_indices
+
+                categories = [-1] + list(range(num_bins))
+
+                # Create category map with bin representations
+                category_map = {-1: 'nan'}
+                for i in range(num_bins):
+                    lower = bins[i]
+                    upper = bins[i + 1] if i < num_bins - 1 else bins[i] + (bins[i] - bins[i - 1])
+                    category_map[i] = f"[{lower:.4g}, {upper:.4g}]"
+
+                # Calculate distribution
+                counts = np.bincount(encoded[encoded >= 0].astype(int), minlength=num_bins)
+                probs = counts / np.sum(counts) if np.sum(counts) > 0 else np.ones(num_bins) / num_bins
+
+                # Simple encoding for numerical column (no binning)
+                # For simple encoding, we just keep the original values
+                simple_encoded_df[col] = df_copy[col]
+
+            else:
+                # Handle empty column
+                encoded = np.full(len(df_copy), -1)
+                categories = [-1, 0]
+                category_map = {-1: 'nan', 0: '0'}
+                probs = np.array([1.0])
+
+                # Simple encoding for empty numerical column
+                simple_encoded_df[col] = df_copy[col]
+
+        else:
+            # Handle categorical column - use standard encoding
+            le = LabelEncoder()
+            non_nan_vals = df_copy[col].dropna().unique()
+
+            if len(non_nan_vals) > 0:
+                # Convert all values to strings for consistent encoding
+                str_vals = [str(x) for x in non_nan_vals]
+                str_vals = list(dict.fromkeys(str_vals))  # Remove duplicates while preserving order
+
+                le.fit(str_vals)
+                encoded = np.full(len(df_copy), -1)
+
+                mask = df_copy[col].notna()
+                if mask.any():
+                    encoded[mask] = le.transform([str(x) for x in df_copy[col][mask]])
+
+                    # Simple encoding for categorical column
+                    simple_encoded = np.full(len(df_copy), -1)
+                    simple_encoded[mask] = le.transform([str(x) for x in df_copy[col][mask]])
+                    simple_encoded_df[col] = simple_encoded
+
+                categories = [-1] + list(range(len(str_vals)))
+                category_map = {-1: 'nan', **{i: val for i, val in enumerate(str_vals)}}
+                simple_category_maps[col] = category_map.copy()  # Store the mapping for simple encoded
+
+                # Calculate categorical distribution
+                counts = np.bincount(encoded[encoded >= 0].astype(int), minlength=len(str_vals))
+                probs = counts / np.sum(counts) if np.sum(counts) > 0 else np.ones(len(str_vals)) / len(str_vals)
+
+            else:
+                # Handle empty categorical column
+                encoded = np.full(len(df_copy), -1)
+                categories = [-1, 0]
+                category_map = {-1: 'nan', 0: 'empty'}
+                probs = np.array([1.0])
+
+                # Simple encoding for empty categorical column
+                simple_encoded_df[col] = np.full(len(df_copy), -1)
+
+        # Store results
+        encoded_df[col] = encoded
+        attr_categories.append(categories)
+        category_maps[col] = category_map
+        categorical_distribution[col] = probs.tolist()
+
+    # Calculate correlation matrix optimized for SDV
+    correlation_matrix = calculate_sdv_correlation_matrix(
+        encoded_df, attr_columns, ensure_positive_definite
+    )
+
+    # Encode outcome column
+    le = LabelEncoder()
+    outcome_vals = df_copy['outcome'].astype(str).values
+    encoded_df['outcome'] = le.fit_transform(outcome_vals)
+
+    # Also encode outcome in simple encoded dataframe
+    simple_encoded_df['outcome'] = encoded_df['outcome'].copy()
+
+    # Create SDV metadata
+    sdv_metadata = SingleTableMetadata()
+
+    # Add attribute columns to metadata
+    for attr_name in attr_columns:
+        is_numeric_attr = is_numeric_type(df_copy[attr_name]) if attr_name in df_copy.columns else False
+        sdv_metadata.add_column(attr_name, sdtype='numerical' if is_numeric_attr else 'categorical')
+
+    # Add outcome column to metadata
+    sdv_metadata.add_column('outcome', sdtype='categorical')
+
+    # Create DataSchema object (without synthesizer initially)
+    schema = DataSchema(
+        attr_categories=attr_categories,
+        protected_attr=[col in protected_columns for col in attr_columns],
+        attr_names=attr_columns,
+        categorical_distribution=categorical_distribution,
+        correlation_matrix=correlation_matrix,
+        gen_order=list(range(len(attr_columns))),
+        category_maps=category_maps,
+        column_mapping=new_cols_mapping,
+        sdv_metadata=sdv_metadata,
+        synthesizer=None,
+    )
+
+    # Fit a GaussianCopulaSynthesizer if requested
+    if fit_synthesizer:
+        # Prepare training data for the synthesizer
+        training_data = encoded_df.copy()
+        # Replace -1 (missing) values with NaN for SDV
+        for col in attr_columns:
+            training_data.loc[training_data[col] == -1, col] = np.nan
+
+        # Create numerical distribution settings
+        numerical_distributions = create_sdv_numerical_distributions(schema)
+
+        # Set default synthesizer params
+        default_params = {
+            'enforce_min_max_values': True,
+            'enforce_rounding': True,
+            'numerical_distributions': numerical_distributions,
+            'default_distribution': 'beta'
+        }
+
+        # Update with user-provided params if any
+        if synthesizer_params:
+            default_params.update(synthesizer_params)
+
+        # Create and fit the synthesizer
+        synthesizer = GaussianCopulaSynthesizer(sdv_metadata, **default_params)
+        print("Fitting GaussianCopulaSynthesizer...")
+        synthesizer.fit(encoded_df)
+
+        # Add the fitted synthesizer to the schema
+        schema.synthesizer = synthesizer
+
+    return schema, correlation_matrix, new_cols_mapping, encoded_df
+
+
+def calculate_sdv_correlation_matrix(encoded_df, attr_columns, ensure_positive_definite=True):
+    """
+    Calculate a correlation matrix suitable for SDV from encoded data.
+
+    Args:
+        encoded_df: DataFrame with encoded values
+        attr_columns: List of attribute column names
+        ensure_positive_definite: Whether to ensure the matrix is positive definite
+
+    Returns:
+        Correlation matrix as numpy array
+    """
+    n_cols = len(attr_columns)
+    correlation_matrix = np.zeros((n_cols, n_cols))
+
+    # Fill the diagonal with 1.0
+    np.fill_diagonal(correlation_matrix, 1.0)
+
+    # Calculate pairwise correlations
+    for i, col1 in enumerate(attr_columns):
+        for j in range(i + 1, n_cols):  # Only need to calculate upper triangle
+            col2 = attr_columns[j]
+
+            # Filter out missing values (-1)
+            mask = (encoded_df[col1] >= 0) & (encoded_df[col2] >= 0)
+
+            if mask.sum() > 1:  # Need at least 2 points for correlation
+                try:
+                    # Use Spearman correlation as it works better with ordinal data
+                    corr, _ = spearmanr(encoded_df[col1][mask], encoded_df[col2][mask])
+
+                    # Handle NaN or infinity
+                    if np.isnan(corr) or np.isinf(corr):
+                        corr = 0.0
+
+                    # Keep correlations in reasonable bounds
+                    corr = np.clip(corr, -0.99, 0.99)
+
+                    correlation_matrix[i, j] = corr
+                    correlation_matrix[j, i] = corr  # Mirror to lower triangle
+                except:
+                    # If correlation calculation fails, use zero
+                    correlation_matrix[i, j] = 0.0
+                    correlation_matrix[j, i] = 0.0
+            else:
+                correlation_matrix[i, j] = 0.0
+                correlation_matrix[j, i] = 0.0
+
+    # Ensure the matrix is positive definite if requested
+    if ensure_positive_definite:
+        # Check eigenvalues
+        eigenvalues, eigenvectors = np.linalg.eigh(correlation_matrix)
+
+        # If any eigenvalues are negative or very close to zero, adjust them
+        if np.any(eigenvalues < 1e-6):
+            # Set small eigenvalues to a small positive number
+            eigenvalues[eigenvalues < 1e-6] = 1e-6
+
+            # Reconstruct the correlation matrix
+            correlation_matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
+
+            # Normalize to ensure diagonal is 1
+            d = np.sqrt(np.diag(correlation_matrix))
+            correlation_matrix = correlation_matrix / np.outer(d, d)
+
+            # Ensure it's symmetric (might have small numerical errors)
+            correlation_matrix = (correlation_matrix + correlation_matrix.T) / 2
+
+            # Final check for diagonal elements
+            np.fill_diagonal(correlation_matrix, 1.0)
+
+    return correlation_matrix
+
+
+def generate_from_real_data(dataset_name, use_cache=False, extra_rows=None, *args, **kwargs):
+    """
+    Generate synthetic discrimination data based on real-world datasets using SDV.
+
+    Args:
+        dataset_name: Name of the dataset ('adult', 'credit', 'bank')
+        use_cache: Whether to use cached data if available
+        extra_rows: Number of additional rows to generate outside of the group structure
+        *args, **kwargs: Additional arguments for generate_data
+
+    Returns:
+        Tuple of (DiscriminationData, DataSchema)
+    """
+    # Try to load from cache first
+    if use_cache:
+        cache = DataCache()
+        cache_params = {
+            'dataset_name': dataset_name,
+            'extra_rows': extra_rows,
+            **{k: v for k, v in kwargs.items() if isinstance(v, (int, float, str, bool))}
+        }
+        cached_data = cache.load(cache_params)
+        if cached_data is not None:
+            print(f"Using cached data for {dataset_name}")
+            return cached_data, cached_data.schema if hasattr(cached_data, 'schema') else None
+
+    # Get the dataset and schema
+    if dataset_name == 'adult':
+        # Adult Income dataset
+        adult = fetch_ucirepo(id=2)
+        df = adult['data']['original']
+        df.drop(columns=['fnlwgt'], inplace=True)
+
+        # Get schema from the dataframe
+        schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(
+            df,
+            protected_columns=['race', 'sex'],
+            outcome_column='income',
+            use_attr_naming_pattern=True
+        )
+
     elif dataset_name == 'credit':
-        df1 = fetch_ucirepo(id=144)
-        df1 = df1['data']['original']
-        schema, correlation_matrix, new_cols_mapping, enc_df = generate_schema_from_dataframe(df1,
-                                                                                              protected_columns=[
-                                                                                                  'Attribute8',
-                                                                                                  'Attribute12'],
-                                                                                              outcome_column='Attribute20',
-                                                                                              use_attr_naming_pattern=True,
-                                                                                              ensure_positive_definite=True)
+        # Credit dataset
+        df = fetch_ucirepo(id=144)
+        df = df['data']['original']
+
+        # Get schema from the dataframe
+        schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(
+            df,
+            protected_columns=['Attribute8', 'Attribute12'],
+            outcome_column='Attribute20',
+            use_attr_naming_pattern=True,
+            ensure_positive_definite=True
+        )
+
     elif dataset_name == 'bank':
         # Bank Marketing dataset
         bank_marketing = fetch_ucirepo(id=222)
         df = pd.concat([bank_marketing.data.features, bank_marketing.data.targets], axis=1)
 
-        if 'protected_columns' not in kwargs:
-            kwargs['protected_columns'] = ['age', 'marital', 'education']
-        if 'outcome_column' not in kwargs:
-            kwargs['outcome_column'] = 'y'
-
         # Ensure all column names are valid Python identifiers
         df.columns = [col.replace('-', '_') for col in df.columns]
 
-        # Update protected columns if they were renamed
-        kwargs['protected_columns'] = [col.replace('-', '_') for col in kwargs['protected_columns']]
-        kwargs['outcome_column'] = kwargs['outcome_column'].replace('-', '_')
-
+        # Get schema from the dataframe
         schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(
             df,
-            protected_columns=kwargs['protected_columns'],
-            outcome_column=kwargs['outcome_column']
+            protected_columns=['age', 'marital', 'education'],
+            outcome_column='y',
+            use_attr_naming_pattern=True,
+            ensure_positive_definite=True
         )
+
     else:
         raise NotImplementedError(f"Dataset {dataset_name} not implemented")
 
     # Ensure schema attribute names are unique
     schema.attr_names = list(dict.fromkeys(schema.attr_names))
 
-    # Generate the data using the schema
-    data = generate_data(
-        correlation_matrix=correlation_matrix,
-        data_schema=schema,
-        use_cache=use_cache,
-        *args,
-        **kwargs
+    # Create SDV metadata from schema
+    metadata = schema.to_sdv_metadata()
+
+    # Create numerical distribution settings
+    numerical_distributions = create_sdv_numerical_distributions(schema)
+
+    # Train an SDV synthesizer on the real data
+    synthesizer = GaussianCopulaSynthesizer(
+        metadata,
+        enforce_min_max_values=True,
+        enforce_rounding=True,
+        numerical_distributions=numerical_distributions,
+        default_distribution='beta'
     )
 
-    # data = decode_dataframe(data.dataframe, schema)
+    print(f"Training GaussianCopulaSynthesizer on {dataset_name} dataset...")
+
+    # Prepare the training data (handle missing values)
+    training_data = enc_df.copy()
+    for col in schema.attr_names:
+        if col in training_data.columns:
+            # Replace -1 (missing) values with NaN for SDV
+            training_data.loc[training_data[col] == -1, col] = np.nan
+
+    synthesizer.fit(training_data)
+
+    schema.synthesizer = synthesizer
+
+    # Generate data using our function that uses the trained synthesizer
+    data = generate_data(
+        gen_order=schema.gen_order,
+        correlation_matrix=correlation_matrix,
+        data_schema=schema,
+        use_cache=False,  # We're already handling cache at this level
+        extra_rows=extra_rows,
+        *args, **kwargs
+    )
+
+    # Store schema with the data for convenience
+    data.schema = schema
+
+    # Cache the result if requested
+    if use_cache:
+        cache = DataCache()
+        cache.save(data, cache_params)
+
     return data, schema
 
 
@@ -1676,19 +1554,7 @@ def get_real_data(
         outcome_column: Optional[str] = None,
         use_cache=False,
         *args, **kwargs
-) -> Tuple[DiscriminationData, DataSchema]:
-    """
-    Fetch and process real datasets into the same format as generate_data output.
-
-    Args:
-        dataset_name (str): Name of the dataset ('adult', 'credit', 'bank', etc.)
-        protected_columns (List[str], optional): List of column names to treat as protected attributes
-        outcome_column (str, optional): Name of the column to use as outcome
-        *args, **kwargs: Additional arguments passed to generate_data
-
-    Returns:
-        Tuple[DiscriminationData, DataSchema]: Processed data and schema matching generate_data format
-    """
+) -> Tuple:
     dataset_configs = {
         'adult': {
             'id': 2,
@@ -1715,6 +1581,20 @@ def get_real_data(
 
     config = dataset_configs[dataset_name]
 
+    # Try to load from cache first
+    if use_cache:
+        cache = DataCache()
+        cache_params = {
+            'dataset_name': dataset_name,
+            'protected_columns': str(config['protected_columns']),
+            'outcome_column': config['outcome_column'],
+            'real_data': True  # Flag to distinguish from synthetic data
+        }
+        cached_data = cache.load(cache_params)
+        if cached_data is not None:
+            print(f"Using cached real data for {dataset_name}")
+            return cached_data, cached_data.schema if hasattr(cached_data, 'schema') else None
+
     # Fetch the dataset
     dataset = fetch_ucirepo(id=config['id'])
     df = dataset['data']['original']
@@ -1734,76 +1614,83 @@ def get_real_data(
         ensure_positive_definite=True
     )
 
+    # Create attr_possible_values mapping
+    attr_possible_values = {
+        attr_name: categories
+        for attr_name, categories in zip(schema.attr_names, schema.attr_categories)
+    }
+
+    # Create DiscriminationData without generating synthetic data
     data = DiscriminationData(
         dataframe=enc_df,
         categorical_columns=list(schema.attr_names) + ['outcome'],
         attributes={k: v for k, v in zip(schema.attr_names, schema.protected_attr)},
         collisions=0,
-        nb_groups=0,
-        max_group_size=0,
+        nb_groups=1,  # Just one "group" for the entire dataset
+        max_group_size=len(enc_df),
         hiddenlayers_depth=0,
         outcome_column='outcome',
-        attr_possible_values={}
+        attr_possible_values=attr_possible_values,
+        schema=schema
     )
 
-    return data, schema
-
-
-def generate_from_real_data(dataset_name, use_cache=False, extra_rows=None, *args, **kwargs):
-    if dataset_name == 'adult':
-        adult = fetch_ucirepo(id=2)
-        df1 = adult['data']['original']
-        df1.drop(columns=['fnlwgt'], inplace=True)
-
-        schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(df1,
-                                                                                            protected_columns=['race',
-                                                                                                               'sex'],
-                                                                                            outcome_column='income',
-                                                                                            use_attr_naming_pattern=True)
-    elif dataset_name == 'credit':
-        df1 = fetch_ucirepo(id=144)
-        df1 = df1['data']['original']
-        schema, correlation_matrix, new_cols_mapping, enc_df = generate_schema_from_dataframe(df1,
-                                                                                              protected_columns=[
-                                                                                                  'Attribute8',
-                                                                                                  'Attribute12'],
-                                                                                              outcome_column='Attribute20',
-                                                                                              use_attr_naming_pattern=True,
-                                                                                              ensure_positive_definite=True)
-    elif dataset_name == 'bank':
-        # Bank Marketing dataset
-        bank_marketing = fetch_ucirepo(id=222)
-        df1 = pd.concat([bank_marketing.data.features, bank_marketing.data.targets], axis=1)
-
-        # Ensure all column names are valid Python identifiers
-        df1.columns = [col.replace('-', '_') for col in df1.columns]
-
-        schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(
-            df1,
-            protected_columns=['age', 'marital', 'education'],
-            outcome_column='y',
-            use_attr_naming_pattern=True,
-            ensure_positive_definite=True
-        )
-    else:
-        raise NotImplementedError(f"Dataset {dataset_name} not implemented")
-
+    # Cache the result if requested
     if use_cache:
         cache = DataCache()
-        data = cache.load(kwargs)
-        if data is not None:
-            return data, schema
-
-    data = generate_data(
-        gen_order=schema.gen_order,
-        correlation_matrix=correlation_matrix,
-        data_schema=schema,
-        use_cache=use_cache,
-        extra_rows=extra_rows,
-        *args, **kwargs
-    )
-
-    if use_cache:
-        cache.save(data, kwargs)
+        cache.save(data, cache_params)
 
     return data, schema
+
+
+def create_sdv_numerical_distributions(data_schema):
+    """Create numerical distributions configuration for SDV GaussianCopulaSynthesizer."""
+    numerical_distributions = {}
+
+    for attr_name, attr_cats in zip(data_schema.attr_names, data_schema.attr_categories):
+        # Check if attribute is numerical
+        if all(isinstance(c, (int, float)) for c in attr_cats if c != -1):
+            # Use beta distribution for protected attributes and normal for non-protected
+            is_protected = data_schema.protected_attr[data_schema.attr_names.index(attr_name)]
+            if is_protected:
+                numerical_distributions[attr_name] = 'beta'
+            else:
+                numerical_distributions[attr_name] = 'truncnorm'
+
+    return numerical_distributions
+
+
+def sample_from_real_data_schema(schema, synthesizer=None, num_rows=1000, conditions=None):
+    """
+    Generate samples from a real data schema using SDV.
+
+    Args:
+        schema: The data schema
+        synthesizer: Optional pre-trained SDV synthesizer
+        num_rows: Number of rows to generate
+        conditions: Optional conditions for conditional sampling
+
+    Returns:
+        DataFrame with synthetic data
+    """
+    if synthesizer is None:
+        # Create a new synthesizer if none provided
+        metadata = schema.to_sdv_metadata()
+        numerical_distributions = create_sdv_numerical_distributions(schema)
+
+        synthesizer = GaussianCopulaSynthesizer(
+            metadata,
+            enforce_min_max_values=True,
+            enforce_rounding=True,
+            numerical_distributions=numerical_distributions,
+            default_distribution='beta'
+        )
+
+        # We need to have training data to fit the synthesizer
+        # This approach won't work without prior training data
+        raise ValueError("A pre-trained synthesizer is required")
+
+    # Generate samples based on conditions or just free sampling
+    if conditions:
+        return synthesizer.sample_from_conditions(conditions=conditions)
+    else:
+        return synthesizer.sample(num_rows=num_rows)

@@ -1,16 +1,37 @@
-from data_generator.main import generate_data, get_real_data
 from methods.exp_ga.algo import run_expga
+from matplotlib import pyplot as plt
+from data_generator.main import get_real_data, generate_from_real_data
+from data_generator.utils import plot_distribution_comparison
+from methods.utils import reformat_discrimination_results, convert_to_non_float_rows, compare_discriminatory_groups
 
-# ge = generate_data(
-#     nb_attributes=6,
-#     min_number_of_classes=2,
-#     max_number_of_classes=4,
-#     prop_protected_attr=0.3,
-#     nb_groups=100,
-#     max_group_size=100,
-#     categorical_outcome=True,
-#     nb_categories_outcome=4)
-ge, ge_schema = get_real_data('adult')
-#%%
-result_df, report = run_expga(ge, threshold=0.5, threshold_rank=0.5, max_global=300, max_local=100)
-print(result_df)
+# %%
+data_obj, schema = get_real_data('adult')
+results_df_origin, metrics = run_expga(dataset=data_obj,
+                                       threshold=0.5, threshold_rank=0.5, max_global=300, max_local=100)
+
+# %%
+non_float_df = convert_to_non_float_rows(results_df_origin, schema)
+predefined_groups_origin = reformat_discrimination_results(non_float_df, data_obj.dataframe)
+nb_elements = sum([el.group_size for el in predefined_groups_origin])
+
+# %%
+data_obj_synth, schema = generate_from_real_data('adult',
+                                                 predefined_groups=predefined_groups_origin,
+                                                 extra_rows=1000)
+
+# %%
+fig = plot_distribution_comparison(schema, data_obj_synth)
+plt.show()
+
+# %% Run fairness testing
+results_df_synth, metrics_synth = run_expga(dataset=data_obj_synth,
+                                            threshold=0.5, threshold_rank=0.5, max_global=2000, max_local=100)
+
+# %%
+predefined_groups_synth = reformat_discrimination_results(convert_to_non_float_rows(results_df_synth, schema),
+                                                          data_obj.dataframe)
+
+# %%
+comparison_results = compare_discriminatory_groups(predefined_groups_origin, predefined_groups_synth)
+
+# %%

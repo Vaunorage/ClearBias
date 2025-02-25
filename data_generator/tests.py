@@ -1,4 +1,4 @@
-from data_generator.main import generate_data, get_real_data, GroupDefinition
+from data_generator.main import generate_data, get_real_data
 import matplotlib.pyplot as plt
 
 from data_generator.utils import plot_distribution_comparison, print_distribution_stats
@@ -29,7 +29,7 @@ data = generate_data(
     nb_categories_outcome=4,
     corr_matrix_randomness=1,
     categorical_influence=1,
-    data_schema=schema,
+    # data_schema=schema,
     use_cache=False,
     # predefined_groups=predefined_groups,
     # additional_random_rows=30000
@@ -39,7 +39,7 @@ print(f"Generated {len(data.dataframe)} samples in {data.nb_groups} groups")
 
 # %%
 
-fig = plot_distribution_comparison(schema, data)
+fig = plot_distribution_comparison(data.schema, data)
 plt.show()
 
 # Print statistics

@@ -1,25 +1,26 @@
-import random
+from sdv.datasets.demo import download_demo
 
-def generate_categorical_distribution(categories, skewness):
-    n = len(categories)
-    raw_probs = [skewness**(i-1) for i in range(1, n+1)]
-    normalization_factor = sum(raw_probs)
-    normalized_probs = [p / normalization_factor for p in raw_probs]
-    return dict(zip(categories, normalized_probs))
+real_data, metadata = download_demo(
+    modality='single_table',
+    dataset_name='fake_hotel_guests')
 
-def generate_samples(categories, skewness, num_samples):
-    # Get the distribution
-    distribution = generate_categorical_distribution(categories, skewness)
-    # Extract categories and their probabilities
-    categories, probabilities = zip(*distribution.items())
-    # Generate samples
-    samples = random.choices(categories, weights=probabilities, k=num_samples)
-    return samples
+#%%
+from sdv.single_table import GaussianCopulaSynthesizer
 
-# Example usage
-categories = ['A', 'B', 'C', 'D']
-skewness = 0.5  # Change this value to adjust skewness
-num_samples = 100  # Number of samples to generate
+synthesizer = GaussianCopulaSynthesizer(metadata)
+synthesizer.fit(data=real_data)
 
-samples = generate_samples(categories, skewness, num_samples)
-print(samples)
+#%%
+synthetic_data = synthesizer.sample(num_rows=500)
+
+#%%
+from sdv.evaluation.single_table import evaluate_quality
+
+quality_report = evaluate_quality(
+    real_data,
+    synthetic_data,
+    metadata)
+
+#%%
+ll = quality_report.get_details(property_name='Column Shapes')
+ll2 = quality_report.get_details(property_name='Column Pair Trends')

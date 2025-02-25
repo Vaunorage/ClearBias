@@ -15,6 +15,6 @@ from methods.ml_check.algo import run_mlcheck
 ge, schema = get_real_data('adult')
 
 # %%
-result_df, report = run_mlcheck(ge, iteration_no=3)
+result_df, report = run_mlcheck(ge, iteration_no=1)
 print(result_df)
 print(report)

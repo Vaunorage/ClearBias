@@ -27,7 +27,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 
 class ExpGAResultRow(TypedDict, total=False):
-    group_id: str
+    case_id: int
     outcome: float
     diff_outcome: float
     indv_key: str
@@ -178,7 +178,7 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
             "SUR": 0.0
         }
         empty_df = pd.DataFrame(columns=[
-                                            'group_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'
+                                            'case_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'
                                         ] + list(dataset.feature_names))
         return empty_df, metrics
 
@@ -219,17 +219,17 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
 
     if df.empty:
         empty_df = pd.DataFrame(columns=[
-                                            'group_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'
+                                            'case_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'
                                         ] + list(dataset.feature_names))
         return empty_df, metrics
 
     df['Outcome Difference'] = df['Altered Outcome'] - df['Original Outcome']
-    df['group_id'] = [str(uuid.uuid4())[:8] for _ in range(df.shape[0])]
+    df['case_id'] = [str(uuid.uuid4())[:8] for _ in range(df.shape[0])]
 
-    df1 = df[['group_id', "Original Input", 'Original Outcome', 'Outcome Difference']].copy()
+    df1 = df[['case_id', "Original Input", 'Original Outcome', 'Outcome Difference']].copy()
     df1.rename(columns={'Original Input': 'input', 'Original Outcome': 'outcome'}, inplace=True)
 
-    df2 = df[['group_id', "Altered Input", 'Altered Outcome', 'Outcome Difference']].copy()
+    df2 = df[['case_id', "Altered Input", 'Altered Outcome', 'Outcome Difference']].copy()
     df2.rename(columns={'Altered Input': 'input', 'Altered Outcome': 'outcome'}, inplace=True)
 
     df = pd.concat([df1, df2])
@@ -240,7 +240,7 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     df_attr = pd.DataFrame(df['input'].apply(lambda x: list(x)).tolist(), columns=dataset.feature_names)
     df = pd.concat([df.reset_index(drop=True), df_attr.reset_index(drop=True)], axis=1)
     df.drop(columns=['input'], inplace=True)
-    df.sort_values(by=['group_id'], inplace=True)
+    df.sort_values(by=['case_id'], inplace=True)
 
     # Create indv_key
     valid_attrs = [col for col in dataset.attributes if col in df.columns]
@@ -252,7 +252,7 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     # Create couple_key
     df['couple_key'] = df.groupby(df.index // 2)['indv_key'].transform(lambda x: '-'.join(x))
 
-    for k,v in metrics.items():
+    for k, v in metrics.items():
         df[k] = v
 
     return df, metrics
@@ -270,4 +270,8 @@ def run_expga(dataset: DiscriminationData, model_type: str = 'rf', threshold: fl
         dfs.append(df)
         all_metrics[p_attr] = metrics
 
-    return pd.concat(dfs), all_metrics
+    all_res = pd.concat(dfs)
+
+    all_res['case_id'] = all_res['case_id'].replace({v: k for k, v in enumerate(all_res['case_id'].unique())})
+
+    return all_res, all_metrics
