@@ -341,7 +341,8 @@ def adf_fairness_testing(
         max_local: int = 2000,
         max_iter: int = 100,
         cluster_num: int = 10,
-        random_seed: int = 42
+        random_seed: int = 42,
+        max_runtime_seconds: int = 3600  # Default 1 hour time limit
 ) -> Tuple[pd.DataFrame, Dict[str, float]]:
     """Implementation of ADF fairness testing.
 
@@ -351,6 +352,8 @@ def adf_fairness_testing(
         max_local: Maximum samples for local search
         max_iter: Maximum iterations for global perturbation
         cluster_num: Number of clusters
+        random_seed: Random seed for reproducibility
+        max_runtime_seconds: Maximum runtime in seconds before early termination
 
     Returns:
         Results DataFrame and metrics dictionary
@@ -371,6 +374,7 @@ def adf_fairness_testing(
 
     logger.info(f"Dataset shape: {data.shape}")
     logger.info(f"Protected attributes: {data_obj.protected_attributes}")
+    logger.info(f"Time limit: {max_runtime_seconds} seconds")
 
     model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
         data=data,
@@ -404,10 +408,17 @@ def adf_fairness_testing(
             logger.info(f"Current Metrics - TSN: {len(tot_inputs)}, DSN: {len(discriminatory_pairs)}, DSR: {dsr:.4f}")
         log_count += 1
 
+    # Function to check if we've exceeded the time limit
+    def time_limit_exceeded() -> bool:
+        current_runtime = time.time() - start_time
+        return current_runtime > max_runtime_seconds
+
     def evaluate_local(inp):
         """Evaluate local perturbation results."""
-        # if not is_diverse_enough(inp):
-        #     return 1.0
+        # Check time limit first
+        if time_limit_exceeded():
+            # Return a value that will terminate the optimization
+            return 0.0
 
         discr_key = []
         for i in range(len(inp)):
@@ -436,7 +447,16 @@ def adf_fairness_testing(
     clusters = seed_test_input(X, cluster_num, random_seed=random_seed)
 
     iter_num = 0
+    # Early termination flag for time limit
+    time_limit_reached = False
+
     for _, cluster in enumerate(clusters):
+        # Check if time limit has been reached
+        if time_limit_exceeded():
+            time_limit_reached = True
+            logger.info(f"Time limit of {max_runtime_seconds} seconds reached. Terminating early.")
+            break
+
         if iter_num > max_iter:
             break
 
@@ -444,6 +464,11 @@ def adf_fairness_testing(
             continue
 
         for index in cluster:
+            # Check time limit periodically
+            if time_limit_exceeded():
+                time_limit_reached = True
+                break
+
             if len(discriminatory_pairs) < 100 and len(tot_inputs) > max_global:
                 continue
 
@@ -465,6 +490,11 @@ def adf_fairness_testing(
             value_combinations = list(itertools.product(*[sensitive_values[name] for name in sensitive_values.keys()]))
 
             for values in value_combinations:
+                # Check time limit inside the innermost loop for responsiveness
+                if time_limit_exceeded():
+                    time_limit_reached = True
+                    break
+
                 if all(sample[0][sens_idx] == value
                        for name, value in zip(sensitive_values.keys(), values)):
                     continue
@@ -494,6 +524,22 @@ def adf_fairness_testing(
 
                     log_metrics()
 
+                    # Modify basinhopping to respect time limit
+                    class TimeAwareMinimizer:
+                        def __init__(self, func, method, options):
+                            self.func = func
+                            self.method = method
+                            self.options = options
+
+                        def __call__(self, x0):
+                            if time_limit_exceeded():
+                                # Return a dummy result that will terminate the optimization
+                                return x0, 0.0, {'success': True, 'message': 'Time limit exceeded'}
+
+                            from scipy.optimize import minimize
+                            result = minimize(self.func, x0, method=self.method, options=self.options)
+                            return result.x, result.fun, result
+
                     minimizer = {
                         "method": "L-BFGS-B",
                         "options": {
@@ -509,6 +555,10 @@ def adf_fairness_testing(
                         X.shape[1], data_obj, random_seed
                     )
 
+                    # Custom accept_test function to check time limit
+                    def time_limit_check(f_new, x_new, f_old, x_old):
+                        return not time_limit_exceeded()
+
                     basinhopping(
                         evaluate_local,
                         sample.flatten(),
@@ -519,8 +569,14 @@ def adf_fairness_testing(
                         T=1.0,
                         interval=40,
                         niter_success=12,
-                        seed=random_seed  # Add seed for basinhopping
+                        seed=random_seed,  # Add seed for basinhopping
+                        accept_test=time_limit_check  # Add time limit check
                     )
+
+                    # Check if time limit was exceeded during basinhopping
+                    if time_limit_exceeded():
+                        time_limit_reached = True
+                        break
 
                 else:
                     prob_diff = abs(prob - n_prob)
@@ -528,8 +584,15 @@ def adf_fairness_testing(
                         max_diff = prob_diff
                         for name, value in zip(sensitive_values.keys(), values):
                             n_values[data_obj.sensitive_indices[name]] = value
+
+            if time_limit_reached:
+                break
+
             iter_num += 1
             log_metrics()
+
+        if time_limit_reached:
+            break
 
     end_time = time.time()
     total_time = end_time - start_time
@@ -544,11 +607,14 @@ def adf_fairness_testing(
         'dsn': dsn,
         'sur': dsn / tsn if tsn > 0 else 0,
         'dss': total_time / dsn if dsn > 0 else float('inf'),
-        'total_time': total_time
+        'total_time': total_time,
+        'time_limit_reached': time_limit_reached
     }
 
     logger.info("Final Results:")
     logger.info(f"Total Time: {total_time:.2f}s")
+    if time_limit_reached:
+        logger.info(f"Time limit of {max_runtime_seconds}s reached. Results may be incomplete.")
     logger.info(f"Final Metrics - TSN: {tsn}, DSN: {dsn}, DSR: {metrics['sur']:.4f}")
     logger.info(f"Success Rate: {metrics['sur']:.4f}")
     logger.info(f"Search Time per Discriminatory Sample: {metrics['dss']:.2f}s")
@@ -584,6 +650,7 @@ def adf_fairness_testing(
     res_df['DSN'] = dsn
     res_df['SUR'] = sur
     res_df['DSS'] = dss
+    res_df['time_limit_reached'] = time_limit_reached
 
     res_df.drop_duplicates(subset=['indv_key'], inplace=True)
 
@@ -600,9 +667,13 @@ if __name__ == "__main__":
         max_global=5000,
         max_local=2000,
         max_iter=100,
-        cluster_num=50
+        cluster_num=50,
+        max_runtime_seconds=100  # 30 minute time limit
     )
 
     print("\nTesting Metrics:")
     for metric, value in metrics.items():
-        print(f"{metric}: {value:.4f}")
+        if isinstance(value, bool):
+            print(f"{metric}: {value}")
+        else:
+            print(f"{metric}: {value:.4f}")

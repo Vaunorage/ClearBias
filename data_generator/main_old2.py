@@ -24,7 +24,8 @@ from dataclasses import dataclass
 from sklearn.preprocessing import LabelEncoder
 from sklearn.cluster import KMeans
 from ucimlrepo import fetch_ucirepo
-
+from scipy.spatial.distance import jensenshannon
+import numpy as np
 from data_generator.main_old import DiscriminationData
 from path import HERE
 from uncertainty_quantification.main import UncertaintyRandomForest, AleatoricUncertainty, EpistemicUncertainty
@@ -970,6 +971,7 @@ class CollisionTracker:
         self.used_combinations.add(tuple(possibility))
 
 
+@dataclass
 class GroupDefinition:
     group_size: int
     subgroup_bias: int
@@ -989,13 +991,53 @@ def calculate_actual_similarity(data):
         if len(subgroup_keys) != 2:
             return np.nan
 
-        subgroup1 = subgroup_keys[0].split('|')
-        subgroup2 = subgroup_keys[1].split('|')
+        # Get data for each subgroup
+        subgroup1_data = group_data[group_data['subgroup_key'] == subgroup_keys[0]]
+        subgroup2_data = group_data[group_data['subgroup_key'] == subgroup_keys[1]]
 
-        matching_attrs = sum(a == b for a, b in zip(subgroup1, subgroup2) if a != '*' and b != '*')
-        total_fixed_attrs = sum(a != '*' and b != '*' for a, b in zip(subgroup1, subgroup2))
+        # Calculate similarity across all attribute distributions
+        similarities = []
 
-        return matching_attrs / total_fixed_attrs if total_fixed_attrs > 0 else 1.0
+        for attr in data.attr_columns:
+            # Get distributions of values for this attribute in each subgroup
+            vals1 = subgroup1_data[attr].value_counts(normalize=True).sort_index()
+            vals2 = subgroup2_data[attr].value_counts(normalize=True).sort_index()
+
+            # Align the distributions
+            all_values = sorted(set(vals1.index) | set(vals2.index))
+            dist1 = np.array([vals1.get(v, 0) for v in all_values])
+            dist2 = np.array([vals2.get(v, 0) for v in all_values])
+
+            # Calculate Jensen-Shannon divergence
+            js_distance = jensenshannon(dist1, dist2)
+
+            # Apply non-linear transformation to spread out values
+            # This will push values away from 0.5
+            if np.isnan(js_distance):
+                sim = 1.0
+            else:
+                # Convert distance to similarity
+                raw_sim = 1.0 - js_distance
+
+                # Apply power transformation to increase sensitivity
+                # This pushes high similarities higher and low similarities lower
+                # Adjust the power (3.0) to control sensitivity
+                sim = pow(raw_sim, 3.0) if raw_sim >= 0.5 else 1.0 - pow(1.0 - raw_sim, 3.0)
+
+            similarities.append(sim)
+
+        # Weight more discriminative attributes higher
+        # Attributes with similarity far from 0.5 contribute more
+        weights = [abs(s - 0.5) + 0.5 for s in similarities]
+        weighted_sum = sum(s * w for s, w in zip(similarities, weights))
+        weighted_avg = weighted_sum / sum(weights) if sum(weights) > 0 else 0.5
+
+        # Final transformation to spread values further
+        spread_factor = 2.0  # Adjust this to control overall spread
+        final_sim = 0.5 + spread_factor * (weighted_avg - 0.5)
+
+        # Ensure result stays in [0,1] range
+        return max(0.0, min(1.0, final_sim))
 
     return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_similarity)
 

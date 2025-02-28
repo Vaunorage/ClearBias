@@ -603,9 +603,6 @@ def generate_outcomes_with_uncertainty(
     epistemic_uncertainty = np.var(ensemble_preds, axis=1)
     aleatoric_uncertainty = np.mean(ensemble_preds * (1 - ensemble_preds), axis=1)
 
-    if np.isnan(final_predictions).any() or np.isnan(epistemic_uncertainty).any() or np.isnan(aleatoric_uncertainty).any():
-        print('ddd')
-
     return final_predictions, epistemic_uncertainty, aleatoric_uncertainty
 
 
@@ -653,6 +650,21 @@ def fill_nan_values(df, data_schema=None):
                 filled_df[col].fillna("unknown", inplace=True)
 
     return filled_df
+
+
+import contextlib
+import io
+import sys
+
+
+@contextlib.contextmanager
+def suppress_stdout():
+    old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    try:
+        yield
+    finally:
+        sys.stdout = old_stdout
 
 
 def create_group(granularity, intersectionality,
@@ -723,10 +735,11 @@ def create_group(granularity, intersectionality,
     subgroup2_size = max(min_group_size // 2, total_group_size - subgroup1_size)
 
     # Generate dataset for subgroup 1 and subgroup 2
-    subgroup1_individuals_df = data_schema.synthesizer.sample_from_conditions(conditions=[Condition(
-        num_rows=subgroup1_size,
-        column_values={k: v for k, v in zip(data_schema.attr_names, subgroup1_vals) if v != -1}
-    )])
+    with suppress_stdout():
+        subgroup1_individuals_df = data_schema.synthesizer.sample_from_conditions(conditions=[Condition(
+            num_rows=subgroup1_size,
+            column_values={k: v for k, v in zip(data_schema.attr_names, subgroup1_vals) if v != -1}
+        )])
     subgroup1_individuals_df = fill_nan_values(subgroup1_individuals_df, data_schema)
 
     subgroup1_outcome, subgroup1_epistemic_uncertainty, subgroup1_aleatoric_uncertainty = generate_outcomes_with_uncertainty(
@@ -740,10 +753,11 @@ def create_group(granularity, intersectionality,
     subgroup1_individuals_df['epis_uncertainty'] = subgroup1_epistemic_uncertainty
     subgroup1_individuals_df['alea_uncertainty'] = subgroup1_aleatoric_uncertainty
 
-    subgroup2_individuals_df = data_schema.synthesizer.sample_from_conditions(conditions=[Condition(
-        num_rows=subgroup2_size,
-        column_values={k: v for k, v in zip(data_schema.attr_names, subgroup2_vals) if v != -1}
-    )])
+    with suppress_stdout():
+        subgroup2_individuals_df = data_schema.synthesizer.sample_from_conditions(conditions=[Condition(
+            num_rows=subgroup2_size,
+            column_values={k: v for k, v in zip(data_schema.attr_names, subgroup2_vals) if v != -1}
+        )])
     subgroup2_individuals_df = fill_nan_values(subgroup2_individuals_df, data_schema)
 
     subgroup2_outcome, subgroup2_epistemic_uncertainty, subgroup2_aleatoric_uncertainty = generate_outcomes_with_uncertainty(
@@ -1339,7 +1353,8 @@ def generate_schema_from_dataframe(
         # Create and fit the synthesizer
         synthesizer = GaussianCopulaSynthesizer(sdv_metadata, **default_params)
         print("Fitting GaussianCopulaSynthesizer...")
-        synthesizer.fit(encoded_df)
+        with suppress_stdout():
+            synthesizer.fit(encoded_df)
 
         # Add the fitted synthesizer to the schema
         schema.synthesizer = synthesizer
@@ -1522,8 +1537,8 @@ def generate_from_real_data(dataset_name, use_cache=False, extra_rows=None, *arg
         if col in training_data.columns:
             # Replace -1 (missing) values with NaN for SDV
             training_data.loc[training_data[col] == -1, col] = np.nan
-
-    synthesizer.fit(training_data)
+    with suppress_stdout():
+        synthesizer.fit(training_data)
 
     schema.synthesizer = synthesizer
 
@@ -1602,6 +1617,8 @@ def get_real_data(
     if dataset_name == 'adult':
         df['income'] = df['income'].apply(lambda x: x.replace('.', ''))
 
+    df = df.sample(60000, replace=True)
+
     if config['drop_columns']:
         df = df.drop(columns=config['drop_columns'])
 
@@ -1657,40 +1674,3 @@ def create_sdv_numerical_distributions(data_schema):
                 numerical_distributions[attr_name] = 'truncnorm'
 
     return numerical_distributions
-
-
-def sample_from_real_data_schema(schema, synthesizer=None, num_rows=1000, conditions=None):
-    """
-    Generate samples from a real data schema using SDV.
-
-    Args:
-        schema: The data schema
-        synthesizer: Optional pre-trained SDV synthesizer
-        num_rows: Number of rows to generate
-        conditions: Optional conditions for conditional sampling
-
-    Returns:
-        DataFrame with synthetic data
-    """
-    if synthesizer is None:
-        # Create a new synthesizer if none provided
-        metadata = schema.to_sdv_metadata()
-        numerical_distributions = create_sdv_numerical_distributions(schema)
-
-        synthesizer = GaussianCopulaSynthesizer(
-            metadata,
-            enforce_min_max_values=True,
-            enforce_rounding=True,
-            numerical_distributions=numerical_distributions,
-            default_distribution='beta'
-        )
-
-        # We need to have training data to fit the synthesizer
-        # This approach won't work without prior training data
-        raise ValueError("A pre-trained synthesizer is required")
-
-    # Generate samples based on conditions or just free sampling
-    if conditions:
-        return synthesizer.sample_from_conditions(conditions=conditions)
-    else:
-        return synthesizer.sample(num_rows=num_rows)

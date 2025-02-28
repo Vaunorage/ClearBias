@@ -1,7 +1,10 @@
+
 from data_generator.main import generate_data, get_real_data
 import matplotlib.pyplot as plt
 
-from data_generator.utils import plot_distribution_comparison, print_distribution_stats
+from data_generator.utils import plot_distribution_comparison, print_distribution_stats, visualize_df, \
+    create_parallel_coordinates_plot, plot_and_print_metric_distributions, unique_individuals_ratio, \
+    individuals_in_multiple_groups, plot_correlation_matrices
 
 # data, schema = generate_from_real_data('bank')
 data, schema = get_real_data('adult')
@@ -29,7 +32,7 @@ data = generate_data(
     nb_categories_outcome=4,
     corr_matrix_randomness=1,
     categorical_influence=1,
-    # data_schema=schema,
+    data_schema=schema,
     use_cache=False,
     # predefined_groups=predefined_groups,
     # additional_random_rows=30000
@@ -37,10 +40,31 @@ data = generate_data(
 
 print(f"Generated {len(data.dataframe)} samples in {data.nb_groups} groups")
 
+#%%
+# df = pd.concat([data.xdf, data.ydf],axis=1)
+# fig = visualize_df(df, data.attr_columns, data.outcome_column, HERE.joinpath('ll.png'))
+# fig.show()
 # %%
-
-fig = plot_distribution_comparison(data.schema, data)
+create_parallel_coordinates_plot(data.dataframe)
 plt.show()
 
 # Print statistics
 print_distribution_stats(schema, data)
+
+# %%
+
+plot_and_print_metric_distributions(data.dataframe)
+
+#%%
+# Example usage:
+individual_col = 'indv_key'
+group_col = 'group_key'
+
+unique_ratio, duplicates_count, total = unique_individuals_ratio(data.dataframe, 'indv_key', data.attr_possible_values)
+individuals_in_multiple_groups_count = individuals_in_multiple_groups(data.dataframe, individual_col, group_col)
+
+print(f"Unique Individuals Ratio: {unique_ratio}, duplicate : {duplicates_count}, total: {total}")
+
+#%%
+plot_correlation_matrices(schema.correlation_matrix, data)
+
