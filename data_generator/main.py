@@ -1617,7 +1617,7 @@ def get_real_data(
     if dataset_name == 'adult':
         df['income'] = df['income'].apply(lambda x: x.replace('.', ''))
 
-    df = df.sample(60000, replace=True)
+    # df = df.sample(60000, replace=True)
 
     if config['drop_columns']:
         df = df.drop(columns=config['drop_columns'])
