@@ -26,4 +26,7 @@ dependencies = [
     "torch>=2.6.0",
     "ucimlrepo>=0.0.7",
     "z3-solver>=4.14.0.0",
+    "sdv>=1.18.0",
+    "notebook>=7.3.2",
+    "jupyterlab>=4.3.5",
 ]

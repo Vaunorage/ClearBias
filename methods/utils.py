@@ -10,6 +10,7 @@ from sklearn.tree import DecisionTreeClassifier
 import numpy as np
 import pandas as pd
 from pandas import DataFrame
+from tqdm import tqdm
 
 from data_generator.main import DataSchema
 from dataclasses import dataclass
@@ -88,8 +89,10 @@ def reformat_discrimination_results(non_float_df, original_df) -> List[GroupDefi
     valid_cases = [group for name, group in case_groups if len(group) == 2]
 
     # Pre-compute attribute combinations for original_df
+    print("Pre-computing attribute combinations...")
     attr_combinations = {}
-    for attrs in non_float_df[protected_attrs].drop_duplicates().itertuples(index=False):
+    for attrs in tqdm(non_float_df[protected_attrs].drop_duplicates().itertuples(index=False),
+                      desc="Attribute combinations"):
         mask = (original_df[protected_attrs] == attrs).all(axis=1)
         attr_combinations[tuple(attrs)] = {
             'data': original_df[mask],
@@ -100,7 +103,8 @@ def reformat_discrimination_results(non_float_df, original_df) -> List[GroupDefi
     similarity_attrs = [attr for attr in original_df.columns
                         if not attr.endswith('_T') and attr != 'outcome']
 
-    for pair_df in valid_cases:
+    print("Processing valid cases...")
+    for pair_df in tqdm(valid_cases, desc="Processing case pairs"):
         subgroup1_attrs = tuple(pair_df[protected_attrs].iloc[0])
         subgroup2_attrs = tuple(pair_df[protected_attrs].iloc[1])
 

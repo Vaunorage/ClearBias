@@ -1,5 +1,7 @@
 import os
 
+from tqdm import tqdm
+
 os.environ['PYTHONHASHSEED'] = '0'
 import itertools
 import time
@@ -335,6 +337,20 @@ class LocalPerturbation:
         return x
 
 
+class BasinhoppingCallback:
+    def __init__(self, max_niter, progress_bar=None):
+        self.niter = 0
+        self.max_niter = max_niter
+        self.progress_bar = progress_bar
+
+    def __call__(self, x, f, accept):
+        # Update tqdm progress bar if provided
+        if self.progress_bar is not None:
+            self.progress_bar.update(1)
+            self.progress_bar.set_description(f"f={f:.4f} accepted={accept}")
+        return False
+
+
 def adf_fairness_testing(
         data_obj,
         max_global: int = 2000,
@@ -524,60 +540,50 @@ def adf_fairness_testing(
 
                     log_metrics()
 
-                    # Modify basinhopping to respect time limit
-                    class TimeAwareMinimizer:
-                        def __init__(self, func, method, options):
-                            self.func = func
-                            self.method = method
-                            self.options = options
-
-                        def __call__(self, x0):
-                            if time_limit_exceeded():
-                                # Return a dummy result that will terminate the optimization
-                                return x0, 0.0, {'success': True, 'message': 'Time limit exceeded'}
-
-                            from scipy.optimize import minimize
-                            result = minimize(self.func, x0, method=self.method, options=self.options)
-                            return result.x, result.fun, result
-
-                    minimizer = {
-                        "method": "L-BFGS-B",
-                        "options": {
-                            "maxiter": 10,
-                            "ftol": 1e-6,
-                            "gtol": 1e-5,
-                            "maxls": 20  # Limit line search steps for determinism
+                    # Create a tqdm progress bar
+                    with tqdm(total=max_local, desc="Basinhopping progress") as progress_bar:
+                        # Modify basinhopping to respect time limit
+                        minimizer = {
+                            "method": "L-BFGS-B",
+                            "options": {
+                                "maxiter": 10,
+                                "ftol": 1e-6,
+                                "gtol": 1e-5,
+                                "maxls": 20  # Limit line search steps for determinism
+                            }
                         }
-                    }
 
-                    local_perturbation = LocalPerturbation(
-                        model, n_values, data_obj.sensitive_indices.values(),
-                        X.shape[1], data_obj, random_seed
-                    )
+                        local_perturbation = LocalPerturbation(
+                            model, n_values, data_obj.sensitive_indices.values(),
+                            X.shape[1], data_obj, random_seed
+                        )
 
-                    # Custom accept_test function to check time limit
-                    def time_limit_check(f_new, x_new, f_old, x_old):
-                        return not time_limit_exceeded()
+                        # Custom accept_test function to check time limit
+                        def time_limit_check(f_new, x_new, f_old, x_old):
+                            return not time_limit_exceeded()
 
-                    basinhopping(
-                        evaluate_local,
-                        sample.flatten(),
-                        stepsize=rng.uniform(MIN_PERTURBATION_SIZE, MAX_PERTURBATION_SIZE),
-                        take_step=local_perturbation,
-                        minimizer_kwargs=minimizer,
-                        niter=max_local,
-                        T=1.0,
-                        interval=40,
-                        niter_success=12,
-                        seed=random_seed,  # Add seed for basinhopping
-                        accept_test=time_limit_check  # Add time limit check
-                    )
+                        # Create callback for tqdm updates
+                        callback = BasinhoppingCallback(max_local, progress_bar)
 
-                    # Check if time limit was exceeded during basinhopping
-                    if time_limit_exceeded():
-                        time_limit_reached = True
-                        break
+                        basinhopping(
+                            evaluate_local,
+                            sample.flatten(),
+                            stepsize=rng.uniform(MIN_PERTURBATION_SIZE, MAX_PERTURBATION_SIZE),
+                            take_step=local_perturbation,
+                            minimizer_kwargs=minimizer,
+                            niter=max_local,
+                            T=1.0,
+                            interval=40,
+                            niter_success=12,
+                            seed=random_seed,  # Add seed for basinhopping
+                            accept_test=time_limit_check,  # Add time limit check
+                            callback=callback  # Add the callback for tqdm updates
+                        )
 
+                        # Check if time limit was exceeded during basinhopping
+                        if time_limit_exceeded():
+                            time_limit_reached = True
+                            break
                 else:
                     prob_diff = abs(prob - n_prob)
                     if prob_diff > max_diff:
@@ -619,40 +625,43 @@ def adf_fairness_testing(
     logger.info(f"Success Rate: {metrics['sur']:.4f}")
     logger.info(f"Search Time per Discriminatory Sample: {metrics['dss']:.2f}s")
 
-    res_df = []
-    case_id = 0
-    for org, counter_org in discriminatory_pairs:
-        indv1 = pd.DataFrame([list(org)], columns=data_obj.feature_names + ['outcome'])
-        indv2 = pd.DataFrame([list(counter_org)], columns=data_obj.feature_names + ['outcome'])
+    all_rows = []
+    feature_cols = data_obj.feature_names
+    all_cols = feature_cols + ['outcome', 'indv_key', 'couple_key', 'diff_outcome', 'case_id']
 
-        indv_key1 = "|".join(str(x) for x in indv1[data_obj.feature_names].iloc[0])
-        indv_key2 = "|".join(str(x) for x in indv2[data_obj.feature_names].iloc[0])
+    # Pre-allocate lists for faster append operations
+    for case_id, (org, counter_org) in enumerate(discriminatory_pairs):
+        # Extract features and outcome
+        org_features = list(org[:-1])
+        counter_features = list(counter_org[:-1])
+        org_outcome = org[-1]
+        counter_outcome = counter_org[-1]
 
-        indv1['indv_key'] = indv_key1
-        indv2['indv_key'] = indv_key2
-
+        # Create keys directly from features without creating DataFrames
+        indv_key1 = "|".join(str(x) for x in org_features)
+        indv_key2 = "|".join(str(x) for x in counter_features)
         couple_key = f"{indv_key1}-{indv_key2}"
-        diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
+        diff_outcome = abs(org_outcome - counter_outcome)
 
-        df_res = pd.concat([indv1, indv2])
-        df_res['couple_key'] = couple_key
-        df_res['diff_outcome'] = diff_outcome
-        df_res['case_id'] = case_id
-        res_df.append(df_res)
-        case_id += 1
+        # Add both rows directly to the list
+        all_rows.append(org_features + [org_outcome, indv_key1, couple_key, diff_outcome, case_id])
+        all_rows.append(counter_features + [counter_outcome, indv_key2, couple_key, diff_outcome, case_id])
 
-    if len(res_df) != 0:
-        res_df = pd.concat(res_df)
+    # Create DataFrame in one operation
+    if all_rows:
+        res_df = pd.DataFrame(all_rows, columns=all_cols)
+
+        # Add metrics columns all at once
+        res_df['TSN'] = tsn
+        res_df['DSN'] = dsn
+        res_df['SUR'] = sur
+        res_df['DSS'] = dss
+        res_df['time_limit_reached'] = time_limit_reached
+
+        # Remove duplicates only once at the end
+        res_df.drop_duplicates(subset=['indv_key'], inplace=True)
     else:
-        res_df = pd.DataFrame([])
-
-    res_df['TSN'] = tsn
-    res_df['DSN'] = dsn
-    res_df['SUR'] = sur
-    res_df['DSS'] = dss
-    res_df['time_limit_reached'] = time_limit_reached
-
-    res_df.drop_duplicates(subset=['indv_key'], inplace=True)
+        res_df = pd.DataFrame(columns=all_cols + ['TSN', 'DSN', 'SUR', 'DSS', 'time_limit_reached'])
 
     return res_df, metrics
 

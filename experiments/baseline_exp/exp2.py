@@ -16,7 +16,7 @@ def get_groups(results_df_origin, data_obj, schema):
 
 def run_experiment(dataset_name, original_params, synth_params):
     # Get original data
-    data_obj, schema = get_real_data(dataset_name)
+    data_obj, schema = get_real_data(dataset_name, use_cache=True)
 
     # Run fairness testing on original data
     results_df_origin, metrics_origin = adf_fairness_testing(
@@ -25,12 +25,13 @@ def run_experiment(dataset_name, original_params, synth_params):
     predefined_groups_origin, nb_elements = get_groups(results_df_origin, data_obj, schema)
 
     # Generate and test synthetic data
-    data_obj_synth, schema = generate_from_real_data(dataset_name, nb_groups=100)
+    data_obj_synth, schema = generate_from_real_data(dataset_name, nb_groups=100, use_cache=True)
     results_df_synth, metrics_synth = adf_fairness_testing(
         data_obj_synth, **synth_params
     )
     predefined_groups_synth, nb_elements_synth = get_groups(results_df_synth, data_obj, schema)
 
+    plot_distribution_comparison(schema, data_obj_synth)
     # Compare results
     comparison_results = compare_discriminatory_groups(predefined_groups_origin, predefined_groups_synth)
 
@@ -146,8 +147,8 @@ method_name = 'adf'
 conn = init_db()
 all_results = []
 
-original_params = {'max_global': 5000, 'max_local': 2000, 'max_iter': 10, 'cluster_num': 50, 'max_runtime_seconds': 200}
-synth_params = {'max_global': 5000, 'max_local': 2000, 'max_iter': 10, 'cluster_num': 50, 'max_runtime_seconds': 300}
+original_params = {'max_global': 5000, 'max_local': 2000, 'max_iter': 5, 'cluster_num': 50, 'max_runtime_seconds': 400}
+synth_params = {'max_global': 6000, 'max_local': 1000, 'max_iter': 10, 'cluster_num': 50, 'max_runtime_seconds': 600}
 
 for dataset in datasets:
     for run in tqdm(range(1), desc=f"Running experiments for {dataset}"):
