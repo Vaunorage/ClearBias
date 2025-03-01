@@ -16,6 +16,5 @@ statsmodels
 doubleml
 seaborn
 hdbscan
-ucimlrepo
 mapie
 pytest
