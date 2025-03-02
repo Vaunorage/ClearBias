@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from data_generator.main import DataSchema, GroupDefinition
+from common.types import DataSchema, GroupDefinition
 
 
 def train_sklearn_model(data, model_type='rf', model_params=None, target_col='class', sensitive_attrs=None,

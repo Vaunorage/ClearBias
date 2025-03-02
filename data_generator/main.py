@@ -108,141 +108,7 @@ def generate_cache_key(params: dict) -> str:
     return hashlib.md5(param_str.encode()).hexdigest()
 
 
-@dataclass
-class GroupDefinition:
-    group_size: int
-    subgroup_bias: float
-    similarity: float
-    alea_uncertainty: float
-    epis_uncertainty: float
-    frequency: float
-    diff_subgroup_size: float
-    subgroup1: Dict[str, Any]
-    subgroup2: Dict[str, Any]
-    avg_diff_outcome: Optional[float] = None
-    granularity: Optional[int] = None
-    intersectionality: Optional[int] = None
-
-    def __post_init__(self):
-        """Validate the group definition after initialization."""
-        # Ensure subgroups have at least one attribute
-        if not self.subgroup1 or not self.subgroup2:
-            raise ValueError("Both subgroups must have at least one attribute defined")
-
-        # Ensure parameters are within valid ranges
-        if not (0.0 <= self.similarity <= 1.0):
-            raise ValueError("Similarity must be between 0.0 and 1.0")
-        if not (0.0 <= self.alea_uncertainty <= 1.0):
-            raise ValueError("Aleatoric uncertainty must be between 0.0 and 1.0")
-        if not (0.0 <= self.epis_uncertainty <= 1.0):
-            raise ValueError("Epistemic uncertainty must be between 0.0 and 1.0")
-        if not (0.0 <= self.frequency <= 1.0):
-            raise ValueError("Frequency must be between 0.0 and 1.0")
-        if not (0.0 <= self.diff_subgroup_size <= 1.0):
-            raise ValueError("Difference in subgroup size must be between 0.0 and 1.0")
-
-        # Ensure group_size is valid
-        if self.group_size < 2:
-            raise ValueError("Group size must be at least 2 to have both subgroups")
-
-    def get_preset_values_for_subgroup1(self, attr_names):
-        return [self.subgroup1.get(attr, None) for attr in attr_names]
-
-    def get_preset_values_for_subgroup2(self, attr_names):
-        return [self.subgroup2.get(attr, None) for attr in attr_names]
-
-    def calculate_granularity_intersectionality(self, attr_names, protected_attr):
-        # Get attributes used in either subgroup
-        used_attrs = set(self.subgroup1.keys()) | set(self.subgroup2.keys())
-
-        # Count protected and non-protected attributes
-        granularity = 0
-        intersectionality = 0
-
-        for attr in used_attrs:
-            if attr in attr_names:
-                idx = attr_names.index(attr)
-                if protected_attr[idx]:
-                    intersectionality += 1
-                else:
-                    granularity += 1
-
-        return granularity, intersectionality
-
-
-@dataclass
-class DataSchema:
-    attr_categories: List[List[str]]
-    protected_attr: List[bool]
-    attr_names: List[str]
-    categorical_distribution: Dict[str, List[float]]
-    correlation_matrix: np.ndarray
-    gen_order: List[str]
-    category_maps: Dict[str, Dict[int, str]] = None  # Add category maps for encoding/decoding
-    column_mapping: Dict[str, str] = None
-    synthesizer: Any = None  # Store the trained SDV synthesizer
-    sdv_metadata: Any = None  # Store the SDV metadata
-
-    def to_sdv_metadata(self) -> SingleTableMetadata:
-        """Convert this schema to SDV SingleTableMetadata."""
-        if self.sdv_metadata is not None:
-            return self.sdv_metadata
-
-        metadata = SingleTableMetadata()
-
-        # Add columns to the metadata
-        for i, (attr_name, attr_cats, is_protected) in enumerate(zip(
-                self.attr_names, self.attr_categories, self.protected_attr)):
-
-            # Determine the SDV column type
-            if -1 in attr_cats:  # If -1 is in categories, it handles missing values
-                cats_without_missing = [c for c in attr_cats if c != -1]
-            else:
-                cats_without_missing = attr_cats
-
-            # Check if this is a categorical or numerical column
-            if all(isinstance(v, (int, float)) for v in cats_without_missing):
-                # This is a numerical column
-                metadata.add_column(attr_name, sdtype='numerical')
-            else:
-                # This is a categorical column
-                metadata.add_column(attr_name, sdtype='categorical')
-
-        # Add outcome column
-        metadata.add_column('outcome', sdtype='categorical')
-
-        return metadata
-
-    def sample(self, num_rows=100, conditions=None):
-        """Sample from the fitted synthesizer if available."""
-        if self.synthesizer is None:
-            raise ValueError("No synthesizer has been fitted to this schema")
-
-        if conditions:
-            return self.synthesizer.sample_from_conditions(conditions=conditions)
-        else:
-            return self.synthesizer.sample(num_rows=num_rows)
-
-    def decode_dataframe(self, df):
-        """Decode a dataframe using the category maps."""
-        if not self.category_maps:
-            return df
-
-        decoded_df = pd.DataFrame(index=df.index)
-
-        for col in self.attr_names:
-            if col in df.columns and col in self.category_maps:
-                category_map = self.category_maps[col]
-                decoded_df[col] = df[col].map(
-                    lambda x: category_map.get(int(x) if isinstance(x, (int, float)) else x, 'unknown'))
-
-        # Copy non-schema columns
-        for col in df.columns:
-            if col not in decoded_df.columns:
-                decoded_df[col] = df[col]
-
-        return decoded_df
-
+from common.types import DataSchema, GroupDefinition
 
 @dataclass
 class DiscriminationDataFrame(pd.DataFrame):
@@ -371,18 +237,27 @@ def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attrib
     sdv_metadata = SingleTableMetadata()
 
     # Add columns to the metadata
-    for attr_name, attr_cats, is_protected in zip(attr_names, attr_categories, protected_attr):
-        # Determine if this is categorical or numerical
-        if all(isinstance(v, (int, float)) for v in attr_cats if v != -1):
+    for i, (attr_name, attr_cats, is_protected) in enumerate(zip(
+            attr_names, attr_categories, protected_attr)):
+
+        # Determine the SDV column type
+        if -1 in attr_cats:  # If -1 is in categories, it handles missing values
+            cats_without_missing = [c for c in attr_cats if c != -1]
+        else:
+            cats_without_missing = attr_cats
+
+        # Check if this is a categorical or numerical column
+        if all(isinstance(v, (int, float)) for v in cats_without_missing):
+            # This is a numerical column
             sdv_metadata.add_column(attr_name, sdtype='numerical')
         else:
+            # This is a categorical column
             sdv_metadata.add_column(attr_name, sdtype='categorical')
 
     # Add outcome column
     sdv_metadata.add_column('outcome', sdtype='categorical')
 
-    # Initialize schema
-    res = DataSchema(attr_categories=attr_categories,
+    return DataSchema(attr_categories=attr_categories,
                      protected_attr=protected_attr,
                      attr_names=attr_names,
                      categorical_distribution=categorical_distribution,
@@ -1355,7 +1230,7 @@ def create_sdv_numerical_distributions(schema):
     for attr_name, attr_cats in zip(schema.attr_names, schema.attr_categories):
         # Check if attribute is numerical
         if all(isinstance(c, (int, float)) for c in attr_cats if c != -1):
-            # Use beta distribution for protected attributes and truncnorm for non-protected
+            # Use beta distribution for protected attributes and normal for non-protected
             is_protected = schema.protected_attr[schema.attr_names.index(attr_name)]
             if is_protected:
                 numerical_distributions[attr_name] = 'beta'
@@ -1746,15 +1621,13 @@ def generate_from_real_data(dataset_name, use_cache=False, extra_rows=None, pred
         bank_marketing = fetch_ucirepo(id=222)
         df = pd.concat([bank_marketing.data.features, bank_marketing.data.targets], axis=1)
 
-        df = df.drop(columns='age')
-
         # Ensure all column names are valid Python identifiers
         df.columns = [col.replace('-', '_') for col in df.columns]
 
         # Get schema from the dataframe
         schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(
             df,
-            protected_columns=['marital', 'education'],
+            protected_columns=['age', 'marital', 'education'],
             outcome_column='y',
             use_attr_naming_pattern=True,
             ensure_positive_definite=True
