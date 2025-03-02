@@ -17,6 +17,7 @@ from sdv.metadata import SingleTableMetadata
 from sdv.single_table import GaussianCopulaSynthesizer
 from sdv.sampling import Condition
 from tqdm import tqdm
+from path import HERE
 from ucimlrepo import fetch_ucirepo
 
 from data_generator.main_old2 import safe_normalize, GaussianCopulaCategorical, generate_subgroup2_probabilities, \
@@ -36,7 +37,7 @@ logging.getLogger('copulas').setLevel(logging.ERROR)
 
 class DataCache:
     def __init__(self):
-        self.cache_dir = Path(".cache/discrimination_data")
+        self.cache_dir = HERE.joinpath(".cache/discrimination_data")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Create a metadata file to track cache contents

@@ -1,159 +1,169 @@
-from data_generator.main import get_real_data, generate_from_real_data
-from data_generator.utils import plot_distribution_comparison
-from methods.adf.main1 import adf_fairness_testing
-from methods.utils import reformat_discrimination_results, convert_to_non_float_rows, compare_discriminatory_groups
-import seaborn as sns
-from matplotlib import pyplot as plt
 import pandas as pd
-from tqdm import tqdm
+import numpy as np
+from data_generator.main import get_real_data, generate_from_real_data
+from methods.adf.main1 import adf_fairness_testing
+from methods.utils import compare_discriminatory_groups,  get_groups
 
 
-def get_groups(results_df_origin, data_obj, schema):
-    non_float_df = convert_to_non_float_rows(results_df_origin, schema)
-    predefined_groups_origin = reformat_discrimination_results(non_float_df, data_obj.dataframe)
-    nb_elements = sum([el.group_size for el in predefined_groups_origin])
-    return predefined_groups_origin, nb_elements
-
-def run_experiment(dataset_name, original_params, synth_params):
-    # Get original data
+def run_experiment(seed, dataset_name):
+    # Get real data
     data_obj, schema = get_real_data(dataset_name, use_cache=True)
 
     # Run fairness testing on original data
     results_df_origin, metrics_origin = adf_fairness_testing(
-        data_obj, **original_params
+        data_obj,
+        max_global=5000,
+        max_local=2000,
+        max_iter=1000,
+        cluster_num=100,
+        random_seed=seed,
+        max_runtime_seconds=400
     )
+
+    # Get discriminatory groups from original data
     predefined_groups_origin, nb_elements = get_groups(results_df_origin, data_obj, schema)
 
-    # Generate and test synthetic data
-    data_obj_synth, schema = generate_from_real_data(dataset_name, nb_groups=100, use_cache=True)
-    results_df_synth, metrics_synth = adf_fairness_testing(
-        data_obj_synth, **synth_params
+    # Generate synthetic data with predefined groups
+    data_obj_synth, schema = generate_from_real_data(
+        dataset_name,
+        nb_groups=1,
+        predefined_groups=predefined_groups_origin,
+        use_cache=True,
+        min_alea_uncertainty=0.0,
+        max_alea_uncertainty=1.0,
+        min_epis_uncertainty=0.0,
+        max_epis_uncertainty=1.0
     )
+
+
+    # Run fairness testing on synthetic data
+    results_df_synth, metrics_synth = adf_fairness_testing(
+        data_obj_synth,
+        max_global=10000,
+        max_local=2000,
+        max_iter=2000,
+        cluster_num=100,
+        random_seed=seed,
+        max_runtime_seconds=600
+    )
+
+    # Get discriminatory groups from synthetic data
     predefined_groups_synth, nb_elements_synth = get_groups(results_df_synth, data_obj, schema)
 
-    plot_distribution_comparison(schema, data_obj_synth)
-    # Compare results
+    # Compare discriminatory groups
     comparison_results = compare_discriminatory_groups(predefined_groups_origin, predefined_groups_synth)
 
     return {
-        'metrics_origin': metrics_origin,
-        'metrics_synth': metrics_synth,
-        'comparison_results': comparison_results,
-        'nb_elements': nb_elements,
-        'nb_elements_synth': nb_elements_synth
+        'seed': seed,
+        'coverage_ratio': comparison_results['coverage_ratio'],
+        'total_groups_matched': comparison_results['total_groups_matched'],
+        'total_original_groups': comparison_results['total_original_groups'],
+        'total_matched_size': comparison_results['total_matched_size'],
+        'total_original_size': comparison_results['total_original_size']
     }
 
 
-def run_multiple_experiments(dataset_name, original_params, synth_params, num_runs=10):
-    results_list = []
+def main(datasets=['bank'], num_experiments=10, random_seeds=None):
+    # Set random seeds if not provided
+    if random_seeds is None:
+        random_seeds = np.random.randint(0, 10000, size=num_experiments)
 
-    for run in tqdm(range(num_runs), desc=f"Running experiments for {dataset_name}"):
-        result = run_experiment(dataset_name, original_params, synth_params)
-        metrics = {
-            'dataset': dataset_name,
-            'run': run,
-            'coverage_ratio': result['comparison_results']['coverage_ratio'],
-            'matched_groups': result['comparison_results']['total_groups_matched'],
-            'total_groups': result['comparison_results']['total_original_groups'],
-            'matched_size': result['comparison_results']['total_matched_size'],
-            'total_size': result['comparison_results']['total_original_size']
+    # Run experiments and collect results
+    results = []
+    for dataset in datasets:
+        for i, seed in enumerate(random_seeds):
+            print(f"Running experiment on dataset {dataset}, run {i + 1}/{num_experiments} with seed {seed}")
+            experiment_result = run_experiment(seed, dataset)
+            experiment_result['dataset'] = dataset
+            results.append(experiment_result)
+
+    # Convert results to DataFrame
+    results_df = pd.DataFrame(results)
+
+    # Calculate statistics per dataset
+    stats_list = []
+
+    for dataset in results_df['dataset'].unique():
+        dataset_results = results_df[results_df['dataset'] == dataset]
+
+        stats = {
+            'dataset': dataset,
+            'coverage_ratio': {
+                'mean': dataset_results['coverage_ratio'].mean(),
+                'std': dataset_results['coverage_ratio'].std(),
+                'min': dataset_results['coverage_ratio'].min(),
+                'max': dataset_results['coverage_ratio'].max()
+            },
+            'total_groups_matched': {
+                'mean': dataset_results['total_groups_matched'].mean(),
+                'std': dataset_results['total_groups_matched'].std()
+            },
+            'total_original_groups': {
+                'mean': dataset_results['total_original_groups'].mean(),
+                'std': dataset_results['total_original_groups'].std()
+            }
         }
-        results_list.append(metrics)
 
-    return pd.DataFrame(results_list)
+        stats_list.append({
+            'Dataset': dataset,
+            'Metric': 'Coverage Ratio',
+            'Mean': stats['coverage_ratio']['mean'],
+            'Std Dev': stats['coverage_ratio']['std'],
+            'Min': stats['coverage_ratio']['min'],
+            'Max': stats['coverage_ratio']['max']
+        })
 
+        stats_list.append({
+            'Dataset': dataset,
+            'Metric': 'Total Groups Matched',
+            'Mean': stats['total_groups_matched']['mean'],
+            'Std Dev': stats['total_groups_matched']['std'],
+            'Min': None,
+            'Max': None
+        })
 
-def plot_experiment_results(results_df):
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        stats_list.append({
+            'Dataset': dataset,
+            'Metric': 'Total Original Groups',
+            'Mean': stats['total_original_groups']['mean'],
+            'Std Dev': stats['total_original_groups']['std'],
+            'Min': None,
+            'Max': None
+        })
 
-    # Coverage ratio boxplot
-    sns.boxplot(data=results_df, x='dataset', y='coverage_ratio', ax=axes[0, 0])
-    axes[0, 0].set_title('Coverage Ratio Distribution')
+    stats_df = pd.DataFrame(stats_list)
 
-    # Matched groups vs total groups
-    for dataset in results_df['dataset'].unique():
-        dataset_data = results_df[results_df['dataset'] == dataset]
-        axes[0, 1].scatter(dataset_data['total_groups'], dataset_data['matched_groups'],
-                           label=dataset, alpha=0.6)
-    axes[0, 1].plot([0, results_df['total_groups'].max()], [0, results_df['total_groups'].max()],
-                    'k--', alpha=0.3)
-    axes[0, 1].set_title('Matched vs Total Groups')
-    axes[0, 1].legend()
+    return results_df, stats_df
 
-    # Size comparison
-    results_df.groupby('dataset')[['matched_size', 'total_size']].mean().plot(
-        kind='bar', ax=axes[1, 0])
-    axes[1, 0].set_title('Average Matched vs Total Size')
+#%% Set number of experiments
+num_experiments = 1
 
-    # Run variation
-    for dataset in results_df['dataset'].unique():
-        dataset_data = results_df[results_df['dataset'] == dataset]
-        axes[1, 1].plot(dataset_data['run'], dataset_data['coverage_ratio'],
-                        marker='o', label=dataset)
-    axes[1, 1].set_title('Coverage Ratio by Run')
-    axes[1, 1].legend()
+# Set fixed random seeds for reproducibility
+random_seeds = [42]
 
-    plt.tight_layout()
-    return fig
+# List of datasets to test
+datasets = ['bank', 'adult']
 
-from path import HERE
-import sqlite3
-from datetime import datetime
+# Run experiments
+results_df, stats_df = main(datasets, num_experiments, random_seeds)
 
-def init_db():
-    conn = sqlite3.connect(HERE.joinpath('experiments/baseline_exp/experiments.db'))
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS experiments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            dataset TEXT,
-            method_name TEXT,
-            run INTEGER,
-            coverage_ratio REAL,
-            matched_groups INTEGER,
-            total_groups INTEGER,
-            matched_size INTEGER,
-            total_size INTEGER,
-            timestamp DATETIME
-        )
-    ''')
-    conn.commit()
-    return conn
+# Print results
+print("\nExperiment Results:")
+print(results_df)
 
-def save_experiment(conn, dataset, method_name, run, result):
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO experiments (
-            dataset, method_name, run, coverage_ratio, matched_groups,
-            total_groups, matched_size, total_size, timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        dataset,
-        method_name,
-        run,
-        result['comparison_results']['coverage_ratio'],
-        result['comparison_results']['total_groups_matched'],
-        result['comparison_results']['total_original_groups'],
-        result['comparison_results']['total_matched_size'],
-        result['comparison_results']['total_original_size'],
-        str(datetime.now())
-    ))
-    conn.commit()
+print("\nStatistics:")
+print(stats_df)
 
+# Save results to CSV
+results_df.to_csv("experiment_results.csv", index=False)
+stats_df.to_csv("experiment_statistics.csv", index=False)
 
-#%% Run experiments
-datasets = ['bank']
-method_name = 'adf'
-conn = init_db()
-all_results = []
-
-original_params = {'max_global': 5000, 'max_local': 2000, 'max_iter': 5, 'cluster_num': 50, 'max_runtime_seconds': 400}
-synth_params = {'max_global': 6000, 'max_local': 1000, 'max_iter': 10, 'cluster_num': 50, 'max_runtime_seconds': 600}
-
+# Save results by dataset
 for dataset in datasets:
-    for run in tqdm(range(1), desc=f"Running experiments for {dataset}"):
-        result = run_experiment(dataset, original_params, synth_params)
-        save_experiment(conn, dataset, method_name, run, result)
+    dataset_results = results_df[results_df['dataset'] == dataset]
+    dataset_stats = stats_df[stats_df['Dataset'] == dataset]
 
-# results_df = pd.concat(all_results)
+    dataset_results.to_csv(f"experiment_results_{dataset}.csv", index=False)
+    dataset_stats.to_csv(f"experiment_statistics_{dataset}.csv", index=False)
 
+print("\nResults saved to CSV files.")
