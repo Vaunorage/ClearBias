@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from data_generator.utils import plot_distribution_comparison, print_distribution_stats, visualize_df, \
     create_parallel_coordinates_plot, plot_and_print_metric_distributions, unique_individuals_ratio, \
     individuals_in_multiple_groups, plot_correlation_matrices
+from methods.utils import get_groups
 
 # data, schema = generate_from_real_data('bank')
 data, schema = get_real_data('bank')
@@ -323,6 +324,8 @@ predefined_groups = [GroupDefinition(**e) for e in group_defs]
 data_obj_synth, schema = generate_from_real_data('bank', nb_groups=10,
                                                  predefined_groups=predefined_groups[:4],
                                                  use_cache=False)
+
+# predefined_groups_origin, nb_elements = get_groups(data_obj_synth, data, schema)
 
 # %%
 data = generate_data(

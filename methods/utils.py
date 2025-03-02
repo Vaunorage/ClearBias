@@ -98,6 +98,9 @@ def reformat_discrimination_results(non_float_df, original_df) -> List[GroupDefi
             tuple(zip(protected_attrs, subgroup2_attrs))
         ]))
 
+        if -1 in subgroup1_attrs or -1 in subgroup2_attrs:
+            continue
+
         if pair_key in seen_pairs:
             continue
         seen_pairs.add(pair_key)
@@ -271,3 +274,10 @@ def check_groups_in_synthetic_data(data_obj_synth, predefined_groups_origin):
     results['coverage_percentage'] = (len(results['present_groups']) / len(predefined_groups_origin)) * 100
 
     return results
+
+
+def get_groups(results_df_origin, data_obj, schema):
+    non_float_df = convert_to_non_float_rows(results_df_origin, schema)
+    predefined_groups_origin = reformat_discrimination_results(non_float_df, data_obj.dataframe)
+    nb_elements = sum([el.group_size for el in predefined_groups_origin])
+    return predefined_groups_origin, nb_elements

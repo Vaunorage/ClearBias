@@ -4,15 +4,7 @@ from data_generator.main import get_real_data, generate_from_real_data
 from data_generator.utils import plot_distribution_comparison
 from methods.adf.main1 import adf_fairness_testing
 from methods.utils import reformat_discrimination_results, convert_to_non_float_rows, compare_discriminatory_groups, \
-    check_groups_in_synthetic_data
-
-
-def get_groups(results_df_origin, data_obj, schema):
-    non_float_df = convert_to_non_float_rows(results_df_origin, schema)
-    predefined_groups_origin = reformat_discrimination_results(non_float_df, data_obj.dataframe)
-    nb_elements = sum([el.group_size for el in predefined_groups_origin])
-    return predefined_groups_origin, nb_elements
-
+    check_groups_in_synthetic_data, get_groups
 
 # %%
 data_obj, schema = get_real_data('bank', use_cache=False)
@@ -34,7 +26,7 @@ print(f"Coverage: {group_check_results['coverage_percentage']:.2f}%")
 
 # %% Run fairness testing
 results_df_synth, metrics_synth = adf_fairness_testing(data_obj_synth, max_global=10000, max_local=2000, max_iter=2000,
-                                                       cluster_num=100, random_seed=42, max_runtime_seconds=500)
+                                                       cluster_num=100, random_seed=42, max_runtime_seconds=600)
 
 # %%
 predefined_groups_synth, nb_elements_synth = get_groups(results_df_synth, data_obj, schema)
