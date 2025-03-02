@@ -29,4 +29,5 @@ dependencies = [
     "sdv>=1.18.0",
     "notebook>=7.3.2",
     "jupyterlab>=4.3.5",
+    "ipython==8.33.0",
 ]

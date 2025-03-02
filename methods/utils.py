@@ -1,4 +1,3 @@
-from collections import defaultdict
 from typing import List
 
 import sklearn
@@ -9,25 +8,9 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 import numpy as np
 import pandas as pd
-from pandas import DataFrame
 from tqdm import tqdm
 
-from data_generator.main import DataSchema
-from dataclasses import dataclass
-
-
-@dataclass
-class GroupDefinition:
-    group_size: int
-    subgroup_bias: float
-    similarity: float
-    alea_uncertainty: float
-    epis_uncertainty: float
-    frequency: float
-    avg_diff_outcome: int
-    diff_subgroup_size: float
-    subgroup1: dict  # {'Attr1_T': 3, 'Attr2_T': 1, 'Attr3_X': 3}
-    subgroup2: dict  # {'Attr1_T': 2, 'Attr2_T': 2, 'Attr3_X': 2}
+from data_generator.main import DataSchema, GroupDefinition
 
 
 def train_sklearn_model(data, model_type='rf', model_params=None, target_col='class', sensitive_attrs=None,
@@ -103,6 +86,8 @@ def reformat_discrimination_results(non_float_df, original_df) -> List[GroupDefi
     similarity_attrs = [attr for attr in original_df.columns
                         if not attr.endswith('_T') and attr != 'outcome']
 
+    subgroups_infos = {}
+
     print("Processing valid cases...")
     for pair_df in tqdm(valid_cases, desc="Processing case pairs"):
         subgroup1_attrs = tuple(pair_df[protected_attrs].iloc[0])
@@ -140,8 +125,17 @@ def reformat_discrimination_results(non_float_df, original_df) -> List[GroupDefi
         subgroup1_len = len(subgroup1['data'])
         subgroup2_len = len(subgroup2['data'])
 
+        if subgroup1_attrs not in subgroups_infos:
+            subgroups_infos[subgroup1_attrs] = {'size': subgroup1_len, 'nb': 1}
+        else:
+            subgroups_infos[subgroup1_attrs]['nb'] += 1
+
+        if subgroup2_attrs not in subgroups_infos:
+            subgroups_infos[subgroup2_attrs] = {'size': subgroup2_len, 'nb': 1}
+        else:
+            subgroups_infos[subgroup2_attrs]['nb'] += 1
+
         group_def = {
-            'group_size': (subgroup1_len + subgroup2_len) / total_len,
             'subgroup_bias': avg_diff_outcome,
             'similarity': similarity,
             'alea_uncertainty': 0,
@@ -150,13 +144,21 @@ def reformat_discrimination_results(non_float_df, original_df) -> List[GroupDefi
             'avg_diff_outcome': avg_diff_outcome,
             'diff_subgroup_size': abs(subgroup1_len - subgroup2_len) /
                                   (subgroup1_len + subgroup2_len),
-            'subgroup1': pd.Series(subgroup1_attrs, index=protected_attrs),
-            'subgroup2': pd.Series(subgroup2_attrs, index=protected_attrs)
+            'subgroup1': {k: v for k, v in zip(protected_attrs, subgroup1_attrs)},
+            'subgroup2': {k: v for k, v in zip(protected_attrs, subgroup2_attrs)}
         }
 
-        group_definitions.append(GroupDefinition(**group_def))
+        group_definitions.append((group_def, subgroup1_attrs, subgroup2_attrs))
 
-    return group_definitions
+    n_group_definitions = []
+    for group_def, subgroup1_attrs, subgroup2_attrs in group_definitions:
+        subgroup1_len = subgroups_infos[subgroup1_attrs]['size'] / subgroups_infos[subgroup1_attrs]['nb']
+        subgroup2_len = subgroups_infos[subgroup2_attrs]['size'] / subgroups_infos[subgroup2_attrs]['nb']
+        group_def['group_size'] = int(subgroup1_len + subgroup2_len)
+        # print(group_def['group_size'])
+        n_group_definitions.append(GroupDefinition(**group_def))
+
+    return n_group_definitions
 
 
 def convert_to_non_float_rows(df: pd.DataFrame, schema: DataSchema):
@@ -199,3 +201,72 @@ def compare_discriminatory_groups(original_groups, synthetic_groups):
         'total_matched_size': matched_pairs_size,
         'total_original_size': total_original_size
     }
+
+
+def check_groups_in_synthetic_data(data_obj_synth, predefined_groups_origin):
+    """
+    Check if the predefined groups from original data are present in the synthetic dataframe.
+    A group is considered present only if both its subgroups exist independently in the synthetic data.
+
+    Args:
+        data_obj_synth: The synthetic data object containing the dataframe
+        predefined_groups_origin: List of predefined groups from original data
+
+    Returns:
+        dict: Dictionary containing results of which groups are present and which are missing
+    """
+    results = {
+        'present_groups': [],
+        'missing_groups': [],
+        'total_groups': len(predefined_groups_origin)
+    }
+
+    synth_df = data_obj_synth.dataframe
+
+    for group in predefined_groups_origin:
+        # Check if subgroup1 exists
+        subgroup1_mask = None
+        for feature, value in group.subgroup1.items():
+            condition = (synth_df[feature] == value)
+            if subgroup1_mask is None:
+                subgroup1_mask = condition
+            else:
+                subgroup1_mask = subgroup1_mask & condition
+
+        # Check if subgroup2 exists
+        subgroup2_mask = None
+        for feature, value in group.subgroup2.items():
+            condition = (synth_df[feature] == value)
+            if subgroup2_mask is None:
+                subgroup2_mask = condition
+            else:
+                subgroup2_mask = subgroup2_mask & condition
+
+        # A group is present only if both subgroups are present in the data
+        if subgroup1_mask.any() and subgroup2_mask.any():
+            results['present_groups'].append({
+                'subgroup1_features': group.subgroup1,
+                'subgroup2_features': group.subgroup2,
+                'original_size': group.group_size,
+                'subgroup1_size': subgroup1_mask.sum(),
+                'subgroup2_size': subgroup2_mask.sum()
+            })
+        else:
+            missing_reason = []
+            if not subgroup1_mask.any():
+                missing_reason.append("subgroup1 not found")
+            if not subgroup2_mask.any():
+                missing_reason.append("subgroup2 not found")
+
+            results['missing_groups'].append({
+                'subgroup1_features': group.subgroup1,
+                'subgroup2_features': group.subgroup2,
+                'original_size': group.group_size,
+                'reason': ', '.join(missing_reason)
+            })
+
+    results['groups_found'] = len(results['present_groups'])
+    results['groups_missing'] = len(results['missing_groups'])
+    results['coverage_percentage'] = (len(results['present_groups']) / len(predefined_groups_origin)) * 100
+
+    return results
