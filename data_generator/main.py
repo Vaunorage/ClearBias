@@ -1874,10 +1874,12 @@ def generate_from_real_data(dataset_name, use_cache=False, extra_rows=None, pred
         # Ensure all column names are valid Python identifiers
         df.columns = [col.replace('-', '_') for col in df.columns]
 
+        df = df.drop(columns='age')
+
         # Get schema from the dataframe
         schema, correlation_matrix, column_mapping, enc_df = generate_schema_from_dataframe(
             df,
-            protected_columns=['age', 'marital', 'education'],
+            protected_columns=['marital', 'education'],
             outcome_column='y',
             use_attr_naming_pattern=True,
             ensure_positive_definite=True
@@ -1993,9 +1995,9 @@ def get_real_data(
     if dataset_name == 'adult':
         df['income'] = df['income'].apply(lambda x: x.replace('.', ''))
 
-    # if dataset_name == 'bank':
-    #     df = df.drop(columns='age')
-    #     config['protected_columns'] = ['marital', 'education']
+    if dataset_name == 'bank':
+        df = df.drop(columns='age')
+        config['protected_columns'] = ['marital', 'education']
 
     # df = df.sample(60000, replace=True)
 
