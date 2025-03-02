@@ -108,7 +108,147 @@ def generate_cache_key(params: dict) -> str:
     return hashlib.md5(param_str.encode()).hexdigest()
 
 
-from common.types import DataSchema, GroupDefinition
+@dataclass
+class GroupDefinition:
+    group_size: int
+    subgroup_bias: float
+    similarity: float
+    alea_uncertainty: float
+    epis_uncertainty: float
+    frequency: float
+    diff_subgroup_size: float
+    subgroup1: Dict[str, Any]
+    subgroup2: Dict[str, Any]
+    avg_diff_outcome: Optional[float] = None
+    granularity: Optional[int] = None
+    intersectionality: Optional[int] = None
+
+    def __post_init__(self):
+        """Validate the group definition after initialization."""
+        if set(self.subgroup1.keys()) != set(self.subgroup2.keys()):
+            raise ValueError("subgroups must have the same keys")
+
+        if -1 in set(self.subgroup1.keys()) | set(self.subgroup2.keys()):
+            raise ValueError("-1 is not a valide value")
+
+        # Ensure subgroups have at least one attribute
+        if not self.subgroup1 or not self.subgroup2:
+            raise ValueError("Both subgroups must have at least one attribute defined")
+
+        # Ensure parameters are within valid ranges
+        if not (0.0 <= self.similarity <= 1.0):
+            raise ValueError("Similarity must be between 0.0 and 1.0")
+        if not (0.0 <= self.alea_uncertainty <= 1.0):
+            raise ValueError("Aleatoric uncertainty must be between 0.0 and 1.0")
+        if not (0.0 <= self.epis_uncertainty <= 1.0):
+            raise ValueError("Epistemic uncertainty must be between 0.0 and 1.0")
+        if not (0.0 <= self.frequency <= 1.0):
+            raise ValueError("Frequency must be between 0.0 and 1.0")
+        if not (0.0 <= self.diff_subgroup_size <= 1.0):
+            raise ValueError("Difference in subgroup size must be between 0.0 and 1.0")
+
+        # Ensure group_size is valid
+        if self.group_size < 2:
+            raise ValueError("Group size must be at least 2 to have both subgroups")
+
+    def get_preset_values_for_subgroup1(self, attr_names):
+        return [self.subgroup1.get(attr, None) for attr in attr_names]
+
+    def get_preset_values_for_subgroup2(self, attr_names):
+        return [self.subgroup2.get(attr, None) for attr in attr_names]
+
+    def calculate_granularity_intersectionality(self, attr_names, protected_attr):
+        # Get attributes used in either subgroup
+        used_attrs = set(self.subgroup1.keys()) | set(self.subgroup2.keys())
+
+        # Count protected and non-protected attributes
+        granularity = 0
+        intersectionality = 0
+
+        for attr in used_attrs:
+            if attr in attr_names:
+                idx = attr_names.index(attr)
+                if protected_attr[idx]:
+                    intersectionality += 1
+                else:
+                    granularity += 1
+
+        return granularity, intersectionality
+
+
+@dataclass
+class DataSchema:
+    attr_categories: List[List[str]]
+    protected_attr: List[bool]
+    attr_names: List[str]
+    categorical_distribution: Dict[str, List[float]]
+    correlation_matrix: np.ndarray
+    gen_order: List[str]
+    category_maps: Dict[str, Dict[int, str]] = None  # Add category maps for encoding/decoding
+    column_mapping: Dict[str, str] = None
+    synthesizer: Any = None  # Store the trained SDV synthesizer
+    sdv_metadata: Any = None  # Store the SDV metadata
+
+    def to_sdv_metadata(self) -> SingleTableMetadata:
+        """Convert this schema to SDV SingleTableMetadata."""
+        if self.sdv_metadata is not None:
+            return self.sdv_metadata
+
+        metadata = SingleTableMetadata()
+
+        # Add columns to the metadata
+        for i, (attr_name, attr_cats, is_protected) in enumerate(zip(
+                self.attr_names, self.attr_categories, self.protected_attr)):
+
+            # Determine the SDV column type
+            if -1 in attr_cats:  # If -1 is in categories, it handles missing values
+                cats_without_missing = [c for c in attr_cats if c != -1]
+            else:
+                cats_without_missing = attr_cats
+
+            # Check if this is a categorical or numerical column
+            if all(isinstance(v, (int, float)) for v in cats_without_missing):
+                # This is a numerical column
+                metadata.add_column(attr_name, sdtype='numerical')
+            else:
+                # This is a categorical column
+                metadata.add_column(attr_name, sdtype='categorical')
+
+        # Add outcome column
+        metadata.add_column('outcome', sdtype='categorical')
+
+        return metadata
+
+    def sample(self, num_rows=100, conditions=None):
+        """Sample from the fitted synthesizer if available."""
+        if self.synthesizer is None:
+            raise ValueError("No synthesizer has been fitted to this schema")
+
+        if conditions:
+            return self.synthesizer.sample_from_conditions(conditions=conditions)
+        else:
+            return self.synthesizer.sample(num_rows=num_rows)
+
+    def decode_dataframe(self, df):
+        """Decode a dataframe using the category maps."""
+        if not self.category_maps:
+            return df
+
+        decoded_df = pd.DataFrame(index=df.index)
+
+        for col in self.attr_names:
+            if col in df.columns and col in self.category_maps:
+                category_map = self.category_maps[col]
+                decoded_df[col] = df[col].map(
+                    lambda x: category_map.get(int(x) if isinstance(x, (int, float)) else x, 'unknown'))
+
+        # Copy non-schema columns
+        for col in df.columns:
+            if col not in decoded_df.columns:
+                decoded_df[col] = df[col]
+
+        return decoded_df
+
 
 @dataclass
 class DiscriminationDataFrame(pd.DataFrame):
@@ -258,12 +398,12 @@ def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attrib
     sdv_metadata.add_column('outcome', sdtype='categorical')
 
     return DataSchema(attr_categories=attr_categories,
-                     protected_attr=protected_attr,
-                     attr_names=attr_names,
-                     categorical_distribution=categorical_distribution,
-                     correlation_matrix=correlation_matrix,
-                     gen_order=gen_order,
-                     sdv_metadata=sdv_metadata)
+                      protected_attr=protected_attr,
+                      attr_names=attr_names,
+                      categorical_distribution=categorical_distribution,
+                      correlation_matrix=correlation_matrix,
+                      gen_order=gen_order,
+                      sdv_metadata=sdv_metadata)
 
     # Create and fit synthesizer if requested
     if fit_synthesizer:
@@ -622,7 +762,33 @@ def create_group(granularity, intersectionality,
                  min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
                  min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
                  min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size,
-                 predefined_group=None):
+                 predefined_group=None, subgroup1_vals=None, subgroup2_vals=None):
+    """
+    Create a group with two subgroups having specific attribute values.
+
+    Args:
+        granularity: Number of non-protected attributes used
+        intersectionality: Number of protected attributes used
+        possibility: List of attribute indices to use
+        data_schema: Data schema containing attribute information
+        attr_categories: List of possible categories for each attribute
+        W: Weight matrix for outcome generation
+        subgroup_bias: Bias to apply to subgroup 2
+        corr_matrix_randomness: Randomness in correlation matrix
+        categorical_influence: Influence of categorical attributes
+        min_similarity, max_similarity: Range for similarity parameter
+        min_alea_uncertainty, max_alea_uncertainty: Range for aleatoric uncertainty
+        min_epis_uncertainty, max_epis_uncertainty: Range for epistemic uncertainty
+        min_frequency, max_frequency: Range for frequency parameter
+        min_diff_subgroup_size, max_diff_subgroup_size: Range for difference in subgroup sizes
+        min_group_size, max_group_size: Range for group sizes
+        predefined_group: Optional GroupDefinition for predefined groups
+        subgroup1_vals: Optional pre-generated values for subgroup 1
+        subgroup2_vals: Optional pre-generated values for subgroup 2
+
+    Returns:
+        DataFrame with generated group data
+    """
     attr_categories, sets_attr, correlation_matrix, gen_order, categorical_distribution, attr_names = (
         data_schema.attr_categories, data_schema.protected_attr, data_schema.correlation_matrix, data_schema.gen_order,
         data_schema.categorical_distribution, data_schema.attr_names)
@@ -668,18 +834,19 @@ def create_group(granularity, intersectionality,
 
         # For predefined groups, we need to handle preset values differently
         # Convert attribute dictionaries to value lists in the schema's order
-        subgroup1_vals = [-1] * len(attr_names)
-        subgroup2_vals = [-1] * len(attr_names)
+        if subgroup1_vals is None:
+            subgroup1_vals = [-1] * len(data_schema.attr_names)
+            for attr, value in predefined_group.subgroup1.items():
+                if attr in data_schema.attr_names:
+                    idx = data_schema.attr_names.index(attr)
+                    subgroup1_vals[idx] = value
 
-        for attr, value in predefined_group.subgroup1.items():
-            if attr in attr_names:
-                idx = attr_names.index(attr)
-                subgroup1_vals[idx] = value
-
-        for attr, value in predefined_group.subgroup2.items():
-            if attr in attr_names:
-                idx = attr_names.index(attr)
-                subgroup2_vals[idx] = value
+        if subgroup2_vals is None:
+            subgroup2_vals = [-1] * len(data_schema.attr_names)
+            for attr, value in predefined_group.subgroup2.items():
+                if attr in data_schema.attr_names:
+                    idx = data_schema.attr_names.index(attr)
+                    subgroup2_vals[idx] = value
     else:
         # Use randomly generated parameters within specified ranges
         subgroup_sets = make_sets(possibility)
@@ -694,16 +861,18 @@ def create_group(granularity, intersectionality,
         total_group_size = max(min_group_size, math.ceil(max_group_size * frequency))
         total_group_size = min(total_group_size, max_group_size)
 
-        # Generate samples for subgroups
-        subgroup1_vals = generate_data_from_distribution(data_schema.categorical_distribution, attr_categories,
-                                                         data_schema.attr_names, n_samples=1,
-                                                         preset_values=subgroup_sets).values.tolist()[0]
+        # Generate samples for subgroups if not provided
+        if subgroup1_vals is None:
+            subgroup1_vals = generate_data_from_distribution(data_schema.categorical_distribution, attr_categories,
+                                                             data_schema.attr_names, n_samples=1,
+                                                             preset_values=subgroup_sets).values.tolist()[0]
 
-        subgroup2_vals = generate_data_from_distribution(data_schema.categorical_distribution, attr_categories,
-                                                         data_schema.attr_names, n_samples=1,
-                                                         preset_values=subgroup_sets,
-                                                         excluded_values=list(
-                                                             map(lambda x: [x], subgroup1_vals))).values.tolist()[0]
+        if subgroup2_vals is None:
+            subgroup2_vals = generate_data_from_distribution(data_schema.categorical_distribution, attr_categories,
+                                                             data_schema.attr_names, n_samples=1,
+                                                             preset_values=subgroup_sets,
+                                                             excluded_values=list(
+                                                                 map(lambda x: [x], subgroup1_vals))).values.tolist()[0]
 
     # Ensure each subgroup meets minimum size requirements
     diff_size = int(total_group_size * diff_percentage)
@@ -712,9 +881,10 @@ def create_group(granularity, intersectionality,
 
     # Generate dataset for subgroup 1 and subgroup 2
     with suppress_stdout():
+        col_values = {k: v for k, v in zip(data_schema.attr_names, subgroup1_vals) if v != -1}
         subgroup1_individuals_df = data_schema.synthesizer.sample_from_conditions(conditions=[Condition(
             num_rows=subgroup1_size,
-            column_values={k: v for k, v in zip(data_schema.attr_names, subgroup1_vals) if v != -1}
+            column_values=col_values
         )])
     subgroup1_individuals_df = fill_nan_values(subgroup1_individuals_df, data_schema)
 
@@ -730,9 +900,10 @@ def create_group(granularity, intersectionality,
     subgroup1_individuals_df['alea_uncertainty'] = subgroup1_aleatoric_uncertainty
 
     with suppress_stdout():
+        col_values = {k: v for k, v in zip(data_schema.attr_names, subgroup2_vals) if v != -1}
         subgroup2_individuals_df = data_schema.synthesizer.sample_from_conditions(conditions=[Condition(
             num_rows=subgroup2_size,
-            column_values={k: v for k, v in zip(data_schema.attr_names, subgroup2_vals) if v != -1}
+            column_values=col_values
         )])
     subgroup2_individuals_df = fill_nan_values(subgroup2_individuals_df, data_schema)
 
@@ -775,16 +946,45 @@ def create_group(granularity, intersectionality,
 
     return result_df
 
+
 class CollisionTracker:
     def __init__(self, nb_attributes):
-        self.used_combinations = set()
+        self.used_combinations = set()  # Will store tuples of (attr_index, value) pairs
         self.nb_attributes = nb_attributes
 
-    def is_collision(self, possibility):
-        return tuple(possibility) in self.used_combinations
+    def is_collision(self, attrs_indices, subgroup1_vals, subgroup2_vals):
+        # Create a unique signature for this group definition based on values
+        # Only include attributes that are part of the group definition (in attrs_indices)
+        group_signature = []
 
-    def add_combination(self, possibility):
-        self.used_combinations.add(tuple(possibility))
+        for idx in attrs_indices:
+            # Add the attribute index and values for both subgroups
+            # Skip attributes with -1 value as they aren't part of the group definition
+            if subgroup1_vals[idx] != -1:
+                group_signature.append((idx, 1, subgroup1_vals[idx]))
+            if subgroup2_vals[idx] != -1:
+                group_signature.append((idx, 2, subgroup2_vals[idx]))
+
+        # Convert to tuple for hashing
+        group_signature = tuple(sorted(group_signature))
+
+        # Check if this signature exists
+        return group_signature in self.used_combinations
+
+    def add_combination(self, attrs_indices, subgroup1_vals, subgroup2_vals):
+        # Create the same signature as in is_collision
+        group_signature = []
+
+        for idx in attrs_indices:
+            if subgroup1_vals[idx] != -1:
+                group_signature.append((idx, 1, subgroup1_vals[idx]))
+            if subgroup2_vals[idx] != -1:
+                group_signature.append((idx, 2, subgroup2_vals[idx]))
+
+        group_signature = tuple(sorted(group_signature))
+
+        # Add to the set of used combinations
+        self.used_combinations.add(group_signature)
 
 
 def generate_data(
@@ -952,6 +1152,7 @@ def generate_data(
     assert 0 < min_intersectionality <= max_intersectionality <= len(
         protected_indexes), 'min_intersectionality must be between 0 and max_intersectionality'
 
+    # Initialize collision tracker with value-based checks
     collision_tracker = CollisionTracker(nb_attributes)
 
     results = []
@@ -969,7 +1170,7 @@ def generate_data(
                 # Calculate granularity and intersectionality if not provided
                 if group_def.granularity is None or group_def.intersectionality is None:
                     gran, intersec = group_def.calculate_granularity_intersectionality(
-                        attr_names, sets_attr
+                        data_schema.attr_names, sets_attr
                     )
 
                     if group_def.granularity is None:
@@ -989,10 +1190,25 @@ def generate_data(
                         possibility.append(attr_names.index(attr))
 
                 # Make sure we don't have duplicate indices
-                possibility = list(set(possibility))
+                possibility = sorted(set(possibility))
 
-                if not collision_tracker.is_collision(possibility):
-                    collision_tracker.add_combination(possibility)
+                # Convert attribute dictionaries to value lists in the schema's order
+                subgroup1_vals = [-1] * len(data_schema.attr_names)
+                subgroup2_vals = [-1] * len(data_schema.attr_names)
+
+                for attr, value in group_def.subgroup1.items():
+                    if attr in data_schema.attr_names:
+                        idx = data_schema.attr_names.index(attr)
+                        subgroup1_vals[idx] = value
+
+                for attr, value in group_def.subgroup2.items():
+                    if attr in data_schema.attr_names:
+                        idx = data_schema.attr_names.index(attr)
+                        subgroup2_vals[idx] = value
+
+                # Check for value-based collision
+                if not collision_tracker.is_collision(possibility, subgroup1_vals, subgroup2_vals):
+                    collision_tracker.add_combination(possibility, subgroup1_vals, subgroup2_vals)
 
                     # Create the group using the predefined parameters
                     group = create_group(
@@ -1025,10 +1241,43 @@ def generate_data(
                 possible_gran = random.sample(unprotected_indexes, granularity)
                 possible_intersec = random.sample(protected_indexes, intersectionality)
 
-                possibility = tuple(possible_gran + possible_intersec)
+                possibility = sorted(possible_gran + possible_intersec)
 
-                if not collision_tracker.is_collision(possibility):
-                    collision_tracker.add_combination(possibility)
+                # Generate subgroup sets
+                subgroup_sets = []
+                for ind in range(len(attr_categories)):
+                    if ind in possibility:
+                        ss = copy.deepcopy(attr_categories[ind])
+                        try:
+                            ss.remove(-1)
+                        except:
+                            pass
+                        subgroup_sets.append(ss)
+                    else:
+                        subgroup_sets.append([-1])
+
+                # Generate values for subgroups
+                subgroup1_vals = generate_data_from_distribution(
+                    data_schema.categorical_distribution,
+                    attr_categories,
+                    data_schema.attr_names,
+                    n_samples=1,
+                    preset_values=subgroup_sets
+                ).values.tolist()[0]
+
+                subgroup2_vals = generate_data_from_distribution(
+                    data_schema.categorical_distribution,
+                    attr_categories,
+                    data_schema.attr_names,
+                    n_samples=1,
+                    preset_values=subgroup_sets,
+                    excluded_values=list(map(lambda x: [x], subgroup1_vals))
+                ).values.tolist()[0]
+
+                # Check for value-based collision
+                if not collision_tracker.is_collision(possibility, subgroup1_vals, subgroup2_vals):
+                    collision_tracker.add_combination(possibility, subgroup1_vals, subgroup2_vals)
+
                     group = create_group(
                         granularity, intersectionality,
                         possibility, data_schema, attr_categories, W,
@@ -1038,6 +1287,7 @@ def generate_data(
                         min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
                         min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size
                     )
+
                     results.append(group)
                     pbar.update(1)
                 else:
@@ -1743,9 +1993,9 @@ def get_real_data(
     if dataset_name == 'adult':
         df['income'] = df['income'].apply(lambda x: x.replace('.', ''))
 
-    if dataset_name == 'bank':
-        df = df.drop(columns='age')
-        config['protected_columns'] = ['marital', 'education']
+    # if dataset_name == 'bank':
+    #     df = df.drop(columns='age')
+    #     config['protected_columns'] = ['marital', 'education']
 
     # df = df.sample(60000, replace=True)
 

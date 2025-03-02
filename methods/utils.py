@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from common.types import DataSchema, GroupDefinition
+from data_generator.main import GroupDefinition, DataSchema
 
 
 def train_sklearn_model(data, model_type='rf', model_params=None, target_col='class', sensitive_attrs=None,
@@ -155,8 +155,9 @@ def reformat_discrimination_results(non_float_df, original_df) -> List[GroupDefi
         subgroup1_len = subgroups_infos[subgroup1_attrs]['size'] / subgroups_infos[subgroup1_attrs]['nb']
         subgroup2_len = subgroups_infos[subgroup2_attrs]['size'] / subgroups_infos[subgroup2_attrs]['nb']
         group_def['group_size'] = int(subgroup1_len + subgroup2_len)
-        # print(group_def['group_size'])
-        n_group_definitions.append(GroupDefinition(**group_def))
+        if group_def['group_size'] >= 2:
+            # print(group_def['group_size'])
+            n_group_definitions.append(GroupDefinition(**group_def))
 
     return n_group_definitions
 

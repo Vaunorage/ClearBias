@@ -16,16 +16,16 @@ def get_groups(results_df_origin, data_obj, schema):
 
 # %%
 data_obj, schema = get_real_data('bank', use_cache=False)
-results_df_origin, metrics_origin = adf_fairness_testing(data_obj, max_global=10000, max_local=2000, max_iter=1000,
-                                                         cluster_num=100, random_seed=42, max_runtime_seconds=300)
+results_df_origin, metrics_origin = adf_fairness_testing(data_obj, max_global=5000, max_local=2000, max_iter=1000,
+                                                         cluster_num=100, random_seed=42, max_runtime_seconds=400)
 
 # %%
 predefined_groups_origin, nb_elements = get_groups(results_df_origin, data_obj, schema)
 
 # %%
-data_obj_synth, schema = generate_from_real_data('bank', nb_groups=100, predefined_groups=predefined_groups_origin,
+data_obj_synth, schema = generate_from_real_data('bank', nb_groups=1, predefined_groups=predefined_groups_origin,
                                                  use_cache=False)
-# data_obj_synth.dataframe = data_obj_synth.dataframe.sample(data_obj.dataframe.shape[0], replace=True)
+#data_obj_synth.dataframe = data_obj_synth.dataframe.sample(data_obj.dataframe.shape[0], replace=True)
 
 # %%
 group_check_results = check_groups_in_synthetic_data(data_obj_synth, predefined_groups_origin)
