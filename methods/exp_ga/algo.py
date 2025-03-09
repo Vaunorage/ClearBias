@@ -118,11 +118,10 @@ class GlobalDiscovery:
 
 def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_rank: float,
                      sensitive_param: str, max_global: int, max_local: int,
-                     model_type: str = 'rf', **model_kwargs) -> Tuple[ExpGAResultDF, Metrics]:
+                     model_type: str = 'rf', time_limit: float = None, **model_kwargs) -> Tuple[ExpGAResultDF, Metrics]:
     start_time = time.time()
     disc_times: List[float] = []
 
-    # Load data and prepare model
     X, Y = dataset.xdf, dataset.ydf
     model = get_model(model_type, **model_kwargs)
     model.fit(X, Y)
@@ -134,6 +133,9 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     results: List[Tuple[np.ndarray, np.ndarray, float, float]] = []
 
     def evaluate_local(input_sample: np.ndarray) -> float:
+        if time_limit and time.time() - start_time > time_limit:
+            return 0.0
+
         input_sample = input_sample.squeeze()
         input_array = input_sample.squeeze()
         total_inputs.add(tuple(input_array))
@@ -169,8 +171,8 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     seed = search_seed(model, dataset.feature_names, sensitive_param, explainer, train_samples,
                        len(dataset.feature_names), threshold_rank)
 
-    if not seed:
-        logger.info("No seeds found. Exiting...")
+    if not seed or (time_limit and time.time() - start_time > time_limit):
+        logger.info("No seeds found or time limit exceeded. Exiting...")
         metrics: Metrics = {
             "TSN": 0,
             "DSN": 0,
@@ -183,19 +185,21 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
         return empty_df, metrics
 
     for input_sample in seed:
+        if time_limit and time.time() - start_time > time_limit:
+            break
         input_array = np.array([int(i) for i in input_sample]).reshape(1, -1)
         global_disc_inputs.add(tuple(map(tuple, input_array)))
 
-    # Local search
     ga = GA(
         nums=list(global_disc_inputs), bound=dataset.input_bounds, func=evaluate_local,
         DNA_SIZE=len(dataset.input_bounds), cross_rate=0.9, mutation=0.05
     )
 
     for _ in tqdm(range(max_local), desc="Local search progress"):
+        if time_limit and time.time() - start_time > time_limit:
+            break
         ga.evolve()
 
-    # Calculate metrics
     tsn = len(total_inputs)
     dsn = len(local_disc_inputs)
     dss = np.mean(np.diff(disc_times)) if len(disc_times) > 1 else 0.0
@@ -213,7 +217,6 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     logger.info(f"Average time to find discriminatory sample (DSS): {dss:.2f} seconds")
     logger.info(f"Success Rate (SUR): {sur:.2f}%")
 
-    # Create DataFrame from results
     df: ExpGAResultDF = pd.DataFrame(results,
                                      columns=["Original Input", "Altered Input", "Original Outcome", "Altered Outcome"])
 
@@ -236,20 +239,17 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     df.rename(columns={'Outcome Difference': 'diff_outcome'}, inplace=True)
     df['diff_outcome'] = df['diff_outcome'].apply(abs)
 
-    # Convert input arrays to separate columns
     df_attr = pd.DataFrame(df['input'].apply(lambda x: list(x)).tolist(), columns=dataset.feature_names)
     df = pd.concat([df.reset_index(drop=True), df_attr.reset_index(drop=True)], axis=1)
     df.drop(columns=['input'], inplace=True)
     df.sort_values(by=['case_id'], inplace=True)
 
-    # Create indv_key
     valid_attrs = [col for col in dataset.attributes if col in df.columns]
     df['indv_key'] = df[valid_attrs].apply(
         lambda row: '|'.join(str(int(x)) for x in row),
         axis=1
     )
 
-    # Create couple_key
     df['couple_key'] = df.groupby(df.index // 2)['indv_key'].transform(lambda x: '-'.join(x))
 
     for k, v in metrics.items():
@@ -260,18 +260,31 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
 
 def run_expga(dataset: DiscriminationData, model_type: str = 'rf', threshold: float = 0.5,
               threshold_rank: float = 0.5, max_global: int = 50, max_local: int = 50,
-              **model_kwargs) -> Tuple[ExpGAResultDF, Dict[str, Metrics]]:
+              time_limit: float = None, **model_kwargs) -> Tuple[ExpGAResultDF, Dict[str, Metrics]]:
+    start_time = time.time()
     dfs: List[ExpGAResultDF] = []
     all_metrics: Dict[str, Metrics] = {}
 
     for p_attr in dataset.protected_attributes:
+        remaining_time = None if time_limit is None else max(0, time_limit - (time.time() - start_time))
+        if remaining_time == 0:
+            logger.warning(f"Time limit of {time_limit} seconds exceeded. Stopping early.")
+            break
+
         df, metrics = xai_fair_testing(dataset, threshold, threshold_rank, p_attr, max_global, max_local,
-                                       model_type, **model_kwargs)
+                                       model_type, time_limit=remaining_time, **model_kwargs)
         dfs.append(df)
         all_metrics[p_attr] = metrics
 
+    if not dfs:
+        empty_df = pd.DataFrame(columns=['case_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'] +
+                                        list(dataset.feature_names))
+        empty_metrics = {'DSN': 0, 'TSN': 0, 'SUR': 0.0, 'DSS': 0.0}
+        return empty_df, empty_metrics
+
     all_res = pd.concat(dfs)
-
     all_res['case_id'] = all_res['case_id'].replace({v: k for k, v in enumerate(all_res['case_id'].unique())})
+    all_metrics_r = pd.DataFrame(all_metrics.values()).agg(
+        {'DSN': 'sum', 'TSN': 'sum', 'SUR': 'mean', 'DSS': 'mean'}).to_dict()
 
-    return all_res, all_metrics
+    return all_res, all_metrics_r

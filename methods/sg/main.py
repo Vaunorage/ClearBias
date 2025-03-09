@@ -296,7 +296,8 @@ def gen_arguments(ge):
     return arguments
 
 
-def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100, iter=2, random_state=42):
+def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100, iter=2, random_state=42,
+           time_limit=3900):
     # store the result of fairness testing
     global_disc_inputs = set()
     global_disc_inputs_list = []
@@ -360,7 +361,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
             dsr = dss / len(tot_inputs) if len(tot_inputs) > 0 else 0
             logger.info(f"TSS : {len(tot_inputs)} DSS: {dss} DSR : {dsr}")
             use_time = time.time() - start
-            if use_time >= 3900:  # Check time limit at the start of each iteration
+            if use_time >= time_limit:  # Check time limit at the start of each iteration
                 break
 
             org_input = targets_queue.get()
@@ -414,7 +415,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
                         print('use time:' + str(end - start))
                         count += 300
 
-                    if use_time >= 3900:  # Check time limit after each local search
+                    if use_time >= time_limit:  # Check time limit after each local search
                         break
                     if path_constraint not in visited_path:
                         visited_path.append(path_constraint)
@@ -463,7 +464,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
 
                 prefix_pred = prefix_pred + [c]
 
-                if use_time >= 3900:  # Check time limit after each global search iteration
+                if use_time >= time_limit:  # Check time limit after each global search iteration
                     break
 
         f_results.extend(results)
@@ -482,8 +483,6 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
             # Add the additional columns
             indv1['indv_key'] = indv_key1
             indv2['indv_key'] = indv_key2
-
-            # Create couple_key as before
 
             couple_key = f"{indv_key1}-{indv_key2}"
             diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
@@ -519,5 +518,5 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
 if __name__ == '__main__':
     ge, ge_schema = get_real_data('adult')
 
-    res = run_sg(ge, iter=4, cluster_num=100)
+    res = run_sg(ge, iter=4, cluster_num=100, time_limit=100)
     print(res)

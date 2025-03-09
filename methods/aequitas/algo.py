@@ -33,7 +33,7 @@ def get_input_bounds(discrimination_data):
 
 
 def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_global=1000, max_local=1000,
-                 step_size=1.0, init_prob=0.5, random_seed=None, max_total_iterations=None):
+                 step_size=1.0, init_prob=0.5, random_seed=None, max_total_iterations=None, time_limit_seconds=None):
     """
     Main AEQUITAS implementation using custom data generation and model training
 
@@ -46,6 +46,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         init_prob: Initial probability for direction choice
         random_seed: Random seed for reproducibility (default: None)
         max_total_iterations: Maximum total number of iterations across both global and local search (default: None)
+        time_limit_seconds: Maximum execution time in seconds (default: None)
     """
     if random_seed is not None:
         np.random.seed(random_seed)
@@ -152,6 +153,10 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                 self.random_state = np.random.RandomState()
 
         def __call__(self, x):
+            # Check if time limit is reached
+            if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
+                return x  # Return unmodified if time limit reached
+
             # Increment call count for deterministic seeding
             self.call_count += 1
 
@@ -242,6 +247,10 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                 self.random_state = random.Random()
 
         def __call__(self, x):
+            # Check if time limit is reached
+            if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
+                return x  # Return unmodified if time limit reached
+
             # Increment call count for deterministic seeding
             self.call_count += 1
 
@@ -263,15 +272,15 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
     def evaluate_global(inp):
         """Global search evaluation function"""
+        # Check if time limit is reached
+        if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
+            return 0.0  # Stop the search when time limit is reached
+
         if max_total_iterations and total_iterations[0] >= max_total_iterations:
             return 0.0  # Stop the search when max total iterations is reached
 
         total_iterations[0] += 1
         error_condition = check_for_error_condition(model, inp, sensitive_params, input_bounds)
-
-        # Check if any protected attribute values changed
-        # error_condition = any(result[i] != int(inp[sensitive_params[i]])
-        #                       for i in range(len(sensitive_params)))
 
         temp = tuple(inp.tolist())
         tot_inputs.add(temp)
@@ -323,7 +332,8 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                     ),
                     minimizer_kwargs=local_minimizer,
                     niter=max_local,
-                    seed=random_seed if random_seed is not None else None
+                    seed=random_seed if random_seed is not None else None,
+                    callback=lambda x, f, accept: time_limit_seconds and (time.time() - start_time) > time_limit_seconds
                 )
             except Exception as e:
                 logger.error(f"Local search error: {e}")
@@ -332,6 +342,10 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
     def evaluate_local(inp):
         """Local search evaluation function"""
+        # Check if time limit is reached
+        if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
+            return 0.0  # Stop the search when time limit is reached
+
         if max_total_iterations and total_iterations[0] >= max_total_iterations:
             return 0.0  # Stop the search when max total iterations is reached
 
@@ -381,6 +395,12 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         np.random.seed(random_seed)
         random.seed(random_seed)
 
+    # Callback function to check time limit
+    def check_time_limit(x, f, accept):
+        if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
+            return True  # True will stop the optimization
+        return False
+
     basinhopping(
         evaluate_global,
         initial_input,
@@ -389,7 +409,8 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         stepsize=step_size,
         minimizer_kwargs=minimizer,
         take_step=Global_Discovery(input_bounds, random_seed=random_seed),  # Pass the random seed
-        seed=random_seed if random_seed is not None else None
+        seed=random_seed if random_seed is not None else None,
+        callback=check_time_limit
     )
 
     # Calculate final results
@@ -398,6 +419,10 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
     disc_inputs = len(global_disc_inputs_list) + len(local_disc_inputs_list)
     success_rate = (disc_inputs / len(tot_inputs)) * 100 if len(tot_inputs) > 0 else 0
+
+    # Log whether the execution was terminated due to time limit
+    if time_limit_seconds and total_time >= time_limit_seconds:
+        logger.info(f"\nExecution terminated after reaching time limit of {time_limit_seconds} seconds")
 
     logger.info("\nFinal Results:")
     logger.info(f"Total inputs tested: {len(tot_inputs)}")
@@ -415,7 +440,9 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         'TSN': tsn,
         'DSN': dsn,
         'SUR': sur,
-        'DSS': dss
+        'DSS': dss,
+        'total_time': total_time,
+        'time_limit_reached': time_limit_seconds is not None and total_time >= time_limit_seconds
     }
 
     logger.info(f"Total Inputs: {len(tot_inputs)}")
@@ -440,7 +467,6 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         indv2['outcome'] = counter_org_res
 
         # Create couple_key as before
-
         couple_key = f"{indv_key1}-{indv_key2}"
         diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
 
@@ -462,7 +488,6 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     res_df['DSS'] = dss
 
     return res_df, metrics
-
 
 if __name__ == '__main__':
     # Get data using provided generator

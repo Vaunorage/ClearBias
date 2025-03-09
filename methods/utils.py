@@ -3,6 +3,7 @@ from typing import List
 import sklearn
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
@@ -28,7 +29,14 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
         },
         'svm': {'kernel': 'rbf', 'random_state': random_state},
         'lr': {'max_iter': 1000, 'random_state': random_state},
-        'dt': {'random_state': random_state}
+        'dt': {'random_state': random_state},
+        'mlp': {
+            'hidden_layer_sizes': (100,),
+            'activation': 'relu',
+            'solver': 'adam',
+            'max_iter': 1000,
+            'random_state': random_state
+        }
     }
     # Select model parameters
     params = model_params if model_params is not None else default_params[model_type]
@@ -38,7 +46,8 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
         'rf': RandomForestClassifier,
         'svm': SVC,
         'lr': LogisticRegression,
-        'dt': DecisionTreeClassifier
+        'dt': DecisionTreeClassifier,
+        'mlp': MLPClassifier
     }
 
     if model_type not in model_map:
