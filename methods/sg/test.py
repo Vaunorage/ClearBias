@@ -8,7 +8,7 @@ from methods.utils import reformat_discrimination_results, convert_to_non_float_
 # %%
 data_obj, schema = get_real_data('adult')
 results_df_origin, metrics = run_sg(ge=data_obj,
-                                    model_type='rf', cluster_num=50, limit=100, iter=4)
+                                    model_type='rf', cluster_num=50, max_tsn=100, iter=4)
 
 # %%
 non_float_df = convert_to_non_float_rows(results_df_origin, schema)
@@ -26,7 +26,7 @@ plt.show()
 
 # %% Run fairness testing
 results_df_synth, metrics_synth = run_sg(ge=data_obj_synth,
-                                    model_type='rf', cluster_num=50, limit=100, iter=6)
+                                         model_type='rf', cluster_num=50, max_tsn=100, iter=6)
 # %%
 predefined_groups_synth = reformat_discrimination_results(convert_to_non_float_rows(results_df_synth, schema),
                                                           data_obj.dataframe)

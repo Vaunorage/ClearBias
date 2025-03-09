@@ -118,7 +118,8 @@ class GlobalDiscovery:
 
 def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_rank: float,
                      sensitive_param: str, max_global: int, max_local: int,
-                     model_type: str = 'rf', time_limit: float = None, **model_kwargs) -> Tuple[ExpGAResultDF, Metrics]:
+                     model_type: str = 'rf', time_limit: float = None, max_tsn: int = None, **model_kwargs) -> Tuple[
+    ExpGAResultDF, Metrics]:
     start_time = time.time()
     disc_times: List[float] = []
 
@@ -164,41 +165,69 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
         return 2 * abs(output_altered - output_original) + 1
 
     global_discovery = GlobalDiscovery()
-    train_samples = global_discovery(max_global, len(dataset.feature_names), dataset.input_bounds,
-                                     dataset.sensitive_indices[sensitive_param])
 
-    explainer = construct_explainer(X, dataset.feature_names, dataset.outcome_column)
-    seed = search_seed(model, dataset.feature_names, sensitive_param, explainer, train_samples,
-                       len(dataset.feature_names), threshold_rank)
+    explainer = None
+    seed = []
 
-    if not seed or (time_limit and time.time() - start_time > time_limit):
-        logger.info("No seeds found or time limit exceeded. Exiting...")
-        metrics: Metrics = {
-            "TSN": 0,
-            "DSN": 0,
-            "DSS": 0.0,
-            "SUR": 0.0
-        }
-        empty_df = pd.DataFrame(columns=[
-                                            'case_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'
-                                        ] + list(dataset.feature_names))
-        return empty_df, metrics
+    # Continue searching as long as we need more samples and have time
+    while (not max_tsn or len(total_inputs) < max_tsn) and (not time_limit or time.time() - start_time < time_limit):
+        # Generate a new batch of global samples
+        train_samples = global_discovery(max_global, len(dataset.feature_names), dataset.input_bounds,
+                                         dataset.sensitive_indices[sensitive_param])
 
-    for input_sample in seed:
-        if time_limit and time.time() - start_time > time_limit:
+        # Initialize explainer if this is the first iteration
+        if explainer is None:
+            explainer = construct_explainer(X, dataset.feature_names, dataset.outcome_column)
+
+        # Search for new seeds using the current batch
+        new_seeds = search_seed(model, dataset.feature_names, sensitive_param, explainer, train_samples,
+                                len(dataset.feature_names), threshold_rank)
+
+        seed.extend(new_seeds)
+
+        if not seed and (time_limit and time.time() - start_time > time_limit):
+            logger.info("No seeds found or time limit exceeded. Exiting...")
+            metrics: Metrics = {
+                "TSN": 0,
+                "DSN": 0,
+                "DSS": 0.0,
+                "SUR": 0.0
+            }
+            empty_df = pd.DataFrame(columns=[
+                                                'case_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'
+                                            ] + list(dataset.feature_names))
+            return empty_df, metrics
+
+        # Process the new seeds
+        for input_sample in seed:
+            if (max_tsn and len(total_inputs) >= max_tsn) or (time_limit and time.time() - start_time > time_limit):
+                break
+            input_array = np.array([int(i) for i in input_sample]).reshape(1, -1)
+            global_disc_inputs.add(tuple(map(tuple, input_array)))
+
+        # Skip GA if we already have enough samples
+        if max_tsn and len(total_inputs) >= max_tsn:
             break
-        input_array = np.array([int(i) for i in input_sample]).reshape(1, -1)
-        global_disc_inputs.add(tuple(map(tuple, input_array)))
 
-    ga = GA(
-        nums=list(global_disc_inputs), bound=dataset.input_bounds, func=evaluate_local,
-        DNA_SIZE=len(dataset.input_bounds), cross_rate=0.9, mutation=0.05
-    )
+        # Initialize and run GA with current seeds
+        ga = GA(
+            nums=list(global_disc_inputs), bound=dataset.input_bounds, func=evaluate_local,
+            DNA_SIZE=len(dataset.input_bounds), cross_rate=0.9, mutation=0.05
+        )
 
-    for _ in tqdm(range(max_local), desc="Local search progress"):
-        if time_limit and time.time() - start_time > time_limit:
+        for _ in tqdm(range(max_local), desc="Local search progress"):
+            if (max_tsn and len(total_inputs) >= max_tsn) or (time_limit and time.time() - start_time > time_limit):
+                break
+            ga.evolve()
+
+        # If we have enough samples or we didn't find any new ones, exit the loop
+        if (max_tsn and len(total_inputs) >= max_tsn) or len(seed) == 0:
             break
-        ga.evolve()
+
+        # Clear seed for next iteration to avoid duplicate work
+        seed = []
+
+        logger.info(f"Current TSN: {len(total_inputs)}, Target: {max_tsn if max_tsn else 'None'}")
 
     tsn = len(total_inputs)
     dsn = len(local_disc_inputs)
@@ -260,7 +289,8 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
 
 def run_expga(dataset: DiscriminationData, model_type: str = 'rf', threshold: float = 0.5,
               threshold_rank: float = 0.5, max_global: int = 50, max_local: int = 50,
-              time_limit: float = None, **model_kwargs) -> Tuple[ExpGAResultDF, Dict[str, Metrics]]:
+              time_limit: float = None, max_tsn: int = None, **model_kwargs) -> Tuple[
+    ExpGAResultDF, Dict[str, Metrics]]:
     start_time = time.time()
     dfs: List[ExpGAResultDF] = []
     all_metrics: Dict[str, Metrics] = {}
@@ -272,7 +302,7 @@ def run_expga(dataset: DiscriminationData, model_type: str = 'rf', threshold: fl
             break
 
         df, metrics = xai_fair_testing(dataset, threshold, threshold_rank, p_attr, max_global, max_local,
-                                       model_type, time_limit=remaining_time, **model_kwargs)
+                                       model_type, time_limit=remaining_time, max_tsn=max_tsn, **model_kwargs)
         dfs.append(df)
         all_metrics[p_attr] = metrics
 

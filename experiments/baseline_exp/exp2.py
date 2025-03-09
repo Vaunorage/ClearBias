@@ -33,7 +33,7 @@ def run_experiment(method, dataset_name, conn):
                                                        max_total_iterations=10000)
     if method == 'sg':
         results_df_origin, metrics_origin = run_sg(ge=data_obj,
-                                                 model_type='rf', cluster_num=50, limit=100, iter=6)
+                                                   model_type='rf', cluster_num=50, max_tsn=100, iter=6)
     if method == 'expga':
         results_df_origin, metrics_origin = run_expga(dataset=data_obj,
                                                     threshold=0.5, threshold_rank=0.5, max_global=2000, max_local=100)
@@ -72,7 +72,7 @@ def run_experiment(method, dataset_name, conn):
                                                        max_total_iterations=10000)
     if method == 'sg':
         results_df_synth, metrics_synth = run_sg(ge=data_obj_synth,
-                                                 model_type='rf', cluster_num=50, limit=100, iter=6)
+                                                 model_type='rf', cluster_num=50, max_tsn=100, iter=6)
 
     if method == 'expga':
         results_df_synth, metrics_synth = run_expga(dataset=data_obj_synth,

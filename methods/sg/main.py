@@ -49,17 +49,24 @@ def cluster(data, cluster_num):
 
 
 def global_discovery(iteration, config, random_state=42):
-    random.seed(random_state)  # Set seed for random
-    np.random.seed(random_state)  # Set seed for numpy
-    input_bounds = config.input_bounds
-    params = config.params
-    samples = []
-    for j in range(iteration):
-        x = np.zeros(params)
-        for i in range(params):
-            x[i] = random.randint(input_bounds[i][0], input_bounds[i][1])
-        samples.append(x)
-    samples = np.array(samples)
+    np.random.seed(random_state)  # Only need to set numpy's seed
+
+    # Extract the bounds
+    input_bounds = np.array(config.input_bounds)
+
+    # Get dimensions
+    dimensions = len(input_bounds)
+
+    # Calculate the ranges
+    lower_bounds = input_bounds[:, 0]
+    upper_bounds = input_bounds[:, 1]
+
+    samples = np.random.randint(
+        low=lower_bounds,
+        high=upper_bounds + 1,
+        size=(iteration, dimensions)
+    )
+
     return samples
 
 
@@ -74,7 +81,7 @@ def seed_test_input(dataset, cluster_num=None, random_seed=42, iter=0):
     # build the clustering model
     np.random.seed(random_seed + iter)
     if cluster_num is None:
-        cluster_num = max(min(cluster_num, X.shape[0]), 10)
+        cluster_num = max(min(cluster_num, dataset.shape[0]), 10)
 
     clf = KMeans(
         n_clusters=cluster_num,
@@ -296,7 +303,7 @@ def gen_arguments(ge):
     return arguments
 
 
-def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100, iter=2, random_state=42,
+def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=100, random_state=42,
            time_limit=3900):
     # store the result of fairness testing
     global_disc_inputs = set()
@@ -314,9 +321,9 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
     start = time.time()
     f_results = []
 
-    all_inputs = seed_test_input(ge.xdf, max([cluster_num, iter]))
+    all_inputs = seed_test_input(ge.xdf, cluster_num)
 
-    for num_iter in range(iter):
+    for input_num in range(len(all_inputs)):
         start = time.time()
 
         model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
@@ -334,7 +341,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
         T1 = 0.3
 
         # select the seed input for fairness testing
-        inputs = all_inputs[num_iter]
+        inputs = all_inputs[input_num]
 
         # Get all input data at once and convert to numpy for faster processing
         input_data = copy.deepcopy(ge.xdf.iloc[inputs])
@@ -356,10 +363,10 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
 
         results = []
 
-        while len(tot_inputs) < limit * (num_iter + 1) and targets_queue.qsize() != 0:
+        while len(tot_inputs) < max_tsn and targets_queue.qsize() != 0:
             dss = len(local_disc_inputs) + len(global_disc_inputs_list)
             dsr = dss / len(tot_inputs) if len(tot_inputs) > 0 else 0
-            logger.info(f"TSS : {len(tot_inputs)} DSS: {dss} DSR : {dsr}")
+            logger.info(f"TSN : {len(tot_inputs)} DSS: {dss} DSR : {dsr}")
             use_time = time.time() - start
             if use_time >= time_limit:  # Check time limit at the start of each iteration
                 break
@@ -387,7 +394,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
                         local_disc_inputs.add(input_key)
                         local_disc_inputs_list.append(input_key)
 
-                    if len(tot_inputs) == limit:
+                    if len(tot_inputs) == max_tsn:
                         break
 
                 # local search
@@ -434,6 +441,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
                     break
 
                 n_c = copy.deepcopy(c)
+
                 if n_c[1] == "<=":
                     n_c[1] = ">"
                     n_c[3] = 1.0 - c[3]
@@ -518,5 +526,5 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, limit=100,
 if __name__ == '__main__':
     ge, ge_schema = get_real_data('adult')
 
-    res = run_sg(ge, iter=4, cluster_num=100, time_limit=100)
+    res = run_sg(ge, max_tsn=1000, cluster_num=50, time_limit=1000)
     print(res)

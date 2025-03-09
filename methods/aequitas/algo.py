@@ -33,7 +33,8 @@ def get_input_bounds(discrimination_data):
 
 
 def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_global=1000, max_local=1000,
-                 step_size=1.0, init_prob=0.5, random_seed=None, max_total_iterations=None, time_limit_seconds=None):
+                 step_size=1.0, init_prob=0.5, random_seed=None, max_total_iterations=None, time_limit_seconds=None,
+                 max_tsn=None):
     """
     Main AEQUITAS implementation using custom data generation and model training
 
@@ -47,6 +48,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         random_seed: Random seed for reproducibility (default: None)
         max_total_iterations: Maximum total number of iterations across both global and local search (default: None)
         time_limit_seconds: Maximum execution time in seconds (default: None)
+        max_tsn: Maximum number of total samples to test before stopping (default: None)
     """
     if random_seed is not None:
         np.random.seed(random_seed)
@@ -157,6 +159,10 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
             if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
                 return x  # Return unmodified if time limit reached
 
+            # Check if max_tsn is reached
+            if max_tsn and len(tot_inputs) >= max_tsn:
+                return x  # Return unmodified if max_tsn is reached
+
             # Increment call count for deterministic seeding
             self.call_count += 1
 
@@ -251,6 +257,10 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
             if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
                 return x  # Return unmodified if time limit reached
 
+            # Check if max_tsn is reached
+            if max_tsn and len(tot_inputs) >= max_tsn:
+                return x  # Return unmodified if max_tsn is reached
+
             # Increment call count for deterministic seeding
             self.call_count += 1
 
@@ -275,6 +285,10 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         # Check if time limit is reached
         if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
             return 0.0  # Stop the search when time limit is reached
+
+        # Check if max_tsn is reached
+        if max_tsn and len(tot_inputs) >= max_tsn:
+            return 0.0  # Stop the search when max_tsn is reached
 
         if max_total_iterations and total_iterations[0] >= max_total_iterations:
             return 0.0  # Stop the search when max total iterations is reached
@@ -333,7 +347,9 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                     minimizer_kwargs=local_minimizer,
                     niter=max_local,
                     seed=random_seed if random_seed is not None else None,
-                    callback=lambda x, f, accept: time_limit_seconds and (time.time() - start_time) > time_limit_seconds
+                    callback=lambda x, f, accept: (time_limit_seconds and (
+                                time.time() - start_time) > time_limit_seconds) or
+                                                  (max_tsn and len(tot_inputs) >= max_tsn)
                 )
             except Exception as e:
                 logger.error(f"Local search error: {e}")
@@ -345,6 +361,10 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         # Check if time limit is reached
         if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
             return 0.0  # Stop the search when time limit is reached
+
+        # Check if max_tsn is reached
+        if max_tsn and len(tot_inputs) >= max_tsn:
+            return 0.0  # Stop the search when max_tsn is reached
 
         if max_total_iterations and total_iterations[0] >= max_total_iterations:
             return 0.0  # Stop the search when max total iterations is reached
@@ -379,39 +399,69 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
         return float(not error_condition)
 
-    # Initial input - use first training example
-    initial_input = X_train.iloc[0].values.astype('int')
-
-    # Run global search with fixed random seed for basinhopping
-    logger.info("Starting global search...")
-    minimizer = {
-        "method": "L-BFGS-B",
-        "args": (),
-        "options": {"maxiter": 100}
-    }
-
-    # Create a seeded random number generator for basinhopping
-    if random_seed is not None:
-        np.random.seed(random_seed)
-        random.seed(random_seed)
-
-    # Callback function to check time limit
-    def check_time_limit(x, f, accept):
+    # Create a callback function to check termination conditions
+    def check_termination_conditions(x, f, accept):
         if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
+            return True  # True will stop the optimization
+        if max_tsn and len(tot_inputs) >= max_tsn:
             return True  # True will stop the optimization
         return False
 
-    basinhopping(
-        evaluate_global,
-        initial_input,
-        niter=max_global,
-        T=1.0,
-        stepsize=step_size,
-        minimizer_kwargs=minimizer,
-        take_step=Global_Discovery(input_bounds, random_seed=random_seed),  # Pass the random seed
-        seed=random_seed if random_seed is not None else None,
-        callback=check_time_limit
-    )
+    # Initial input - use first training example
+    initial_input = X_train.iloc[0].values.astype('int')
+
+    # Keep running global searches until we hit max_tsn or time limit
+    logger.info("Starting search process...")
+
+    # Continue searching until we meet our stopping conditions
+    search_iteration = 0
+    while True:
+        # Check termination conditions
+        if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
+            logger.info(f"\nTime limit of {time_limit_seconds} seconds reached. Stopping search.")
+            break
+
+        if max_tsn and len(tot_inputs) >= max_tsn:
+            logger.info(f"\nMax TSN of {max_tsn} reached. Stopping search.")
+            break
+
+        search_iteration += 1
+        logger.info(f"\nStarting global search iteration {search_iteration}...")
+
+        # For subsequent iterations, use random training examples to diversify starting points
+        if search_iteration > 1:
+            initial_input = X_train.sample(1).iloc[0].values.astype('int')
+
+        # Create a seeded random number generator for basinhopping
+        if random_seed is not None:
+            # Add iteration to seed for variation in subsequent runs
+            iter_seed = random_seed + (search_iteration * 1000)
+            np.random.seed(iter_seed)
+            random.seed(iter_seed)
+
+        # Run global search with basinhopping
+        minimizer = {
+            "method": "L-BFGS-B",
+            "args": (),
+            "options": {"maxiter": 100}
+        }
+
+        try:
+            basinhopping(
+                evaluate_global,
+                initial_input,
+                niter=max_global,
+                T=1.0,
+                stepsize=step_size,
+                minimizer_kwargs=minimizer,
+                take_step=Global_Discovery(input_bounds, random_seed=iter_seed if random_seed is not None else None),
+                seed=iter_seed if random_seed is not None else None,
+                callback=check_termination_conditions
+            )
+        except Exception as e:
+            logger.error(f"Global search error: {e}")
+            # Continue with next iteration rather than stopping completely
+            continue
 
     # Calculate final results
     end_time = time.time()
@@ -420,9 +470,11 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     disc_inputs = len(global_disc_inputs_list) + len(local_disc_inputs_list)
     success_rate = (disc_inputs / len(tot_inputs)) * 100 if len(tot_inputs) > 0 else 0
 
-    # Log whether the execution was terminated due to time limit
+    # Log termination reason
     if time_limit_seconds and total_time >= time_limit_seconds:
         logger.info(f"\nExecution terminated after reaching time limit of {time_limit_seconds} seconds")
+    elif max_tsn and len(tot_inputs) >= max_tsn:
+        logger.info(f"\nExecution terminated after reaching max TSN of {max_tsn}")
 
     logger.info("\nFinal Results:")
     logger.info(f"Total inputs tested: {len(tot_inputs)}")
@@ -442,7 +494,8 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         'SUR': sur,
         'DSS': dss,
         'total_time': total_time,
-        'time_limit_reached': time_limit_seconds is not None and total_time >= time_limit_seconds
+        'time_limit_reached': time_limit_seconds is not None and total_time >= time_limit_seconds,
+        'max_tsn_reached': max_tsn is not None and tsn >= max_tsn
     }
 
     logger.info(f"Total Inputs: {len(tot_inputs)}")
@@ -489,13 +542,19 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
     return res_df, metrics
 
+
 if __name__ == '__main__':
     # Get data using provided generator
     discrimination_data, schema = get_real_data('adult')
     # discrimination_data, schema = generate_from_real_data(data_generator)
 
-    # For the adult dataset
+    # For the adult dataset with max_tsn parameter
     results, global_cases = run_aequitas(
         discrimination_data=discrimination_data,
-        model_type='rf', max_global=200, max_local=1000, step_size=1.0
+        model_type='rf',
+        max_global=200,
+        max_local=1000,
+        step_size=1.0,
+        time_limit_seconds=3600,  # 1 hour time limit
+        max_tsn=10000  # Stop after testing 10,000 samples
     )

@@ -358,7 +358,8 @@ def adf_fairness_testing(
         max_iter: int = 100,
         cluster_num: int = 10,
         random_seed: int = 42,
-        max_runtime_seconds: int = 3600  # Default 1 hour time limit
+        max_runtime_seconds: int = 3600,  # Default 1 hour time limit
+        max_tsn: int = None  # New parameter for TSN threshold
 ) -> Tuple[pd.DataFrame, Dict[str, float]]:
     """Implementation of ADF fairness testing.
 
@@ -370,6 +371,7 @@ def adf_fairness_testing(
         cluster_num: Number of clusters
         random_seed: Random seed for reproducibility
         max_runtime_seconds: Maximum runtime in seconds before early termination
+        max_tsn: Maximum number of test samples (TSN) to generate before termination
 
     Returns:
         Results DataFrame and metrics dictionary
@@ -391,6 +393,8 @@ def adf_fairness_testing(
     logger.info(f"Dataset shape: {data.shape}")
     logger.info(f"Protected attributes: {data_obj.protected_attributes}")
     logger.info(f"Time limit: {max_runtime_seconds} seconds")
+    if max_tsn:
+        logger.info(f"Target TSN: {max_tsn}")
 
     model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
         data=data,
@@ -429,10 +433,20 @@ def adf_fairness_testing(
         current_runtime = time.time() - start_time
         return current_runtime > max_runtime_seconds
 
+    # Function to check if we've reached the TSN threshold
+    def tsn_threshold_reached() -> bool:
+        if max_tsn is None:
+            return False
+        return len(tot_inputs) >= max_tsn
+
+    # Function to check if any termination condition is met
+    def should_terminate() -> bool:
+        return time_limit_exceeded() or tsn_threshold_reached()
+
     def evaluate_local(inp):
         """Evaluate local perturbation results."""
-        # Check time limit first
-        if time_limit_exceeded():
+        # Check termination criteria first
+        if should_terminate():
             # Return a value that will terminate the optimization
             return 0.0
 
@@ -461,144 +475,189 @@ def adf_fairness_testing(
         return float(not result)
 
     clusters = seed_test_input(X, cluster_num, random_seed=random_seed)
+    all_cluster_indices = [idx for cluster in clusters for idx in cluster]
 
-    iter_num = 0
-    # Early termination flag for time limit
-    time_limit_reached = False
+    # Make sure we can restart the search by tracking explored indices
+    explored_indices = set()
 
-    for _, cluster in enumerate(clusters):
-        # Check if time limit has been reached
-        if time_limit_exceeded():
-            time_limit_reached = True
-            logger.info(f"Time limit of {max_runtime_seconds} seconds reached. Terminating early.")
-            break
+    # To support multiple passes, we'll use an outer loop that continues until termination
+    search_iteration = 0
+    while not should_terminate():
+        logger.info(f"Starting search iteration {search_iteration + 1}")
 
-        if iter_num > max_iter:
-            break
+        # Reset iteration counter for each search pass
+        iter_num = 0
 
-        if len(discriminatory_pairs) < 100 and len(tot_inputs) > max_global:
-            continue
+        # If we've explored all clusters and need more samples
+        if len(explored_indices) >= len(all_cluster_indices):
+            logger.info("All indices explored. Resetting exploration to continue search.")
+            explored_indices = set()
 
-        for index in cluster:
-            # Check time limit periodically
-            if time_limit_exceeded():
-                time_limit_reached = True
+            # Reshuffle clusters for more diversity in the next pass
+            for cluster in clusters:
+                rng.shuffle(cluster)
+
+        for _, cluster in enumerate(clusters):
+            # Check if termination criteria have been met
+            if should_terminate():
+                logger.info("Termination criteria met during cluster exploration.")
                 break
-
-            if len(discriminatory_pairs) < 100 and len(tot_inputs) > max_global:
-                continue
 
             if iter_num > max_iter:
+                logger.info(f"Reached max_iter ({max_iter}). Moving to next search iteration.")
                 break
 
-            sample = X[index:index + 1]
+            # Modified this condition to avoid early termination when we want to reach max_tsn
+            # Only use this condition if max_tsn is not specified
+            if max_tsn is None and len(discriminatory_pairs) < 100 and len(tot_inputs) > max_global:
+                continue
 
-            probs = model_prediction(model, sample)[0]
-            label = np.argmax(probs)
-            prob = probs[label]
-            max_diff = 0
-            n_values = {}
-
-            sensitive_values = {}
-            for sens_name, sens_idx in data_obj.sensitive_indices.items():
-                sensitive_values[sens_name] = np.unique(data_obj.xdf.iloc[:, sens_idx]).tolist()
-
-            value_combinations = list(itertools.product(*[sensitive_values[name] for name in sensitive_values.keys()]))
-
-            for values in value_combinations:
-                # Check time limit inside the innermost loop for responsiveness
-                if time_limit_exceeded():
-                    time_limit_reached = True
-                    break
-
-                if all(sample[0][sens_idx] == value
-                       for name, value in zip(sensitive_values.keys(), values)):
+            for idx, index in enumerate(cluster):
+                # Skip already explored indices unless we've reset for a new pass
+                if index in explored_indices:
                     continue
 
-                tnew = pd.DataFrame(sample, columns=data_obj.feature_names)
-                for name, value in zip(sensitive_values.keys(), values):
-                    tnew[name] = value
-                n_sample = tnew.to_numpy()
+                explored_indices.add(index)
 
-                discr_key = []
-                for i in range(len(n_sample[0])):
-                    if i not in data_obj.sensitive_indices.values():
-                        discr_key.append(n_sample[0][i])
-                discr_key = tuple(discr_key)
+                # Check termination criteria periodically
+                if should_terminate():
+                    break
 
-                tot_inputs.add(discr_key)
+                # Modified this condition to avoid early termination when we want to reach max_tsn
+                # Only use this condition if max_tsn is not specified
+                if max_tsn is None and len(discriminatory_pairs) < 100 and len(tot_inputs) > max_global:
+                    continue
 
-                n_probs = model_prediction(model, n_sample)[0]
-                n_label = np.argmax(n_probs)
-                n_prob = n_probs[n_label]
+                if iter_num > max_iter:
+                    break
 
-                if label != n_label:
+                sample = X[index:index + 1]
+
+                probs = model_prediction(model, sample)[0]
+                label = np.argmax(probs)
+                prob = probs[label]
+                max_diff = 0
+                n_values = {}
+
+                sensitive_values = {}
+                for sens_name, sens_idx in data_obj.sensitive_indices.items():
+                    sensitive_values[sens_name] = np.unique(data_obj.xdf.iloc[:, sens_idx]).tolist()
+
+                value_combinations = list(
+                    itertools.product(*[sensitive_values[name] for name in sensitive_values.keys()]))
+
+                for values in value_combinations:
+                    # Check termination criteria inside the innermost loop for responsiveness
+                    if should_terminate():
+                        break
+
+                    if all(sample[0][sens_idx] == value
+                           for name, value in zip(sensitive_values.keys(), values)):
+                        continue
+
+                    tnew = pd.DataFrame(sample, columns=data_obj.feature_names)
                     for name, value in zip(sensitive_values.keys(), values):
-                        n_values[data_obj.sensitive_indices[name]] = value
+                        tnew[name] = value
+                    n_sample = tnew.to_numpy()
 
-                    global_disc_inputs.append(discr_key)
+                    discr_key = []
+                    for i in range(len(n_sample[0])):
+                        if i not in data_obj.sensitive_indices.values():
+                            discr_key.append(n_sample[0][i])
+                    discr_key = tuple(discr_key)
 
-                    log_metrics()
+                    tot_inputs.add(discr_key)
 
-                    # Create a tqdm progress bar
-                    with tqdm(total=max_local, desc="Basinhopping progress") as progress_bar:
-                        # Modify basinhopping to respect time limit
-                        minimizer = {
-                            "method": "L-BFGS-B",
-                            "options": {
-                                "maxiter": 10,
-                                "ftol": 1e-6,
-                                "gtol": 1e-5,
-                                "maxls": 20  # Limit line search steps for determinism
-                            }
-                        }
+                    n_probs = model_prediction(model, n_sample)[0]
+                    n_label = np.argmax(n_probs)
+                    n_prob = n_probs[n_label]
 
-                        local_perturbation = LocalPerturbation(
-                            model, n_values, data_obj.sensitive_indices.values(),
-                            X.shape[1], data_obj, random_seed
-                        )
-
-                        # Custom accept_test function to check time limit
-                        def time_limit_check(f_new, x_new, f_old, x_old):
-                            return not time_limit_exceeded()
-
-                        # Create callback for tqdm updates
-                        callback = BasinhoppingCallback(max_local, progress_bar)
-
-                        basinhopping(
-                            evaluate_local,
-                            sample.flatten(),
-                            stepsize=rng.uniform(MIN_PERTURBATION_SIZE, MAX_PERTURBATION_SIZE),
-                            take_step=local_perturbation,
-                            minimizer_kwargs=minimizer,
-                            niter=max_local,
-                            T=1.0,
-                            interval=40,
-                            niter_success=12,
-                            seed=random_seed,  # Add seed for basinhopping
-                            accept_test=time_limit_check,  # Add time limit check
-                            callback=callback  # Add the callback for tqdm updates
-                        )
-
-                        # Check if time limit was exceeded during basinhopping
-                        if time_limit_exceeded():
-                            time_limit_reached = True
-                            break
-                else:
-                    prob_diff = abs(prob - n_prob)
-                    if prob_diff > max_diff:
-                        max_diff = prob_diff
+                    if label != n_label:
                         for name, value in zip(sensitive_values.keys(), values):
                             n_values[data_obj.sensitive_indices[name]] = value
 
-            if time_limit_reached:
+                        global_disc_inputs.append(discr_key)
+
+                        log_metrics()
+
+                        # Create a tqdm progress bar
+                        with tqdm(total=max_local, desc="Basinhopping progress") as progress_bar:
+                            # Modify basinhopping to respect termination criteria
+                            minimizer = {
+                                "method": "L-BFGS-B",
+                                "options": {
+                                    "maxiter": 10,
+                                    "ftol": 1e-6,
+                                    "gtol": 1e-5,
+                                    "maxls": 20  # Limit line search steps for determinism
+                                }
+                            }
+
+                            local_perturbation = LocalPerturbation(
+                                model, n_values, data_obj.sensitive_indices.values(),
+                                X.shape[1], data_obj, random_seed
+                            )
+
+                            # Custom accept_test function to check termination criteria
+                            def termination_check(f_new, x_new, f_old, x_old):
+                                return not should_terminate()
+
+                            # Create callback for tqdm updates
+                            callback = BasinhoppingCallback(max_local, progress_bar)
+
+                            basinhopping(
+                                evaluate_local,
+                                sample.flatten(),
+                                stepsize=rng.uniform(MIN_PERTURBATION_SIZE, MAX_PERTURBATION_SIZE),
+                                take_step=local_perturbation,
+                                minimizer_kwargs=minimizer,
+                                niter=max_local,
+                                T=1.0,
+                                interval=40,
+                                niter_success=12,
+                                seed=random_seed,  # Add seed for basinhopping
+                                accept_test=termination_check,  # Add termination check
+                                callback=callback  # Add the callback for tqdm updates
+                            )
+
+                            # Check if termination criteria were met during basinhopping
+                            if should_terminate():
+                                break
+                    else:
+                        prob_diff = abs(prob - n_prob)
+                        if prob_diff > max_diff:
+                            max_diff = prob_diff
+                            for name, value in zip(sensitive_values.keys(), values):
+                                n_values[data_obj.sensitive_indices[name]] = value
+
+                if should_terminate():
+                    break
+
+                iter_num += 1
+                log_metrics()
+
+            # Check termination after processing a cluster
+            if should_terminate():
                 break
 
-            iter_num += 1
-            log_metrics()
+        # Increment search iteration counter
+        search_iteration += 1
 
-        if time_limit_reached:
+        # Log progress after each search iteration
+        current_tsn = len(tot_inputs)
+        current_dsn = len(discriminatory_pairs)
+        current_dsr = current_dsn / current_tsn if current_tsn > 0 else 0
+        logger.info(f"Completed search iteration {search_iteration}")
+        logger.info(f"Current TSN: {current_tsn}, DSN: {current_dsn}, DSR: {current_dsr:.4f}")
+
+        # If we reached max_tsn, break out of the loop
+        if should_terminate():
+            logger.info("Termination criteria met after search iteration.")
             break
+
+    # Record the termination reasons
+    time_limit_reached = time_limit_exceeded()
+    tsn_threshold_reached = tsn_threshold_reached()
 
     end_time = time.time()
     total_time = end_time - start_time
@@ -611,16 +670,27 @@ def adf_fairness_testing(
     metrics = {
         'tsn': tsn,
         'dsn': dsn,
-        'sur': dsn / tsn if tsn > 0 else 0,
+        'sur': sur,
         'dss': total_time / dsn if dsn > 0 else float('inf'),
         'total_time': total_time,
-        'time_limit_reached': time_limit_reached
+        'time_limit_reached': time_limit_reached,
+        'tsn_threshold_reached': tsn_threshold_reached,
+        'search_iterations': search_iteration
     }
 
     logger.info("Final Results:")
     logger.info(f"Total Time: {total_time:.2f}s")
+    logger.info(f"Search Iterations: {search_iteration}")
+
+    termination_reasons = []
     if time_limit_reached:
-        logger.info(f"Time limit of {max_runtime_seconds}s reached. Results may be incomplete.")
+        termination_reasons.append(f"Time limit of {max_runtime_seconds}s reached")
+    if tsn_threshold_reached:
+        termination_reasons.append(f"TSN threshold of {max_tsn} reached")
+
+    if termination_reasons:
+        logger.info(f"Termination reason(s): {', '.join(termination_reasons)}")
+
     logger.info(f"Final Metrics - TSN: {tsn}, DSN: {dsn}, DSR: {metrics['sur']:.4f}")
     logger.info(f"Success Rate: {metrics['sur']:.4f}")
     logger.info(f"Search Time per Discriminatory Sample: {metrics['dss']:.2f}s")
@@ -657,11 +727,14 @@ def adf_fairness_testing(
         res_df['SUR'] = sur
         res_df['DSS'] = dss
         res_df['time_limit_reached'] = time_limit_reached
+        res_df['tsn_threshold_reached'] = tsn_threshold_reached
+        res_df['search_iterations'] = search_iteration
 
         # Remove duplicates only once at the end
         res_df.drop_duplicates(subset=['indv_key'], inplace=True)
     else:
-        res_df = pd.DataFrame(columns=all_cols + ['TSN', 'DSN', 'SUR', 'DSS', 'time_limit_reached'])
+        res_df = pd.DataFrame(columns=all_cols + ['TSN', 'DSN', 'SUR', 'DSS', 'time_limit_reached',
+                                                  'tsn_threshold_reached', 'search_iterations'])
 
     return res_df, metrics
 
@@ -677,7 +750,30 @@ if __name__ == "__main__":
         max_local=2000,
         max_iter=100,
         cluster_num=50,
-        max_runtime_seconds=100  # 30 minute time limit
+        max_runtime_seconds=3600,  # 1 hour time limit
+        max_tsn=20000  # Set target TSN threshold
+    )
+
+    print("\nTesting Metrics:")
+    for metric, value in metrics.items():
+        if isinstance(value, bool):
+            print(f"{metric}: {value}")
+        else:
+            print(f"{metric}: {value:.4f}")
+
+if __name__ == "__main__":
+    from data_generator.main import get_real_data, generate_from_real_data
+
+    data_obj, schema = get_real_data('adult')
+
+    results_df, metrics = adf_fairness_testing(
+        data_obj,
+        max_global=5000,
+        max_local=2000,
+        max_iter=100,
+        cluster_num=50,
+        max_runtime_seconds=1000,  # 30 minute time limit
+        max_tsn=50000
     )
 
     print("\nTesting Metrics:")

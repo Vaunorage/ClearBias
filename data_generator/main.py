@@ -314,7 +314,7 @@ class DiscriminationData:
     def __post_init__(self):
         self.input_bounds = []
         for col in list(self.attributes):
-            min_val = math.floor(self.xdf[col].min())
+            min_val = max(math.floor(self.xdf[col].min()), 0)
             max_val = math.ceil(self.xdf[col].max())
             self.input_bounds.append([min_val, max_val])
 
