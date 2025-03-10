@@ -58,8 +58,7 @@ def run_single_experiment(
     try:
         data_obj_synth, schema = generate_from_real_data(
             dataset_name,
-            predefined_groups=predefined_groups_origin,
-            extra_rows=1000
+            predefined_groups=predefined_groups_origin
         )
     except Exception as e:
         return {

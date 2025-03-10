@@ -5,7 +5,7 @@ from sklearn.cluster import KMeans
 import itertools
 from sklearn.tree import DecisionTreeClassifier
 from methods.utils import train_sklearn_model
-from queue import PriorityQueue
+from queue import PriorityQueue, Queue
 
 from z3 import *
 import copy
@@ -200,7 +200,9 @@ def check_for_discrimination_case(ge, model, t, sensitive_indices):
     # Check if any combination leads to a different prediction
     discriminations = new_targets[new_targets['outcome'] != label[0]]
 
-    return discriminations.shape[0] > 0, org_df, discriminations
+    tested_inp = new_targets[ge.attr_columns].to_numpy().tolist()
+
+    return discriminations.shape[0] > 0, org_df, discriminations, tested_inp
 
 
 def remove_sensitive_attributes(input_vector, sensitive_indices):
@@ -310,7 +312,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
     global_disc_inputs_list = []
     local_disc_inputs = set()
     local_disc_inputs_list = []
-    tot_inputs = set()
+    tot_inputs = []
 
     np.random.seed(random_state)
     random.seed(random_state)
@@ -323,8 +325,10 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
 
     all_inputs = seed_test_input(ge.xdf, cluster_num)
 
-    for input_num in range(len(all_inputs)):
-        start = time.time()
+    ge_targets_queue = Queue()
+    [ge_targets_queue.put(inp) for inp in all_inputs]
+
+    while len(tot_inputs) < max_tsn and (time.time() - start) <= time_limit and ge_targets_queue.qsize() != 0:
 
         model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
             data=ge.training_dataframe,
@@ -341,7 +345,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
         T1 = 0.3
 
         # select the seed input for fairness testing
-        inputs = all_inputs[input_num]
+        inputs = ge_targets_queue.get()
 
         # Get all input data at once and convert to numpy for faster processing
         input_data = copy.deepcopy(ge.xdf.iloc[inputs])
@@ -361,21 +365,28 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
         # Generate arguments for Z3 solver
         arguments = gen_arguments(ge)
 
-        results = []
+        def add_inputs(input_key):
+            if (input_key not in global_disc_inputs) and (input_key not in local_disc_inputs):
+                if org_input_rank > 2:
+                    global_disc_inputs.add(input_key)
+                    global_disc_inputs_list.append(input_key)
+                else:
+                    local_disc_inputs.add(input_key)
+                    local_disc_inputs_list.append(input_key)
 
-        while len(tot_inputs) < max_tsn and targets_queue.qsize() != 0:
-            dss = len(local_disc_inputs) + len(global_disc_inputs_list)
-            dsr = dss / len(tot_inputs) if len(tot_inputs) > 0 else 0
-            logger.info(f"TSN : {len(tot_inputs)} DSS: {dss} DSR : {dsr}")
-            use_time = time.time() - start
-            if use_time >= time_limit:  # Check time limit at the start of each iteration
-                break
+        while len(tot_inputs) < max_tsn and (time.time() - start) <= time_limit and targets_queue.qsize() != 0:
+            dsn = len(f_results)
+            sur = dsn / len(tot_inputs) if len(tot_inputs) > 0 else 0
+            logger.info(f"TSN : {len(tot_inputs)} DSN: {dsn} DSR : {sur}")
 
             org_input = targets_queue.get()
             org_input_rank = org_input[0]
             org_input = np.array(org_input[1])
 
-            found, org_df, found_df = check_for_discrimination_case(ge, model, org_input, ge.sensitive_indices)
+            found, org_df, found_df, tested_inp = check_for_discrimination_case(ge, model, org_input,
+                                                                                ge.sensitive_indices)
+            tot_inputs.extend(tested_inp)
+
             decision_rules = extract_lime_decision_constraints(ge, model, org_input, random_state)
 
             # Create a version of the input without any sensitive parameters
@@ -383,19 +394,11 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
             input_key = tuple(input_without_sensitive)
 
             # Track unique inputs and check for discrimination
-            tot_inputs.add(input_key)
             if found:
-                results.append((org_df, found_df))
-                if (input_key not in global_disc_inputs) and (input_key not in local_disc_inputs):
-                    if org_input_rank > 2:
-                        global_disc_inputs.add(input_key)
-                        global_disc_inputs_list.append(input_key)
-                    else:
-                        local_disc_inputs.add(input_key)
-                        local_disc_inputs_list.append(input_key)
-
-                    if len(tot_inputs) == max_tsn:
-                        break
+                add_inputs(input_key)
+                for el in found_df.iterrows():
+                    f_results.append((org_df, el[1].to_frame().T))
+                    add_inputs(tuple(remove_sensitive_attributes(el[1].tolist(), ge.sensitive_indices)))
 
                 # local search
                 for decision_rule_index in range(len(decision_rules)):
@@ -472,35 +475,29 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
 
                 prefix_pred = prefix_pred + [c]
 
-                if use_time >= time_limit:  # Check time limit after each global search iteration
-                    break
-
-        f_results.extend(results)
-
     end = time.time()
     res_df = []
     case_id = 0
-    for org, counter_org in f_results:
-        for _, counter_examples in counter_org.iterrows():
-            indv1 = org.copy()
-            indv2 = pd.DataFrame([counter_examples])
+    for org, counter_example in f_results:
+        indv1 = org.copy()
+        indv2 = counter_example.copy()
 
-            indv_key1 = "|".join(str(x) for x in indv1[ge.attr_columns].iloc[0])
-            indv_key2 = "|".join(str(x) for x in indv2[ge.attr_columns].iloc[0])
+        indv_key1 = "|".join(str(x) for x in indv1[ge.attr_columns].iloc[0])
+        indv_key2 = "|".join(str(x) for x in indv2[ge.attr_columns].iloc[0])
 
-            # Add the additional columns
-            indv1['indv_key'] = indv_key1
-            indv2['indv_key'] = indv_key2
+        # Add the additional columns
+        indv1['indv_key'] = indv_key1
+        indv2['indv_key'] = indv_key2
 
-            couple_key = f"{indv_key1}-{indv_key2}"
-            diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
+        couple_key = f"{indv_key1}-{indv_key2}"
+        diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
 
-            df_res = pd.concat([indv1, indv2])
-            df_res['couple_key'] = couple_key
-            df_res['diff_outcome'] = diff_outcome
-            df_res['case_id'] = case_id
-            res_df.append(df_res)
-            case_id += 1
+        df_res = pd.concat([indv1, indv2])
+        df_res['couple_key'] = couple_key
+        df_res['diff_outcome'] = diff_outcome
+        df_res['case_id'] = case_id
+        res_df.append(df_res)
+        case_id += 1
 
     if len(res_df) != 0:
         results_df = pd.concat(res_df)
@@ -511,13 +508,13 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
     execution_time = end - start
 
     tsn = len(tot_inputs)
-    dsn = len(local_disc_inputs_list) + len(global_disc_inputs_list)
+    dsn = len(f_results)
 
     metrics = {
         "TSN": tsn,
         "DSN": dsn,
-        "DSS": round(execution_time / dsn, 2),
-        "SUR": round(dsn / tsn, 2)
+        "SUR": round(dsn / tsn, 2),
+        "DSS": round(execution_time / dsn, 2)
     }
 
     return results_df, metrics
@@ -526,5 +523,5 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
 if __name__ == '__main__':
     ge, ge_schema = get_real_data('adult')
 
-    res = run_sg(ge, max_tsn=1000, cluster_num=50, time_limit=1000)
+    res = run_sg(ge, max_tsn=10000, cluster_num=50, time_limit=1000)
     print(res)

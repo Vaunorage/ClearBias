@@ -20,8 +20,7 @@ nb_elements = sum([el.group_size for el in predefined_groups_origin])
 
 # %%
 data_obj_synth, schema = generate_from_real_data('adult',
-                                                 predefined_groups=predefined_groups_origin,
-                                                 extra_rows=1000)
+                                                 predefined_groups=predefined_groups_origin)
 
 # %%
 fig = plot_distribution_comparison(schema, data_obj_synth)

@@ -8,17 +8,15 @@ from methods.utils import reformat_discrimination_results, convert_to_non_float_
 # %%
 data_obj, schema = get_real_data('adult')
 results_df_origin, metrics = run_sg(ge=data_obj,
-                                    model_type='rf', cluster_num=50, max_tsn=100, iter=4)
+                                    model_type='rf', cluster_num=50, max_tsn=1000)
 
 # %%
 non_float_df = convert_to_non_float_rows(results_df_origin, schema)
 predefined_groups_origin = reformat_discrimination_results(non_float_df, data_obj.dataframe)
-nb_elements = sum([el.group_size for el in predefined_groups_origin])
 
 # %%
 data_obj_synth, schema = generate_from_real_data('adult',
-                                                 predefined_groups=predefined_groups_origin,
-                                                 extra_rows=1000)
+                                                 predefined_groups=predefined_groups_origin, nb_groups=len(predefined_groups_origin))
 
 # %%
 fig = plot_distribution_comparison(schema, data_obj_synth)
@@ -26,7 +24,7 @@ plt.show()
 
 # %% Run fairness testing
 results_df_synth, metrics_synth = run_sg(ge=data_obj_synth,
-                                         model_type='rf', cluster_num=50, max_tsn=100, iter=6)
+                                         model_type='rf', cluster_num=50, max_tsn=4000)
 # %%
 predefined_groups_synth = reformat_discrimination_results(convert_to_non_float_rows(results_df_synth, schema),
                                                           data_obj.dataframe)

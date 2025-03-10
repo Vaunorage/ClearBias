@@ -1020,8 +1020,7 @@ def generate_data(
         categorical_distribution: Dict[str, List[float]] = None,
         categorical_influence: float = 0.5,
         data_schema: DataSchema = None,
-        predefined_groups: List[GroupDefinition] = None,
-        extra_rows=None
+        predefined_groups: List[GroupDefinition] = None
 ) -> DiscriminationData:
     """
     Generate synthetic discrimination data.
@@ -1050,7 +1049,6 @@ def generate_data(
         categorical_influence: Influence of categorical attributes
         data_schema: Optional DataSchema to use instead of generating a new one
         predefined_groups: Optional list of GroupDefinition objects for predefined groups
-        extra_rows: Number of additional rows to generate outside of the group structure
 
     Returns:
         DiscriminationData object with generated data
@@ -1299,41 +1297,6 @@ def generate_data(
                     pbar.total = len(results)
                     pbar.refresh()
                     break
-
-    # Add extra rows if specified
-    if extra_rows is not None and extra_rows > 0:
-        print(f"Generating {extra_rows} additional rows outside group structure")
-        extra_data = data_schema.sample(num_rows=extra_rows)
-
-        # Generate outcomes for extra rows
-        extra_outcome, extra_epis, extra_alea = generate_outcomes_with_uncertainty(
-            df=extra_data,
-            feature_columns=data_schema.attr_names,
-            weights=W[-1], bias=0.0, group_column=None,
-            group_bias=0.0, epistemic_uncertainty=0.1,
-            aleatoric_uncertainty=0.1, n_estimators=50, random_state=None
-        )
-
-        extra_data['outcome'] = extra_outcome
-        extra_data['epis_uncertainty'] = extra_epis
-        extra_data['alea_uncertainty'] = extra_alea
-
-        # Add generic group metadata
-        extra_data['group_key'] = 'extra_data'
-        extra_data['subgroup_key'] = 'extra_data'
-        extra_data['indv_key'] = extra_data[attr_names].apply(
-            lambda x: '|'.join(list(x.astype(str))), axis=1)
-        extra_data['granularity_param'] = 0
-        extra_data['intersectionality_param'] = 0
-        extra_data['similarity_param'] = 0
-        extra_data['epis_uncertainty_param'] = 0.1
-        extra_data['alea_uncertainty_param'] = 0.1
-        extra_data['frequency_param'] = 0
-        extra_data['group_size'] = 1
-        extra_data['diff_subgroup_size'] = 0
-
-        # Add extra data to results
-        results.append(extra_data)
 
     # Combine all results
     results = pd.concat(results, ignore_index=True)
@@ -1812,14 +1775,13 @@ def calculate_sdv_correlation_matrix(encoded_df, attr_columns, ensure_positive_d
     return correlation_matrix
 
 
-def generate_from_real_data(dataset_name, use_cache=False, extra_rows=None, predefined_groups=None, *args, **kwargs):
+def generate_from_real_data(dataset_name, use_cache=False, predefined_groups=None, *args, **kwargs):
     """
     Generate synthetic discrimination data based on real-world datasets using SDV.
 
     Args:
         dataset_name: Name of the dataset ('adult', 'credit', 'bank')
         use_cache: Whether to use cached data if available
-        extra_rows: Number of additional rows to generate outside of the group structure
         *args, **kwargs: Additional arguments for generate_data
 
     Returns:
@@ -1830,7 +1792,6 @@ def generate_from_real_data(dataset_name, use_cache=False, extra_rows=None, pred
         cache = DataCache()
         cache_params = {
             'dataset_name': dataset_name,
-            'extra_rows': extra_rows,
             **{k: v for k, v in kwargs.items() if isinstance(v, (int, float, str, bool))}
         }
         cached_data = cache.load(cache_params)
@@ -1926,7 +1887,6 @@ def generate_from_real_data(dataset_name, use_cache=False, extra_rows=None, pred
         correlation_matrix=correlation_matrix,
         data_schema=schema,
         use_cache=False,  # We're already handling cache at this level
-        extra_rows=extra_rows,
         predefined_groups=predefined_groups,
         *args, **kwargs
     )

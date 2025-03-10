@@ -348,7 +348,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                     niter=max_local,
                     seed=random_seed if random_seed is not None else None,
                     callback=lambda x, f, accept: (time_limit_seconds and (
-                                time.time() - start_time) > time_limit_seconds) or
+                            time.time() - start_time) > time_limit_seconds) or
                                                   (max_tsn and len(tot_inputs) >= max_tsn)
                 )
             except Exception as e:
@@ -551,10 +551,7 @@ if __name__ == '__main__':
     # For the adult dataset with max_tsn parameter
     results, global_cases = run_aequitas(
         discrimination_data=discrimination_data,
-        model_type='rf',
-        max_global=200,
-        max_local=1000,
-        step_size=1.0,
-        time_limit_seconds=3600,  # 1 hour time limit
-        max_tsn=10000  # Stop after testing 10,000 samples
+        model_type='rf', max_global=200,
+        max_local=1000, step_size=1.0,
+        time_limit_seconds=3600, max_tsn=10000
     )

@@ -190,8 +190,8 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
             metrics: Metrics = {
                 "TSN": 0,
                 "DSN": 0,
+                "SUR": 0.0,
                 "DSS": 0.0,
-                "SUR": 0.0
             }
             empty_df = pd.DataFrame(columns=[
                                                 'case_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'
@@ -231,14 +231,14 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
 
     tsn = len(total_inputs)
     dsn = len(local_disc_inputs)
-    dss = np.mean(np.diff(disc_times)) if len(disc_times) > 1 else 0.0
     sur = (dsn / tsn * 100) if tsn > 0 else 0.0
+    dss = np.mean(np.diff(disc_times)) if len(disc_times) > 1 else 0.0
 
     metrics: Metrics = {
         "TSN": tsn,
         "DSN": dsn,
-        "DSS": dss,
-        "SUR": sur
+        "SUR": sur,
+        "DSS": dss
     }
 
     logger.info(f"Total Inputs (TSN): {tsn}")

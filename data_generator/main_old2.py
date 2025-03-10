@@ -1129,10 +1129,13 @@ def calculate_actual_diff_outcome_from_avg(data):
     avg_outcome = data.dataframe[data.outcome_column].mean()
 
     def calculate_group_diff(group_data):
-        unique_subgroups = group_data['subgroup_key'].unique()
-        subgroup1_outcome = group_data[group_data['subgroup_key'] == unique_subgroups[0]][data.outcome_column]
-        subgroup2_outcome = group_data[group_data['subgroup_key'] == unique_subgroups[1]][data.outcome_column]
-        res = (abs(avg_outcome - subgroup1_outcome.mean()) + abs(avg_outcome - subgroup2_outcome.mean())) / 2
+        try:
+            unique_subgroups = group_data['subgroup_key'].unique()
+            subgroup1_outcome = group_data[group_data['subgroup_key'] == unique_subgroups[0]][data.outcome_column]
+            subgroup2_outcome = group_data[group_data['subgroup_key'] == unique_subgroups[1]][data.outcome_column]
+            res = (abs(avg_outcome - subgroup1_outcome.mean()) + abs(avg_outcome - subgroup2_outcome.mean())) / 2
+        except Exception as e:
+            print(e)
         return res
 
     return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_diff)
