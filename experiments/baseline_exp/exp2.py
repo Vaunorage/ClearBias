@@ -1,5 +1,3 @@
-import pandas as pd
-import numpy as np
 import sqlite3
 from data_generator.main import get_real_data, generate_from_real_data
 from methods.adf.main1 import adf_fairness_testing
@@ -10,6 +8,7 @@ from methods.utils import compare_discriminatory_groups, get_groups
 
 seed = 42
 
+
 def run_experiment(method, dataset_name, conn):
     # Get real data
     data_obj, schema = get_real_data(dataset_name, use_cache=True)
@@ -17,26 +16,23 @@ def run_experiment(method, dataset_name, conn):
     # Run fairness testing on original data
     if method == 'adf':
         results_df_origin, metrics_origin = adf_fairness_testing(
-            data_obj,
-            max_global=5000,
-            max_local=2000,
-            max_iter=1000,
-            cluster_num=100,
-            random_seed=seed,
-            max_runtime_seconds=400
+            data_obj, max_global=10000, max_local=2000,
+            max_iter=2000, cluster_num=100, random_seed=seed,
+            max_runtime_seconds=600, max_tsn=5000
         )
 
     if method == 'aequitas':
         results_df_origin, metrics_origin = run_aequitas(discrimination_data=data_obj,
-                                                       model_type='rf', max_global=10000,
-                                                       max_local=5000, step_size=1.0, random_seed=42,
-                                                       max_total_iterations=10000)
+                                                         model_type='rf', max_global=10000,
+                                                         max_local=5000, step_size=1.0, random_seed=42,
+                                                         max_tsn=5000, max_total_iterations=5000)
     if method == 'sg':
         results_df_origin, metrics_origin = run_sg(ge=data_obj,
-                                                   model_type='rf', cluster_num=50, max_tsn=100, iter=6)
+                                                   model_type='rf', cluster_num=50, max_tsn=5000, time_limit=1000)
     if method == 'expga':
         results_df_origin, metrics_origin = run_expga(dataset=data_obj,
-                                                    threshold=0.5, threshold_rank=0.5, max_global=2000, max_local=100)
+                                                      threshold=0.5, threshold_rank=0.5, max_global=2000, max_local=100,
+                                                      max_tsn=5000)
 
     # Get discriminatory groups from original data
     predefined_groups_origin, nb_elements = get_groups(results_df_origin, data_obj, schema)
@@ -44,39 +40,33 @@ def run_experiment(method, dataset_name, conn):
     # Generate synthetic data with predefined groups
     data_obj_synth, schema = generate_from_real_data(
         dataset_name,
-        nb_groups=1,
+        nb_groups=len(predefined_groups_origin) * 2,
         predefined_groups=predefined_groups_origin,
-        use_cache=True,
-        min_alea_uncertainty=0.0,
-        max_alea_uncertainty=1.0,
-        min_epis_uncertainty=0.0,
-        max_epis_uncertainty=1.0
+        use_cache=True, min_alea_uncertainty=0.0, max_alea_uncertainty=1.0,
+        min_epis_uncertainty=0.0, max_epis_uncertainty=1.0
     )
 
     # Run fairness testing on synthetic data
     if method == 'adf':
         results_df_synth, metrics_synth = adf_fairness_testing(
-            data_obj_synth,
-            max_global=10000,
-            max_local=2000,
-            max_iter=2000,
-            cluster_num=100,
-            random_seed=seed,
-            max_runtime_seconds=600
+            data_obj_synth, max_global=10000, max_local=2000,
+            max_iter=2000, cluster_num=100, random_seed=seed,
+            max_runtime_seconds=600, max_tsn=5000
         )
 
     if method == 'aequitas':
         results_df_synth, metrics_synth = run_aequitas(discrimination_data=data_obj_synth,
                                                        model_type='rf', max_global=10000,
                                                        max_local=5000, step_size=1.0, random_seed=42,
-                                                       max_total_iterations=10000)
+                                                       max_tsn=5000, max_total_iterations=5000)
     if method == 'sg':
         results_df_synth, metrics_synth = run_sg(ge=data_obj_synth,
-                                                 model_type='rf', cluster_num=50, max_tsn=100, iter=6)
+                                                 model_type='rf', cluster_num=50, max_tsn=5000, time_limit=1000)
 
     if method == 'expga':
         results_df_synth, metrics_synth = run_expga(dataset=data_obj_synth,
-                                                    threshold=0.5, threshold_rank=0.5, max_global=2000, max_local=100)
+                                                    threshold=0.5, threshold_rank=0.5, max_global=2000, max_local=100,
+                                                    max_tsn=5000)
 
     # Get discriminatory groups from synthetic data
     predefined_groups_synth, nb_elements_synth = get_groups(results_df_synth, data_obj, schema)
@@ -144,6 +134,7 @@ def setup_database(conn):
 
     conn.commit()
     return conn
+
 
 from path import HERE
 
