@@ -6,12 +6,13 @@ import pandas as pd
 from scipy.optimize import basinhopping
 import logging
 import sys
-from data_generator.main import get_real_data, generate_from_real_data, DiscriminationData
+from data_generator.main import get_real_data, DiscriminationData
 from methods.utils import train_sklearn_model
 from sklearnex import patch_sklearn
 
 patch_sklearn()
 
+# Configure logging
 logger = logging.getLogger('aequitas')
 logger.setLevel(logging.INFO)
 handler = logging.StreamHandler(sys.stdout)
@@ -32,30 +33,33 @@ def get_input_bounds(discrimination_data):
     return bounds
 
 
-def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_global=1000, max_local=1000,
-                 step_size=1.0, init_prob=0.5, random_seed=None, max_total_iterations=None, time_limit_seconds=None,
-                 max_tsn=None):
+def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_global=500, max_local=2000,
+                 step_size=1.0, init_prob=0.5, random_seed=42, max_total_iterations=100000, time_limit_seconds=3600,
+                 max_tsn=10000, param_probability_change_size=0.005, direction_probability_change_size=0.005,
+                 one_attr_at_a_time=False):
     """
-    Main AEQUITAS implementation using custom data generation and model training
+    Improved AEQUITAS implementation with better search strategies and numerical stability
 
     Args:
         discrimination_data: DiscriminationData object containing training data and metadata
         model_type: Type of model to train ('rf' for Random Forest)
         max_global: Maximum number of global search iterations
         max_local: Maximum number of local search iterations
-        step_size: Step size for local perturbation
+        step_size: Base step size for local perturbation
         init_prob: Initial probability for direction choice
-        random_seed: Random seed for reproducibility (default: None)
-        max_total_iterations: Maximum total number of iterations across both global and local search (default: None)
-        time_limit_seconds: Maximum execution time in seconds (default: None)
-        max_tsn: Maximum number of total samples to test before stopping (default: None)
+        random_seed: Random seed for reproducibility (default: 42)
+        time_limit_seconds: Maximum execution time in seconds (default: 3600)
+        max_tsn: Maximum number of total samples to test before stopping (default: 10000)
     """
+    # Set random seeds for reproducibility
     if random_seed is not None:
         np.random.seed(random_seed)
         random.seed(random_seed)
 
     start_time = time.time()
+
     # Train model using provided training function
+    logger.info("Training the model...")
     model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
         data=discrimination_data.training_dataframe,
         model_type=model_type,
@@ -63,20 +67,25 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         target_col=discrimination_data.outcome_column,
         random_state=random_seed
     )
+    logger.info(f"Model trained. Features: {feature_names}")
+
+    dsn_per_protected_attr = {e: 0 for e in discrimination_data.protected_attributes}
+    dsn_per_protected_attr['total'] = 0
 
     # Get input bounds and number of parameters
     input_bounds = get_input_bounds(discrimination_data)
     params = len(input_bounds)
+    logger.info(f"Total parameters: {params}")
+    logger.info(f"Input bounds: {input_bounds}")
 
     # Get sensitive parameter indices for all protected attributes
     sensitive_params = [discrimination_data.attr_columns.index(attr) for attr in
                         discrimination_data.protected_attributes]
+    logger.info(f"Protected attribute indices: {sensitive_params}")
 
-    # Initialize probabilities
+    # Initialize probabilities with higher change rates for faster adaptation
     param_probability = [1.0 / params] * params
     direction_probability = [init_prob] * params
-    param_probability_change_size = 0.001
-    direction_probability_change_size = 0.001
 
     # Initialize result tracking
     global_disc_inputs = set()
@@ -84,52 +93,112 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     local_disc_inputs = set()
     local_disc_inputs_list = []
     tot_inputs = set()
-    count = [1]  # For tracking periodic output
     all_discriminations = set()
-    total_iterations = [0]  # Track total iterations across both phases
+    total_iterations = [0]  # Track total iterations
+    last_log_time = start_time  # For periodic logging
 
-    def check_for_error_condition(model, instance, protected_indices, input_bounds):
+    # Initialize dictionary to track dsn by attribute value
+    dsn_per_protected_attr = {e: 0 for e in discrimination_data.protected_attributes}
+    dsn_per_protected_attr['total'] = 0
+
+    def check_for_error_condition(model, instance, protected_indices, input_bounds, one_attr_at_a_time=False):
         """
-        Check for discrimination across all combinations of protected attributes
+        Check for discrimination across protected attributes
+
+        Args:
+            model: Trained model to evaluate
+            instance: Input instance to check
+            protected_indices: Indices of protected attributes
+            input_bounds: Bounds for input values
+            one_attr_at_a_time: If True, vary only one protected attribute at a time
+
+        Returns:
+            bool: True if discrimination is found, False otherwise
         """
+        # Ensure instance is integer and within bounds
+        instance = np.round(instance).astype(int)
+        for i, (low, high) in enumerate(input_bounds):
+            instance[i] = max(int(low), min(int(high), instance[i]))
+
+        # Convert to DataFrame for prediction
         instance = pd.DataFrame([instance], columns=discrimination_data.attr_columns)
+
+        # Get original prediction
         label = model.predict(instance)[0]
 
-        # Generate all possible combinations of protected attribute values
-        protected_values = []
-        for idx in protected_indices:
-            values = range(int(input_bounds[idx][0]), int(input_bounds[idx][1]) + 1)
-            protected_values.append(list(values))
-
-        # Try all combinations
         new_df = []
-        for values in product(*protected_values):
-            if tuple(instance[discrimination_data.protected_attributes].values[0]) != values:
-                new_instance = instance.copy()
-                new_instance[discrimination_data.protected_attributes] = values
-                new_df.append(new_instance)
+
+        if one_attr_at_a_time:
+            # Vary one attribute at a time
+            for i, attr_idx in enumerate(protected_indices):
+                attr_name = discrimination_data.protected_attributes[i]
+                current_value = instance[attr_name].values[0]
+
+                # Get all possible values for this attribute
+                values = range(int(input_bounds[attr_idx][0]), int(input_bounds[attr_idx][1]) + 1)
+
+                # Create variants with different values for this attribute only
+                for value in values:
+                    if int(current_value) == value:
+                        continue
+
+                    new_instance = instance.copy()
+                    new_instance[attr_name] = value
+                    new_df.append(new_instance)
+        else:
+            # Generate all possible combinations of protected attribute values
+            protected_values = []
+            for idx in protected_indices:
+                values = range(int(input_bounds[idx][0]), int(input_bounds[idx][1]) + 1)
+                protected_values.append(list(values))
+
+            # Create variants with all combinations of protected attributes
+            for values in product(*protected_values):
+                if tuple(instance[discrimination_data.protected_attributes].values[0]) != values:
+                    new_instance = instance.copy()
+                    for i, attr in enumerate(discrimination_data.protected_attributes):
+                        new_instance[attr] = values[i]
+                    new_df.append(new_instance)
 
         if not new_df:  # If no combinations were found
             return False
 
         new_df = pd.concat(new_df)
-        new_df['outcome'] = model.predict(new_df)
+        new_predictions = model.predict(new_df)
+        new_df['outcome'] = new_predictions
 
+        # Add to total inputs
         for row in new_df.to_numpy():
             tot_inputs.add(tuple(row.astype(int)))
 
+        # Find discriminatory instances (different outcome)
         discrimination_df = new_df[new_df['outcome'] != label]
 
+        # Record discriminatory pairs and update attribute value counts
         for _, row in discrimination_df.iterrows():
-            all_discriminations.add(tuple((tuple(instance.values[0]), int(label),
-                                           tuple(row[discrimination_data.attr_columns]),
-                                           int(row['outcome']))))
+            # Create the discrimination pair tuple
+            disc_pair = (tuple(instance.values[0].astype(int)), int(label),
+                         tuple(row[discrimination_data.attr_columns].astype(int)),
+                         int(row['outcome']))
 
-        return discrimination_df.shape[0] != 0
+            # Only count if this is a new discrimination
+            if disc_pair not in all_discriminations:
+                all_discriminations.add(disc_pair)
 
-    class Local_Perturbation:
+                n_inp = pd.DataFrame(np.expand_dims(disc_pair[0], 0), columns=discrimination_data.attr_columns)
+                n_counter = pd.DataFrame(np.expand_dims(disc_pair[2], 0), columns=discrimination_data.attr_columns)
+
+                # Update counts for each protected attribute value in both original and variant
+                for i, attr in enumerate(discrimination_data.protected_attributes):
+                    if n_inp[attr].iloc[0] != n_counter[attr].iloc[0]:
+                        dsn_per_protected_attr[attr] += 1
+                        dsn_per_protected_attr['total'] += 1
+
+        return discrimination_df.shape[0] > 0
+
+    class ImprovedLocalPerturbation:
         """
-        Local perturbation class modified to handle multiple protected attributes with controlled randomness
+        Local perturbation with improved search strategies
         """
 
         def __init__(self, model, input_bounds, sensitive_params, param_probability,
@@ -138,84 +207,95 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
             self.model = model
             self.input_bounds = input_bounds
             self.sensitive_params = sensitive_params
-            self.param_probability = param_probability
+            self.param_probability = param_probability.copy()
             self.param_probability_change_size = param_probability_change_size
-            self.direction_probability = direction_probability
+            self.direction_probability = direction_probability.copy()
             self.direction_probability_change_size = direction_probability_change_size
             self.step_size = step_size
-            self.perturbation_unit = 1
+            self.step_multipliers = [0.5, 1.0, 2.0]  # Vary step sizes
             self.params = len(input_bounds)
             self.random_seed = random_seed
-            self.call_count = 0  # Add a counter to create deterministic "randomness"
+            self.call_count = 0
+            self.visited_inputs = set()  # Track visited inputs
 
-            # Initialize with a fixed random state
+            # Initialize random state
             if random_seed is not None:
                 self.random_state = np.random.RandomState(random_seed)
             else:
                 self.random_state = np.random.RandomState()
 
         def __call__(self, x):
-            # Check if time limit is reached
+            # Check termination conditions
             if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
-                return x  # Return unmodified if time limit reached
-
-            # Check if max_tsn is reached
+                return x
             if max_tsn and len(tot_inputs) >= max_tsn:
-                return x  # Return unmodified if max_tsn is reached
+                return x
 
-            # Increment call count for deterministic seeding
+            # Increment call count and track iterations
             self.call_count += 1
+            total_iterations[0] += 1
 
-            # If using a seed, we create a deterministic seed for each call
-            # by combining the original seed with the call count
+            # Ensure deterministic behavior if using seed
             if self.random_seed is not None:
                 derived_seed = self.random_seed + self.call_count
-                # Reset the random state for deterministic behavior
                 self.random_state = np.random.RandomState(derived_seed)
-                # Also set the global random generators
                 np.random.seed(derived_seed)
                 random.seed(derived_seed)
 
-            # Use self.random_state instead of np.random for all random operations
-            param_choice = self.random_state.choice(range(self.params), p=self.param_probability)
+            # Convert to integers to avoid floating point issues
+            x = np.round(x).astype(float)  # Keep as float for perturbation but ensure integer values
 
-            # Randomly choose direction for perturbation
-            perturbation_options = [-1, 1]
-            direction_choice = self.random_state.choice(
-                perturbation_options,
-                p=[self.direction_probability[param_choice],
-                   1 - self.direction_probability[param_choice]]
-            )
+            # Try multiple perturbations to find a new input
+            for attempt in range(3):  # Try a few times to find new input
+                # Select parameter to perturb
+                param_choice = self.random_state.choice(range(self.params), p=self.param_probability)
 
-            # If at bounds, choose random direction
-            if (x[param_choice] == self.input_bounds[param_choice][0]) or \
-                    (x[param_choice] == self.input_bounds[param_choice][1]):
-                direction_choice = self.random_state.choice(perturbation_options)
+                # Select step size multiplier
+                step_multiplier = self.random_state.choice(self.step_multipliers)
+                current_step = self.step_size * step_multiplier
 
-            # Perform perturbation
-            x[param_choice] = x[param_choice] + (direction_choice * self.step_size)
+                # Select direction
+                direction_choice = self.random_state.choice(
+                    [-1, 1],
+                    p=[self.direction_probability[param_choice],
+                       1 - self.direction_probability[param_choice]]
+                )
 
-            # Clip to bounds
-            x[param_choice] = max(self.input_bounds[param_choice][0],
-                                  min(self.input_bounds[param_choice][1], x[param_choice]))
+                # If at bounds, reverse direction
+                if ((x[param_choice] <= self.input_bounds[param_choice][0] and direction_choice == -1) or
+                        (x[param_choice] >= self.input_bounds[param_choice][1] and direction_choice == 1)):
+                    direction_choice *= -1
+
+                # Create new input
+                x_new = x.copy()
+                x_new[param_choice] = x_new[param_choice] + (direction_choice * current_step)
+
+                # Clip to bounds
+                x_new[param_choice] = max(self.input_bounds[param_choice][0],
+                                          min(self.input_bounds[param_choice][1], x_new[param_choice]))
+
+                # Check if new input has been visited
+                new_input_tuple = tuple(np.round(x_new).astype(int))
+                if new_input_tuple not in self.visited_inputs:
+                    self.visited_inputs.add(new_input_tuple)
+                    x = x_new
+                    break
 
             # Check for discrimination
-            error_condition = check_for_error_condition(self.model, x, self.sensitive_params, self.input_bounds)
+            rounded_x = np.round(x).astype(int)
+            error_condition = check_for_error_condition(self.model, rounded_x, self.sensitive_params, self.input_bounds,
+                                                        one_attr_at_a_time=one_attr_at_a_time)
 
             # Update direction probabilities
-            if (error_condition and direction_choice == -1) or \
-                    (not error_condition and direction_choice == 1):
+            if (error_condition and direction_choice == -1) or (not error_condition and direction_choice == 1):
                 self.direction_probability[param_choice] = min(
-                    self.direction_probability[param_choice] +
-                    (self.direction_probability_change_size * self.perturbation_unit),
-                    1
+                    self.direction_probability[param_choice] + self.direction_probability_change_size,
+                    0.9  # Cap at 0.9 to ensure some exploration
                 )
-            elif (not error_condition and direction_choice == -1) or \
-                    (error_condition and direction_choice == 1):
+            elif (not error_condition and direction_choice == -1) or (error_condition and direction_choice == 1):
                 self.direction_probability[param_choice] = max(
-                    self.direction_probability[param_choice] -
-                    (self.direction_probability_change_size * self.perturbation_unit),
-                    0
+                    self.direction_probability[param_choice] - self.direction_probability_change_size,
+                    0.1  # Floor at 0.1 to ensure some exploration
                 )
 
             # Update parameter probabilities
@@ -225,26 +305,31 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
             else:
                 self.param_probability[param_choice] = max(
                     self.param_probability[param_choice] - self.param_probability_change_size,
-                    0
+                    0.01  # Minimum probability to ensure all parameters have a chance
                 )
                 self._normalize_probability()
 
             return x
 
         def _normalize_probability(self):
+            """Normalize probability distribution to sum to 1"""
             probability_sum = sum(self.param_probability)
-            for i in range(self.params):
-                self.param_probability[i] = float(self.param_probability[i]) / float(probability_sum)
+            if probability_sum > 0:  # Avoid division by zero
+                for i in range(self.params):
+                    self.param_probability[i] = float(self.param_probability[i]) / float(probability_sum)
 
-    class Global_Discovery:
+    class ImprovedGlobalDiscovery:
         """
-        Global discovery with controlled randomness
+        Global discovery with improved diversity and numerical stability
         """
 
-        def __init__(self, input_bounds, random_seed=None):
+        def __init__(self, input_bounds, sensitive_params, random_seed=None):
             self.input_bounds = input_bounds
+            self.sensitive_params = sensitive_params
             self.random_seed = random_seed
             self.call_count = 0
+            self.previous_inputs = set()  # Track previous inputs
+            self.diversification_attempts = 5  # Number of attempts to generate diverse input
 
             # Initialize random state
             if random_seed is not None:
@@ -253,103 +338,125 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                 self.random_state = random.Random()
 
         def __call__(self, x):
-            # Check if time limit is reached
+            # Check termination conditions
             if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
-                return x  # Return unmodified if time limit reached
-
-            # Check if max_tsn is reached
+                return x
             if max_tsn and len(tot_inputs) >= max_tsn:
-                return x  # Return unmodified if max_tsn is reached
+                return x
 
-            # Increment call count for deterministic seeding
+            # Increment call count
             self.call_count += 1
+            total_iterations[0] += 1
 
-            # If using a seed, create a new seed for each call
+            # Update random state for deterministic behavior
             if self.random_seed is not None:
                 derived_seed = self.random_seed + self.call_count
-                # Reset the random state
                 self.random_state = random.Random(derived_seed)
-                # Also set global random state
                 random.seed(derived_seed)
                 np.random.seed(derived_seed)
 
-            for i in range(len(x)):
-                x[i] = self.random_state.randint(
-                    int(self.input_bounds[i][0]),
-                    int(self.input_bounds[i][1])
-                )
+            # Try multiple times to generate a diverse input
+            for _ in range(self.diversification_attempts):
+                # Generate completely random input
+                for i in range(len(x)):
+                    x[i] = self.random_state.randint(
+                        int(self.input_bounds[i][0]),
+                        int(self.input_bounds[i][1])
+                    )
+
+                # Use different strategy for every other attempt
+                if _ % 2 == 1:
+                    # Focus on exploring sensitive parameters more thoroughly
+                    for param_idx in self.sensitive_params:
+                        # Try a different value for sensitive parameters
+                        low, high = self.input_bounds[param_idx]
+                        x[param_idx] = self.random_state.randint(int(low), int(high))
+
+                # Convert to integer
+                x_int = np.round(x).astype(int)
+                temp = tuple(x_int.tolist())
+
+                # If this input hasn't been seen before, use it
+                if temp not in self.previous_inputs:
+                    self.previous_inputs.add(temp)
+                    # Copy the integer values back to x
+                    for i in range(len(x)):
+                        x[i] = float(x_int[i])
+                    break
+
             return x
 
     def evaluate_global(inp):
-        """Global search evaluation function"""
-        # Check if time limit is reached
+        """Global search evaluation function with improved logging and termination"""
+        # Check termination conditions
         if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
-            return 0.0  # Stop the search when time limit is reached
-
-        # Check if max_tsn is reached
+            return 0.0
         if max_tsn and len(tot_inputs) >= max_tsn:
-            return 0.0  # Stop the search when max_tsn is reached
+            return 0.0
 
-        if max_total_iterations and total_iterations[0] >= max_total_iterations:
-            return 0.0  # Stop the search when max total iterations is reached
+        # Ensure inp is integer
+        inp = np.round(inp).astype(int)
 
-        total_iterations[0] += 1
-        error_condition = check_for_error_condition(model, inp, sensitive_params, input_bounds)
+        # Check for discrimination
+        error_condition = check_for_error_condition(model, inp, sensitive_params, input_bounds,
+                                                    one_attr_at_a_time=one_attr_at_a_time)
 
+        # Track inputs
         temp = tuple(inp.tolist())
         tot_inputs.add(temp)
 
-        # More frequent logging - every 2 seconds
-        end = time.time()
-        use_time = end - start_time
+        # Periodic logging (every 2 seconds)
+        nonlocal last_log_time
+        current_time = time.time()
+        elapsed_time = current_time - start_time
 
-        # Store last_log_time in function's closure
-        if not hasattr(evaluate_global, 'last_log_time'):
-            evaluate_global.last_log_time = start_time
-
-        # Log every 2 seconds
-        if use_time - (evaluate_global.last_log_time - start_time) >= 2:
-            # Clear previous line
+        if current_time - last_log_time >= 2:
+            # Clear previous line and print metrics
             sys.stdout.write('\r' + ' ' * 100 + '\r')
-            # Print metrics
             sys.stdout.write(
-                f"Time: {use_time:.1f}s | "
+                f"Time: {elapsed_time:.1f}s | "
+                f"Iterations: {total_iterations[0]} | "
                 f"Tested: {len(tot_inputs)} | "
                 f"Found: {len(global_disc_inputs_list) + len(local_disc_inputs_list)} | "
-                f"Rate: {float(len(global_disc_inputs_list) + len(local_disc_inputs_list)) / float(len(tot_inputs)) * 100:.2f}%"
+                f"Rate: {float(len(global_disc_inputs_list) + len(local_disc_inputs_list)) / max(1, len(tot_inputs)) * 100:.2f}%"
             )
             sys.stdout.flush()
-            evaluate_global.last_log_time = end
+            last_log_time = current_time
 
+        # If discriminatory input found
         if error_condition:
             global_disc_inputs.add(temp)
             global_disc_inputs_list.append(list(inp))
 
-            # Run local search
+            # Run local search with current max_local parameter
             try:
                 local_minimizer = {"method": "L-BFGS-B"}
 
+                # Reset random seed for local search
                 if random_seed is not None:
-                    np.random.seed(random_seed)
-                    random.seed(random_seed)
+                    local_seed = random_seed + len(global_disc_inputs_list)
+                    np.random.seed(local_seed)
+                    random.seed(local_seed)
 
+                # Run local search
                 basinhopping(
                     evaluate_local,
-                    inp,
+                    inp.astype(float),  # Convert to float for optimization
                     stepsize=step_size,
-                    take_step=Local_Perturbation(
+                    take_step=ImprovedLocalPerturbation(
                         model, input_bounds, sensitive_params,
                         param_probability.copy(), param_probability_change_size,
                         direction_probability.copy(), direction_probability_change_size,
                         step_size,
-                        random_seed=random_seed  # Pass the random seed
+                        random_seed=local_seed  # Pass unique seed for this local search
                     ),
                     minimizer_kwargs=local_minimizer,
                     niter=max_local,
-                    seed=random_seed if random_seed is not None else None,
-                    callback=lambda x, f, accept: (time_limit_seconds and (
-                            time.time() - start_time) > time_limit_seconds) or
-                                                  (max_tsn and len(tot_inputs) >= max_tsn)
+                    seed=local_seed,
+                    callback=lambda x, f, accept: (
+                            (time_limit_seconds and (time.time() - start_time) > time_limit_seconds) or
+                            (max_tsn and len(tot_inputs) >= max_tsn)
+                    )
                 )
             except Exception as e:
                 logger.error(f"Local search error: {e}")
@@ -358,66 +465,70 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
     def evaluate_local(inp):
         """Local search evaluation function"""
-        # Check if time limit is reached
+        # Check termination conditions
         if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
-            return 0.0  # Stop the search when time limit is reached
-
-        # Check if max_tsn is reached
+            return 0.0
         if max_tsn and len(tot_inputs) >= max_tsn:
-            return 0.0  # Stop the search when max_tsn is reached
+            return 0.0
 
-        if max_total_iterations and total_iterations[0] >= max_total_iterations:
-            return 0.0  # Stop the search when max total iterations is reached
+        # Convert to integer for evaluation
+        inp = np.round(inp).astype(int)
 
-        total_iterations[0] += 1
-        error_condition = check_for_error_condition(model, inp, sensitive_params, input_bounds)
+        # Check for discrimination
+        error_condition = check_for_error_condition(model, inp, sensitive_params, input_bounds,
+                                                    one_attr_at_a_time=one_attr_at_a_time)
 
+        # Track inputs
         temp = tuple(inp.tolist())
         tot_inputs.add(temp)
 
+        # Track local discriminatory inputs (avoiding duplicates)
         if error_condition and temp not in global_disc_inputs and temp not in local_disc_inputs:
             local_disc_inputs.add(temp)
             local_disc_inputs_list.append(list(inp))
 
-        # Share the same logging mechanism with global search
-        end = time.time()
-        use_time = end - start_time
+        # Periodic logging (shares same mechanism with global search)
+        nonlocal last_log_time
+        current_time = time.time()
+        elapsed_time = current_time - start_time
 
-        if not hasattr(evaluate_local, 'last_log_time'):
-            evaluate_local.last_log_time = start_time
-
-        if use_time - (evaluate_local.last_log_time - start_time) >= 2:
+        if current_time - last_log_time >= 2:
             sys.stdout.write('\r' + ' ' * 100 + '\r')
             sys.stdout.write(
-                f"Time: {use_time:.1f}s | "
+                f"Time: {elapsed_time:.1f}s | "
+                f"Iterations: {total_iterations[0]} | "
                 f"Tested: {len(tot_inputs)} | "
                 f"Found: {len(global_disc_inputs_list) + len(local_disc_inputs_list)} | "
-                f"Rate: {float(len(global_disc_inputs_list) + len(local_disc_inputs_list)) / float(len(tot_inputs)) * 100:.2f}%"
+                f"Rate: {float(len(global_disc_inputs_list) + len(local_disc_inputs_list)) / max(1, len(tot_inputs)) * 100:.2f}%"
             )
             sys.stdout.flush()
-            evaluate_local.last_log_time = end
+            last_log_time = current_time
 
         return float(not error_condition)
 
-    # Create a callback function to check termination conditions
+    # Define callback function to check termination conditions
     def check_termination_conditions(x, f, accept):
         if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
-            return True  # True will stop the optimization
+            return True
         if max_tsn and len(tot_inputs) >= max_tsn:
-            return True  # True will stop the optimization
+            return True
         return False
 
     # Initial input - use first training example
     initial_input = X_train.iloc[0].values.astype('int')
 
-    # Keep running global searches until we hit max_tsn or time limit
+    # Main search loop
     logger.info("Starting search process...")
-
-    # Continue searching until we meet our stopping conditions
     search_iteration = 0
+    consecutive_no_improvement = 0
+    current_max_local = max_local  # Dynamic adjustment of local search depth
+
     while True:
         # Check termination conditions
-        if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
+        current_time = time.time()
+        elapsed_time = current_time - start_time
+
+        if time_limit_seconds and elapsed_time > time_limit_seconds:
             logger.info(f"\nTime limit of {time_limit_seconds} seconds reached. Stopping search.")
             break
 
@@ -425,69 +536,129 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
             logger.info(f"\nMax TSN of {max_tsn} reached. Stopping search.")
             break
 
+        # Track disc inputs before iteration for measuring improvement
+        previous_disc_count = len(global_disc_inputs_list) + len(local_disc_inputs_list)
+
         search_iteration += 1
         logger.info(f"\nStarting global search iteration {search_iteration}...")
 
-        # For subsequent iterations, use random training examples to diversify starting points
+        # Select diverse starting points
         if search_iteration > 1:
-            initial_input = X_train.sample(1).iloc[0].values.astype('int')
+            # Increase randomness over time
+            if search_iteration % 5 == 0:
+                # Every 5th iteration, use completely random input
+                initial_input = np.array([random.randint(int(low), int(high))
+                                          for low, high in input_bounds])
+            elif search_iteration % 3 == 0:
+                # Every 3rd iteration, use maximally different input from previous
+                if len(global_disc_inputs_list) > 0:
+                    # Use most recently found discriminatory input
+                    base_input = global_disc_inputs_list[-1]
+                    # Flip values for non-protected attributes
+                    initial_input = np.array(base_input).astype(int)
+                    for i in range(len(initial_input)):
+                        if i not in sensitive_params:
+                            low, high = input_bounds[i]
+                            # Generate value far from current
+                            current_val = initial_input[i]
+                            if current_val < (low + high) / 2:
+                                initial_input[i] = int(high)
+                            else:
+                                initial_input[i] = int(low)
+                else:
+                    # Use random sample from training if no disc inputs yet
+                    initial_input = X_train.sample(1).iloc[0].values.astype('int')
+            else:
+                # Otherwise use random training example
+                initial_input = X_train.sample(1).iloc[0].values.astype('int')
 
-        # Create a seeded random number generator for basinhopping
+        # Periodic reset of probabilities
+        if search_iteration % 10 == 0:
+            logger.info("Periodic reset of search probabilities to avoid local optima")
+            param_probability = [1.0 / params] * params
+            direction_probability = [random.random() for _ in range(params)]
+            # Normalize direction probabilities
+            sum_dir_prob = sum(direction_probability)
+            direction_probability = [p / sum_dir_prob for p in direction_probability]
+
+        # Create seed for this iteration
+        iter_seed = None
         if random_seed is not None:
-            # Add iteration to seed for variation in subsequent runs
             iter_seed = random_seed + (search_iteration * 1000)
             np.random.seed(iter_seed)
             random.seed(iter_seed)
 
-        # Run global search with basinhopping
-        minimizer = {
-            "method": "L-BFGS-B",
-            "args": (),
-            "options": {"maxiter": 100}
-        }
-
+        # Run global search
         try:
+            minimizer = {
+                "method": "L-BFGS-B",
+                "options": {"maxiter": 100}
+            }
+
             basinhopping(
                 evaluate_global,
-                initial_input,
+                initial_input.astype(float),  # Convert to float for optimization
                 niter=max_global,
                 T=1.0,
                 stepsize=step_size,
                 minimizer_kwargs=minimizer,
-                take_step=Global_Discovery(input_bounds, random_seed=iter_seed if random_seed is not None else None),
-                seed=iter_seed if random_seed is not None else None,
+                take_step=ImprovedGlobalDiscovery(
+                    input_bounds,
+                    sensitive_params,
+                    random_seed=iter_seed
+                ),
+                seed=iter_seed,
                 callback=check_termination_conditions
             )
         except Exception as e:
             logger.error(f"Global search error: {e}")
-            # Continue with next iteration rather than stopping completely
-            continue
+            # Continue to next iteration
+
+        # Check if we found new discriminatory inputs
+        current_disc_count = len(global_disc_inputs_list) + len(local_disc_inputs_list)
+        if current_disc_count > previous_disc_count:
+            # Found new inputs - focus on exploitation
+            consecutive_no_improvement = 0
+            current_max_local = min(current_max_local * 1.5, max_local * 3)
+            logger.info(f"Found {current_disc_count - previous_disc_count} new discriminatory inputs. "
+                        f"Increasing local search depth to {current_max_local}")
+        else:
+            # No new inputs - focus on exploration
+            consecutive_no_improvement += 1
+            current_max_local = max(current_max_local * 0.7, max_local * 0.3)
+            logger.info(f"No new discriminatory inputs found. "
+                        f"Decreasing local search depth to {current_max_local}")
+
+            # After several unsuccessful iterations, try more drastic changes
+            if consecutive_no_improvement >= 5:
+                logger.info("Multiple iterations without improvement. Trying more diverse search strategies.")
+                # Double the probability change size temporarily
+                param_probability_change_size *= 2
+                direction_probability_change_size *= 2
+                # But cap at reasonable values
+                param_probability_change_size = min(param_probability_change_size, 0.02)
+                direction_probability_change_size = min(direction_probability_change_size, 0.02)
+                # Reset counter
+                consecutive_no_improvement = 0
+
+        # Update max_local for next iteration
+        max_local = int(current_max_local)
 
     # Calculate final results
     end_time = time.time()
     total_time = end_time - start_time
 
-    disc_inputs = len(global_disc_inputs_list) + len(local_disc_inputs_list)
-    success_rate = (disc_inputs / len(tot_inputs)) * 100 if len(tot_inputs) > 0 else 0
-
-    # Log termination reason
-    if time_limit_seconds and total_time >= time_limit_seconds:
-        logger.info(f"\nExecution terminated after reaching time limit of {time_limit_seconds} seconds")
-    elif max_tsn and len(tot_inputs) >= max_tsn:
-        logger.info(f"\nExecution terminated after reaching max TSN of {max_tsn}")
-
-    logger.info("\nFinal Results:")
-    logger.info(f"Total inputs tested: {len(tot_inputs)}")
-    logger.info(f"Global discriminatory inputs: {len(global_disc_inputs_list)}")
-    logger.info(f"Local discriminatory inputs: {len(local_disc_inputs_list)}")
-    logger.info(f"Success rate: {success_rate:.4f}%")
-    logger.info(f"Total time: {total_time:.2f} seconds")
-
+    # Log final results
     tsn = len(tot_inputs)  # Total Sample Number
     dsn = len(all_discriminations)  # Discriminatory Sample Number
     sur = dsn / tsn if tsn > 0 else 0  # Success Rate
     dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
 
+    for k, v in dsn_per_protected_attr.items():
+        dsn_per_protected_attr[k] = v / tsn
+
+    # Log dsn_by_attr_value counts
+    logger.info("\nDiscrimination counts by protected attribute values:")
     metrics = {
         'TSN': tsn,
         'DSN': dsn,
@@ -495,15 +666,22 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         'DSS': dss,
         'total_time': total_time,
         'time_limit_reached': time_limit_seconds is not None and total_time >= time_limit_seconds,
-        'max_tsn_reached': max_tsn is not None and tsn >= max_tsn
+        'max_tsn_reached': max_tsn is not None and tsn >= max_tsn,
+        'dsn_by_attr_value': dsn_per_protected_attr
     }
 
-    logger.info(f"Total Inputs: {len(tot_inputs)}")
-    logger.info(f"Discriminatory Inputs: {len(all_discriminations)}")
-    logger.info(f"Success Rate (SUR): {metrics['SUR']:.4f}")
-    logger.info(f"Average Search Time per Discriminatory Sample (DSS): {metrics['DSS']:.4f} seconds")
-    logger.info(f"Total Discriminatory Pairs Found: {len(all_discriminations)}")
+    logger.info("\nFinal Results:")
+    logger.info(f"Total inputs tested: {tsn}")
+    logger.info(f"Global discriminatory inputs: {len(global_disc_inputs_list)}")
+    logger.info(f"Local discriminatory inputs: {len(local_disc_inputs_list)}")
+    logger.info(f"Total discriminatory pairs: {dsn}")
+    logger.info(f"Success rate (SUR): {sur:.4f}")
+    logger.info(f"Avg. search time per discriminatory sample (DSS): {dss:.4f} seconds")
+    logger.info(f"Discrimination by attribute value: {dsn_per_protected_attr}")
+    logger.info(f"Total time: {total_time:.2f} seconds")
+    logger.info(f"Total iterations: {total_iterations[0]}")
 
+    # Generate result dataframe
     res_df = []
     case_id = 0
     for org, org_res, counter_org, counter_org_res in all_discriminations:
@@ -519,7 +697,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         indv2['indv_key'] = indv_key2
         indv2['outcome'] = counter_org_res
 
-        # Create couple_key as before
+        # Create couple_key
         couple_key = f"{indv_key1}-{indv_key2}"
         diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
 
@@ -535,6 +713,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     else:
         res_df = pd.DataFrame([])
 
+    # Add metrics to result dataframe
     res_df['TSN'] = tsn
     res_df['DSN'] = dsn
     res_df['SUR'] = sur
@@ -549,9 +728,11 @@ if __name__ == '__main__':
     # discrimination_data, schema = generate_from_real_data(data_generator)
 
     # For the adult dataset with max_tsn parameter
-    results, global_cases = run_aequitas(
+    results, metrics = run_aequitas(
         discrimination_data=discrimination_data,
         model_type='rf', max_global=200,
         max_local=1000, step_size=1.0,
-        time_limit_seconds=3600, max_tsn=10000
+        time_limit_seconds=3600, max_tsn=10000, one_attr_at_a_time=True
     )
+
+    print(metrics)

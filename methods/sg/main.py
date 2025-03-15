@@ -155,14 +155,20 @@ def extract_lime_decision_constraints(ge, model, input, random_state=42):
     return path
 
 
-def check_for_discrimination_case(ge, model, t, sensitive_indices):
+def check_for_discrimination_case(ge, model, t, sensitive_indices, dsn_per_protected_attr, one_attr_at_a_time=False):
     """
     Check whether the test case is an individual discriminatory instance
-    :param ge: DiscriminationData object
-    :param model: the model's symbolic output
-    :param t: test case
-    :param sensitive_indices: dictionary of sensitive attribute names and their indices
-    :return: whether it is an individual discriminatory instance
+
+    Args:
+        ge: DiscriminationData object
+        model: the model's symbolic output
+        t: test case
+        sensitive_indices: dictionary of sensitive attribute names and their indices
+        one_attr_at_a_time: if True, vary only one sensitive attribute at a time
+
+    Returns:
+        whether it is an individual discriminatory instance, original dataframe,
+        discriminations dataframe, and tested inputs
     """
 
     # Get original prediction
@@ -170,35 +176,62 @@ def check_for_discrimination_case(ge, model, t, sensitive_indices):
     label = model.predict(org_df)
     org_df['outcome'] = label
 
-    # Get all possible values for each sensitive attribute
-    sensitive_values = {}
-    for sens_name, sens_idx in sensitive_indices.items():
-        sensitive_values[sens_name] = np.unique(ge.xdf.iloc[:, sens_idx]).tolist()
-
-    # Generate all possible combinations of sensitive attribute values
-    sensitive_names = list(sensitive_indices.keys())
-    value_combinations = list(itertools.product(*[sensitive_values[name] for name in sensitive_names]))
-
-    # Create new test cases with all combinations
     new_targets = []
-    for values in value_combinations:
-        # Skip if combination is identical to original
-        if all(t[sensitive_indices[name]] == value for name, value in zip(sensitive_names, values)):
-            continue
 
-        tnew = pd.DataFrame([t], columns=ge.attr_columns)
-        for name, value in zip(sensitive_names, values):
-            tnew[name] = value
-        new_targets.append(tnew)
+    if one_attr_at_a_time:
+        # Vary one attribute at a time
+        for sens_name, sens_idx in sensitive_indices.items():
+            # Get all possible values for this attribute
+            values = np.unique(ge.xdf.iloc[:, sens_idx]).tolist()
+
+            # Current value for this attribute
+            current_value = t[sens_idx]
+
+            # Create new test cases with different values for this attribute only
+            for value in values:
+                if current_value == value:
+                    continue
+
+                tnew = pd.DataFrame([t], columns=ge.attr_columns)
+                tnew[sens_name] = value
+                new_targets.append(tnew)
+    else:
+        # Get all possible values for each sensitive attribute
+        sensitive_values = {}
+        for sens_name, sens_idx in sensitive_indices.items():
+            sensitive_values[sens_name] = np.unique(ge.xdf.iloc[:, sens_idx]).tolist()
+
+        # Generate all possible combinations of sensitive attribute values
+        sensitive_names = list(sensitive_indices.keys())
+        value_combinations = list(itertools.product(*[sensitive_values[name] for name in sensitive_names]))
+
+        # Create new test cases with all combinations
+        for values in value_combinations:
+            # Skip if combination is identical to original
+            if all(t[sensitive_indices[name]] == value for name, value in zip(sensitive_names, values)):
+                continue
+
+            tnew = pd.DataFrame([t], columns=ge.attr_columns)
+            for name, value in zip(sensitive_names, values):
+                tnew[name] = value
+            new_targets.append(tnew)
 
     if not new_targets:  # If no new combinations were generated
-        return False
+        return False, org_df, pd.DataFrame(), []
 
     new_targets = pd.concat(new_targets)
     new_targets['outcome'] = model.predict(new_targets)
 
     # Check if any combination leads to a different prediction
     discriminations = new_targets[new_targets['outcome'] != label[0]]
+
+    if discriminations.shape[0] > 0:
+        for el in discriminations.to_numpy():
+            for attr in ge.protected_attributes:
+                n_el = pd.DataFrame([el], columns=org_df.columns)
+                if n_el[attr].iloc[0] != org_df[attr].iloc[0]:
+                    dsn_per_protected_attr[attr] += 1
+                    dsn_per_protected_attr['total'] += 1
 
     tested_inp = new_targets[ge.attr_columns].to_numpy().tolist()
 
@@ -306,13 +339,16 @@ def gen_arguments(ge):
 
 
 def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=100, random_state=42,
-           time_limit=3900):
+           time_limit=3900, one_attr_at_a_time=True):
     # store the result of fairness testing
     global_disc_inputs = set()
     global_disc_inputs_list = []
     local_disc_inputs = set()
     local_disc_inputs_list = []
     tot_inputs = []
+
+    dsn_per_protected_attr = {e: 0 for e in ge.protected_attributes}
+    dsn_per_protected_attr['total'] = 0
 
     np.random.seed(random_state)
     random.seed(random_state)
@@ -384,7 +420,9 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
             org_input = np.array(org_input[1])
 
             found, org_df, found_df, tested_inp = check_for_discrimination_case(ge, model, org_input,
-                                                                                ge.sensitive_indices)
+                                                                                ge.sensitive_indices,
+                                                                                dsn_per_protected_attr,
+                                                                                one_attr_at_a_time=one_attr_at_a_time)
             tot_inputs.extend(tested_inp)
 
             decision_rules = extract_lime_decision_constraints(ge, model, org_input, random_state)
@@ -396,9 +434,16 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
             # Track unique inputs and check for discrimination
             if found:
                 add_inputs(input_key)
+
+                # Update dsn_by_attr_value for each discriminatory case
                 for el in found_df.iterrows():
                     f_results.append((org_df, el[1].to_frame().T))
                     add_inputs(tuple(remove_sensitive_attributes(el[1].tolist(), ge.sensitive_indices)))
+
+                    # Record the protected attribute values in the original input that led to discrimination
+                    for attr_name in ge.protected_attributes:
+                        attr_idx = ge.sensitive_indices[attr_name]
+                        attr_value = int(org_input[attr_idx])
 
                 # local search
                 for decision_rule_index in range(len(decision_rules)):
@@ -423,6 +468,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
                         print("Number of discriminatory inputs are " + str(len(local_disc_inputs_list)))
                         print("Total Inputs are " + str(len(tot_inputs)))
                         print('use time:' + str(end - start))
+
                         count += 300
 
                     if use_time >= time_limit:  # Check time limit after each local search
@@ -462,6 +508,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
                     print("Number of discriminatory inputs are " + str(len(local_disc_inputs_list)))
                     print("Total Inputs are " + str(len(tot_inputs)))
                     print('use time:' + str(end - start))
+
                     count += 300
 
                 # filter out the path_constraint already solved before
@@ -510,11 +557,15 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
     tsn = len(tot_inputs)
     dsn = len(f_results)
 
+    for k, v in dsn_per_protected_attr.items():
+        dsn_per_protected_attr[k] = v / tsn
+
     metrics = {
         "TSN": tsn,
         "DSN": dsn,
-        "SUR": round(dsn / tsn, 2),
-        "DSS": round(execution_time / dsn, 2)
+        "SUR": round(dsn / tsn, 2) if tsn > 0 else 0,
+        "DSS": round(execution_time / dsn, 2) if dsn > 0 else 0,
+        "dsn_by_attr_value": dsn_per_protected_attr  # Add the dsn_by_attr_value tracking to the metrics
     }
 
     return results_df, metrics
@@ -523,5 +574,15 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
 if __name__ == '__main__':
     ge, ge_schema = get_real_data('adult')
 
-    res = run_sg(ge, max_tsn=10000, cluster_num=50, time_limit=1000)
-    print(res)
+    res_df, metrics = run_sg(ge, max_tsn=10000, cluster_num=50, time_limit=1000)
+    print(f"Results DataFrame shape: {res_df.shape}")
+    print(f"Metrics: {metrics}")
+
+    # Print dsn_by_attr_value in a readable format
+    print("\nDiscriminatory samples by attribute value:")
+    for attr, value_counts in metrics['dsn_by_attr_value'].items():
+        if value_counts:
+            total = sum(value_counts.values())
+            print(f"  {attr} ({total} total):")
+            for value, count in sorted(value_counts.items()):
+                print(f"    Value {value}: {count} ({(count / total) * 100:.1f}%)")

@@ -7,7 +7,7 @@ from methods.utils import reformat_discrimination_results, convert_to_non_float_
 # %%
 data_obj, schema = get_real_data('adult')
 results_df_origin, metrics = run_expga(dataset=data_obj,
-                                       threshold=0.5, threshold_rank=0.5, max_global=3000, max_local=1000, max_tsn=5000)
+                                       threshold=0.5, threshold_rank=0.5, max_global=3000, max_local=1000, max_tsn=50000)
 
 # %%
 non_float_df = convert_to_non_float_rows(results_df_origin, schema)

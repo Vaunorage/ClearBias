@@ -136,6 +136,8 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     total_inputs: Set[Tuple[float, ...]] = set()
 
     results: List[Tuple[np.ndarray, np.ndarray, float, float]] = []
+    dsn_per_protected_attr = {e: 0 for e in dataset.protected_attributes}
+    dsn_per_protected_attr['total'] = 0
 
     def evaluate_local(input_sample) -> float:
         """
@@ -191,6 +193,9 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
                         max_diff = diff
                         best_altered_input = altered_input
                         best_output = output_altered
+
+                        dsn_per_protected_attr[attr_name] += 1
+                        dsn_per_protected_attr['total'] += 1
 
                         # Early return for efficiency - follows original algorithm approach
                         if tuple(input_array) not in global_disc_inputs.union(local_disc_inputs):
@@ -370,6 +375,8 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     # Add metrics
     for k, v in metrics.items():
         df[k] = v
+
+    metrics['dsn_per_protected_attr'] = dsn_per_protected_attr
 
     return df, metrics
 

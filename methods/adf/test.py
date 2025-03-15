@@ -9,7 +9,8 @@ from methods.utils import reformat_discrimination_results, convert_to_non_float_
 # %%
 data_obj, schema = get_real_data('bank', use_cache=False)
 results_df_origin, metrics_origin = adf_fairness_testing(data_obj, max_global=5000, max_local=2000, max_iter=1000,
-                                                         cluster_num=100, random_seed=42, max_runtime_seconds=400)
+                                                         cluster_num=100, random_seed=42, max_runtime_seconds=400,
+                                                         max_tsn=20000, one_attr_at_a_time=True)
 
 # %%
 predefined_groups_origin, nb_elements = get_groups(results_df_origin, data_obj, schema)
@@ -17,7 +18,7 @@ predefined_groups_origin, nb_elements = get_groups(results_df_origin, data_obj, 
 # %%
 data_obj_synth, schema = generate_from_real_data('bank', nb_groups=1, predefined_groups=predefined_groups_origin,
                                                  use_cache=False)
-#data_obj_synth.dataframe = data_obj_synth.dataframe.sample(data_obj.dataframe.shape[0], replace=True)
+# data_obj_synth.dataframe = data_obj_synth.dataframe.sample(data_obj.dataframe.shape[0], replace=True)
 
 # %%
 group_check_results = check_groups_in_synthetic_data(data_obj_synth, predefined_groups_origin)

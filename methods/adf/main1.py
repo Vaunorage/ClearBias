@@ -14,6 +14,7 @@ from methods.utils import train_sklearn_model
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearnex import patch_sklearn
+from data_generator.main import DiscriminationData
 
 patch_sklearn()
 
@@ -133,7 +134,9 @@ def model_argmax(model, x):
 def check_for_error_condition(
         data_obj,
         model,
-        x: np.ndarray
+        x: np.ndarray,
+        dsn_per_protected_attr,
+        one_attr_at_a_time: bool = False
 ) -> Tuple[bool, set, list]:
     """Check if test case shows discrimination.
 
@@ -141,9 +144,10 @@ def check_for_error_condition(
         data_obj: Data object containing metadata
         model: Trained model
         x: Test instance
+        one_attr_at_a_time: If True, vary only one protected attribute at a time
 
     Returns:
-        Tuple[bool, set]: (Has discrimination, discriminatory pairs)
+        Tuple[bool, set, list]: (Has discrimination, discriminatory pairs, all tested cases)
     """
     inp_df = pd.DataFrame([x], columns=data_obj.feature_names)
     original_pred = model_argmax(model, inp_df)
@@ -153,20 +157,41 @@ def check_for_error_condition(
     for attr in data_obj.protected_attributes:
         protected_values[attr] = sorted(data_obj.training_dataframe[attr].unique())
 
-    attr_names = list(protected_values.keys())
-    attr_values = list(protected_values.values())
-    combinations = list(itertools.product(*attr_values))
-
     test_cases = []
-    for combination in combinations:
-        if all(inp_df[attr].iloc[0] == value
-               for attr, value in zip(attr_names, combination)):
-            continue
 
-        new_case = inp_df.copy()
-        for attr, value in zip(attr_names, combination):
-            new_case[attr] = value
-        test_cases.append(new_case)
+    if one_attr_at_a_time:
+        # Vary one attribute at a time
+        for attr in data_obj.protected_attributes:
+            # Get all possible values for this attribute
+            values = protected_values[attr]
+
+            # For each possible value that is different from the current one
+            for value in values:
+                if inp_df[attr].iloc[0] == value:
+                    continue
+
+                # Create a new test case changing only this attribute
+                new_case = inp_df.copy()
+                new_case[attr] = value
+                test_cases.append(new_case)
+
+    else:
+        # Original approach: vary all combinations of protected attributes
+        attr_names = list(protected_values.keys())
+        attr_values = list(protected_values.values())
+        combinations = list(itertools.product(*attr_values))
+
+        for combination in combinations:
+            if tuple(map(int, inp_df[attr_names].iloc[0].tolist())) == combination:
+                continue
+
+            new_case = inp_df.copy()
+            for attr, value in zip(attr_names, combination):
+                new_case[attr] = value
+                # dsn_per_protected_attr[attr] += 1
+
+            # dsn_per_protected_attr['total'] += 1
+            test_cases.append(new_case)
 
     if not test_cases:
         return False, set(), set()
@@ -181,6 +206,11 @@ def check_for_error_condition(
     disc_pairs = set()
     for el in discriminations.to_numpy():
         disc_pairs.add((tuple(inp_df.iloc[0]), tuple(el)))
+        for attr in data_obj.protected_attributes:
+            n_el = pd.DataFrame(np.expand_dims(el, 0), columns=inp_df.columns)
+            if n_el[attr].iloc[0] != inp_df[attr].iloc[0]:
+                dsn_per_protected_attr[attr] += 1
+                dsn_per_protected_attr['total'] += 1
 
     all_tested = set([tuple(e) for e in test_cases_df.values])
 
@@ -352,14 +382,15 @@ class BasinhoppingCallback:
 
 
 def adf_fairness_testing(
-        data_obj,
+        data_obj: DiscriminationData,
         max_global: int = 2000,
         max_local: int = 2000,
         max_iter: int = 100,
         cluster_num: int = 10,
         random_seed: int = 42,
         max_runtime_seconds: int = 3600,  # Default 1 hour time limit
-        max_tsn: int = None  # New parameter for TSN threshold
+        max_tsn: int = None,  # New parameter for TSN threshold
+        one_attr_at_a_time: bool = False
 ) -> Tuple[pd.DataFrame, Dict[str, float]]:
     """Implementation of ADF fairness testing.
 
@@ -387,6 +418,9 @@ def adf_fairness_testing(
 
     global_disc_inputs = []
     local_disc_inputs = []
+
+    dsn_per_protected_attr = {e: 0 for e in data_obj.protected_attributes}
+    dsn_per_protected_attr['total'] = 0
 
     data = data_obj.training_dataframe.copy()
 
@@ -458,7 +492,9 @@ def adf_fairness_testing(
 
         result = False
         if (discr_key not in tot_inputs):
-            result, discr_res, all_tested = check_for_error_condition(data_obj, model, inp)
+            result, discr_res, all_tested = check_for_error_condition(data_obj, model, inp,
+                                                                      dsn_per_protected_attr,
+                                                                      one_attr_at_a_time=one_attr_at_a_time)
 
             tot_inputs.add(discr_key)
             if result:
@@ -667,6 +703,9 @@ def adf_fairness_testing(
     sur = dsn / tsn if tsn > 0 else 0
     dss = total_time / dsn if dsn > 0 else float('inf')
 
+    for k, v in dsn_per_protected_attr.items():
+        dsn_per_protected_attr[k] = v / tsn
+
     metrics = {
         'tsn': tsn,
         'dsn': dsn,
@@ -675,7 +714,8 @@ def adf_fairness_testing(
         'total_time': total_time,
         'time_limit_reached': time_limit_reached,
         'tsn_threshold_reached': tsn_threshold_reached,
-        'search_iterations': search_iteration
+        'search_iterations': search_iteration,
+        'dsn_by_attr_value': dsn_per_protected_attr
     }
 
     logger.info("Final Results:")
@@ -740,7 +780,7 @@ def adf_fairness_testing(
 
 
 if __name__ == "__main__":
-    from data_generator.main import get_real_data, generate_from_real_data
+    from data_generator.main import get_real_data, generate_from_real_data, DiscriminationData
 
     data_obj, schema = get_real_data('adult')
 
@@ -751,34 +791,8 @@ if __name__ == "__main__":
         max_iter=100,
         cluster_num=50,
         max_runtime_seconds=3600,  # 1 hour time limit
-        max_tsn=20000  # Set target TSN threshold
+        max_tsn=20000,  # Set target TSN threshold
+        one_attr_at_a_time=True
     )
 
-    print("\nTesting Metrics:")
-    for metric, value in metrics.items():
-        if isinstance(value, bool):
-            print(f"{metric}: {value}")
-        else:
-            print(f"{metric}: {value:.4f}")
-
-if __name__ == "__main__":
-    from data_generator.main import get_real_data, generate_from_real_data
-
-    data_obj, schema = get_real_data('adult')
-
-    results_df, metrics = adf_fairness_testing(
-        data_obj,
-        max_global=5000,
-        max_local=2000,
-        max_iter=100,
-        cluster_num=50,
-        max_runtime_seconds=1000,  # 30 minute time limit
-        max_tsn=50000
-    )
-
-    print("\nTesting Metrics:")
-    for metric, value in metrics.items():
-        if isinstance(value, bool):
-            print(f"{metric}: {value}")
-        else:
-            print(f"{metric}: {value:.4f}")
+    print(f"\nTesting Metrics: {metrics}")

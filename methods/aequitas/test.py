@@ -11,7 +11,7 @@ data_obj, schema = get_real_data('adult')
 results_df_origin, metrics = run_aequitas(discrimination_data=data_obj,
                                           model_type='rf', max_global=100,
                                           max_local=1000, step_size=1.0, random_seed=42,
-                                          max_total_iterations=1000)
+                                          max_tsn=4000, one_attr_at_a_time=True)
 
 # %%
 non_float_df = convert_to_non_float_rows(results_df_origin, schema)

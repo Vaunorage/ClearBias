@@ -8,7 +8,7 @@ from methods.utils import reformat_discrimination_results, convert_to_non_float_
 # %%
 data_obj, schema = get_real_data('adult')
 results_df_origin, metrics = run_sg(ge=data_obj,
-                                    model_type='rf', cluster_num=50, max_tsn=1000)
+                                    model_type='rf', cluster_num=50, max_tsn=1000, one_attr_at_a_time=True)
 
 # %%
 non_float_df = convert_to_non_float_rows(results_df_origin, schema)
@@ -16,7 +16,8 @@ predefined_groups_origin = reformat_discrimination_results(non_float_df, data_ob
 
 # %%
 data_obj_synth, schema = generate_from_real_data('adult',
-                                                 predefined_groups=predefined_groups_origin, nb_groups=len(predefined_groups_origin))
+                                                 predefined_groups=predefined_groups_origin,
+                                                 nb_groups=len(predefined_groups_origin))
 
 # %%
 fig = plot_distribution_comparison(schema, data_obj_synth)
