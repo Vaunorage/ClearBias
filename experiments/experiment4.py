@@ -365,24 +365,24 @@ def evaluate_discrimination_detection(
     group_analysis_df = pd.DataFrame(group_analysis_data)
 
     if 'TSN' in results_df.columns:
-        group_analysis_df['tsn'] = results_df.iloc[0]['TSN']
+        group_analysis_df['TSN'] = results_df.iloc[0]['TSN']
     else:
-        group_analysis_df['tsn'] = 0
+        group_analysis_df['TSN'] = 0
 
     if 'DSN' in results_df.columns:
-        group_analysis_df['dsn'] = results_df.iloc[0]['DSN']
+        group_analysis_df['DSN'] = results_df.iloc[0]['DSN']
     else:
-        group_analysis_df['dsn'] = 0
+        group_analysis_df['DSN'] = 0
 
     if 'DSS' in results_df.columns:
-        group_analysis_df['dss'] = results_df.iloc[0]['DSS']
+        group_analysis_df['DSS'] = results_df.iloc[0]['DSS']
     else:
-        group_analysis_df['dss'] = 0
+        group_analysis_df['DSS'] = 0
 
     if 'SUR' in results_df.columns:
-        group_analysis_df['sur'] = results_df.iloc[0]['SUR']
+        group_analysis_df['SUR'] = results_df.iloc[0]['SUR']
     else:
-        group_analysis_df['sur'] = 0
+        group_analysis_df['SUR'] = 0
 
     # Optimize results processing using vectorized operations where possible
     def process_row(row):
@@ -418,7 +418,7 @@ def evaluate_discrimination_detection(
     metrics_columns = [
         'group_key', 'synthetic_group_size', 'num_exact_individual_matches',
         'num_exact_couple_matches', 'num_new_group_individuals', 'num_new_group_couples',
-        'tsn', 'dsn', 'dss', 'sur'
+        'TSN', 'DSN', 'DSS', 'SUR'
     ]
     metrics_df = group_analysis_df[metrics_columns].copy()
     metrics_df.insert(0, 'experiment_id', experiment_id)
@@ -501,9 +501,9 @@ class ExperimentRunner:
             'num_new_group_individuals',
             'num_new_group_couples',
             # New discrimination metrics
-            'tsn',  # Total Sample Number
-            'dsn',  # Discrimination Sample Number
-            'dss',  # Discrimination Sample Score
+            'TSN',  # Total Sample Number
+            'DSN',  # Discrimination Sample Number
+            'DSS',  # Discrimination Sample Score
             'dsr',  # Discrimination Sample Ratio
             # Existing uncertainty metrics
             'calculated_epistemic_random_forest',

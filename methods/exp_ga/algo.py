@@ -88,16 +88,16 @@ def construct_explainer(train_vectors: np.ndarray, feature_names: List[str],
 
 def search_seed(model: BaseEstimator, feature_names: List[str], sens_name: str,
                 explainer: LimeTabularExplainer, train_vectors: np.ndarray, num: int,
-                threshold_l: float) -> List[np.ndarray]:
+                threshold_l: float, nb_seed=100) -> List[np.ndarray]:
     seed: List[np.ndarray] = []
-    for x in train_vectors:
+    for i, x in enumerate(train_vectors):
         exp = explainer.explain_instance(x, model.predict_proba, num_features=num)
         exp_result = exp.as_list(label=exp.available_labels()[0])
         rank = [item[0] for item in exp_result]
         loc = rank.index(sens_name)
         if loc < math.ceil(len(exp_result) * threshold_l):
             seed.append(x)
-        if len(seed) >= 100:
+        if len(seed) >= nb_seed:
             break
     return seed
 
@@ -118,7 +118,7 @@ class GlobalDiscovery:
 
 def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_rank: float,
                      max_global: int, max_local: int, model_type: str = 'rf',
-                     time_limit: float = None, max_tsn: int = None, **model_kwargs) -> Tuple[
+                     time_limit: float = None, max_tsn: int = None, nb_seed=100, **model_kwargs) -> Tuple[
     ExpGAResultDF, Metrics]:
     """
     XAI fairness testing that works on all protected attributes simultaneously.
@@ -136,8 +136,8 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     total_inputs: Set[Tuple[float, ...]] = set()
 
     results: List[Tuple[np.ndarray, np.ndarray, float, float]] = []
-    dsn_per_protected_attr = {e: 0 for e in dataset.protected_attributes}
-    dsn_per_protected_attr['total'] = 0
+    dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in dataset.protected_attributes}
+    dsn_by_attr_value['total'] = 0
 
     def evaluate_local(input_sample) -> float:
         """
@@ -171,6 +171,8 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
                 attr_idx = dataset.sensitive_indices[attr_name]
                 current_value = input_array[attr_idx]
 
+                dsn_by_attr_value[attr_name]['TSN'] += 1
+
                 # Try each possible value
                 for val in range(int(dataset.input_bounds[attr_idx][0]),
                                  int(dataset.input_bounds[attr_idx][1]) + 1):
@@ -194,8 +196,8 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
                         best_altered_input = altered_input
                         best_output = output_altered
 
-                        dsn_per_protected_attr[attr_name] += 1
-                        dsn_per_protected_attr['total'] += 1
+                        dsn_by_attr_value[attr_name]['DSN'] += 1
+                        dsn_by_attr_value['total'] += 1
 
                         # Early return for efficiency - follows original algorithm approach
                         if tuple(input_array) not in global_disc_inputs.union(local_disc_inputs):
@@ -248,7 +250,8 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
             explainer,
             np.array(attr_samples),
             len(dataset.feature_names),
-            threshold_rank
+            threshold_rank,
+            nb_seed
         )
 
         seeds.extend(attr_seeds)
@@ -301,20 +304,25 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     except Exception as e:
         logger.error(f"Error in GA: {str(e)}")
 
-    # Calculate metrics
+    # Calculate final metrics
     tsn = len(total_inputs)
-    dsn = len(local_disc_inputs)
-    sur = (dsn / tsn * 100) if tsn > 0 else 0.0
-    dss = np.mean(np.diff(disc_times)) if len(disc_times) > 1 else 0.0
+    dsn = len(global_disc_inputs) + len(local_disc_inputs)
+    dss = sum(disc_times) / len(disc_times) if disc_times else 0
+    sur = (dsn / tsn * 100) if tsn > 0 else 0
+
+    # Calculate metrics for each attribute
+    for attr in dsn_by_attr_value:
+        if attr != 'total' and dsn_by_attr_value[attr]['TSN'] > 0:
+            dsn_by_attr_value[attr]['SUR'] = (dsn_by_attr_value[attr]['DSN'] / dsn_by_attr_value[attr]['TSN'])
 
     metrics: Metrics = {
-        "TSN": tsn,
-        "DSN": dsn,
-        "SUR": sur,
-        "DSS": dss
+        'TSN': tsn,
+        'DSN': dsn,
+        'DSS': dss,
+        'SUR': sur,
+        'dsn_by_attr_value': dsn_by_attr_value
     }
 
-    # Log results
     logger.info(f"Total Inputs (TSN): {tsn}")
     logger.info(f"Discriminatory inputs (DSN): {dsn}")
     logger.info(f"Average time to find discriminatory sample (DSS): {dss:.2f} seconds")
@@ -376,14 +384,18 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     for k, v in metrics.items():
         df[k] = v
 
-    metrics['dsn_per_protected_attr'] = dsn_per_protected_attr
+    for k, v in dsn_by_attr_value.items():
+        if k != 'total':
+            dsn_by_attr_value[k]['SUR'] = dsn_by_attr_value[k]['DSN'] / dsn_by_attr_value[k]['TSN']
+
+    metrics['dsn_by_attr_value'] = dsn_by_attr_value
 
     return df, metrics
 
 
 def run_expga(dataset: DiscriminationData, model_type: str = 'rf', threshold: float = 0.5,
               threshold_rank: float = 0.5, max_global: int = 50, max_local: int = 50,
-              time_limit: float = None, max_tsn: int = None, **model_kwargs) -> Tuple[
+              time_limit: float = None, max_tsn: int = None, nb_seed=100, **model_kwargs) -> Tuple[
     ExpGAResultDF, Dict[str, Any]]:
     """
     Simplified run_expga that tests all protected attributes at once.
@@ -400,28 +412,17 @@ def run_expga(dataset: DiscriminationData, model_type: str = 'rf', threshold: fl
         model_type,
         time_limit=time_limit,
         max_tsn=max_tsn,
+        nb_seed=nb_seed,
         **model_kwargs
     )
-
-    # Format metrics as expected by caller
-    if 'TSN' in metrics:
-        metrics_dict = {attr: metrics for attr in dataset.protected_attributes}
-        all_metrics_r = pd.DataFrame(metrics_dict.values()).agg({
-            'DSN': 'sum',
-            'TSN': 'sum',
-            'SUR': 'mean',
-            'DSS': 'mean'
-        }).to_dict()
-    else:
-        all_metrics_r = metrics
 
     # Empty DataFrame case
     if df.empty:
         empty_df = pd.DataFrame(columns=['case_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'] +
                                         list(dataset.feature_names))
-        return empty_df, all_metrics_r
+        return empty_df, metrics
 
     # Process case IDs to be sequential
     df['case_id'] = df['case_id'].replace({v: k for k, v in enumerate(df['case_id'].unique())})
 
-    return df, all_metrics_r
+    return df, metrics

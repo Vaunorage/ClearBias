@@ -69,8 +69,8 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     )
     logger.info(f"Model trained. Features: {feature_names}")
 
-    dsn_per_protected_attr = {e: 0 for e in discrimination_data.protected_attributes}
-    dsn_per_protected_attr['total'] = 0
+    dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in discrimination_data.protected_attributes}
+    dsn_by_attr_value['total'] = 0
 
     # Get input bounds and number of parameters
     input_bounds = get_input_bounds(discrimination_data)
@@ -96,10 +96,6 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     all_discriminations = set()
     total_iterations = [0]  # Track total iterations
     last_log_time = start_time  # For periodic logging
-
-    # Initialize dictionary to track dsn by attribute value
-    dsn_per_protected_attr = {e: 0 for e in discrimination_data.protected_attributes}
-    dsn_per_protected_attr['total'] = 0
 
     def check_for_error_condition(model, instance, protected_indices, input_bounds, one_attr_at_a_time=False):
         """
@@ -145,6 +141,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                     new_instance = instance.copy()
                     new_instance[attr_name] = value
                     new_df.append(new_instance)
+                    dsn_by_attr_value[attr_name]['TSN'] += 1
         else:
             # Generate all possible combinations of protected attribute values
             protected_values = []
@@ -158,6 +155,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                     new_instance = instance.copy()
                     for i, attr in enumerate(discrimination_data.protected_attributes):
                         new_instance[attr] = values[i]
+                        dsn_by_attr_value[attr]['TSN'] += 1
                     new_df.append(new_instance)
 
         if not new_df:  # If no combinations were found
@@ -191,8 +189,8 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                 # Update counts for each protected attribute value in both original and variant
                 for i, attr in enumerate(discrimination_data.protected_attributes):
                     if n_inp[attr].iloc[0] != n_counter[attr].iloc[0]:
-                        dsn_per_protected_attr[attr] += 1
-                        dsn_per_protected_attr['total'] += 1
+                        dsn_by_attr_value[attr]['DSN'] += 1
+                        dsn_by_attr_value['total'] += 1
 
         return discrimination_df.shape[0] > 0
 
@@ -654,8 +652,10 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     sur = dsn / tsn if tsn > 0 else 0  # Success Rate
     dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
 
-    for k, v in dsn_per_protected_attr.items():
-        dsn_per_protected_attr[k] = v / tsn
+    for k, v in dsn_by_attr_value.items():
+        if k != 'total':
+            dsn_by_attr_value[k]['SUR'] = dsn_by_attr_value[k]['DSN'] / dsn_by_attr_value[k]['TSN']
+            dsn_by_attr_value[k]['DSS'] = dss
 
     # Log dsn_by_attr_value counts
     logger.info("\nDiscrimination counts by protected attribute values:")
@@ -667,7 +667,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         'total_time': total_time,
         'time_limit_reached': time_limit_seconds is not None and total_time >= time_limit_seconds,
         'max_tsn_reached': max_tsn is not None and tsn >= max_tsn,
-        'dsn_by_attr_value': dsn_per_protected_attr
+        'dsn_by_attr_value': dsn_by_attr_value
     }
 
     logger.info("\nFinal Results:")
@@ -677,7 +677,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     logger.info(f"Total discriminatory pairs: {dsn}")
     logger.info(f"Success rate (SUR): {sur:.4f}")
     logger.info(f"Avg. search time per discriminatory sample (DSS): {dss:.4f} seconds")
-    logger.info(f"Discrimination by attribute value: {dsn_per_protected_attr}")
+    logger.info(f"Discrimination by attribute value: {dsn_by_attr_value}")
     logger.info(f"Total time: {total_time:.2f} seconds")
     logger.info(f"Total iterations: {total_iterations[0]}")
 

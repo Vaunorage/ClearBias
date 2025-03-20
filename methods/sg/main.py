@@ -155,7 +155,7 @@ def extract_lime_decision_constraints(ge, model, input, random_state=42):
     return path
 
 
-def check_for_discrimination_case(ge, model, t, sensitive_indices, dsn_per_protected_attr, one_attr_at_a_time=False):
+def check_for_discrimination_case(ge, model, t, sensitive_indices, dsn_by_attr_value, one_attr_at_a_time=False):
     """
     Check whether the test case is an individual discriminatory instance
 
@@ -186,6 +186,7 @@ def check_for_discrimination_case(ge, model, t, sensitive_indices, dsn_per_prote
 
             # Current value for this attribute
             current_value = t[sens_idx]
+            dsn_by_attr_value[sens_name]['TSN'] += 1
 
             # Create new test cases with different values for this attribute only
             for value in values:
@@ -200,6 +201,7 @@ def check_for_discrimination_case(ge, model, t, sensitive_indices, dsn_per_prote
         sensitive_values = {}
         for sens_name, sens_idx in sensitive_indices.items():
             sensitive_values[sens_name] = np.unique(ge.xdf.iloc[:, sens_idx]).tolist()
+            dsn_by_attr_value[sens_name]['TSN'] += 1
 
         # Generate all possible combinations of sensitive attribute values
         sensitive_names = list(sensitive_indices.keys())
@@ -230,8 +232,8 @@ def check_for_discrimination_case(ge, model, t, sensitive_indices, dsn_per_prote
             for attr in ge.protected_attributes:
                 n_el = pd.DataFrame([el], columns=org_df.columns)
                 if n_el[attr].iloc[0] != org_df[attr].iloc[0]:
-                    dsn_per_protected_attr[attr] += 1
-                    dsn_per_protected_attr['total'] += 1
+                    dsn_by_attr_value[attr]['DSN'] += 1
+                    dsn_by_attr_value['total'] += 1
 
     tested_inp = new_targets[ge.attr_columns].to_numpy().tolist()
 
@@ -347,8 +349,8 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
     local_disc_inputs_list = []
     tot_inputs = []
 
-    dsn_per_protected_attr = {e: 0 for e in ge.protected_attributes}
-    dsn_per_protected_attr['total'] = 0
+    dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in ge.protected_attributes}
+    dsn_by_attr_value['total'] = 0
 
     np.random.seed(random_state)
     random.seed(random_state)
@@ -421,7 +423,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
 
             found, org_df, found_df, tested_inp = check_for_discrimination_case(ge, model, org_input,
                                                                                 ge.sensitive_indices,
-                                                                                dsn_per_protected_attr,
+                                                                                dsn_by_attr_value,
                                                                                 one_attr_at_a_time=one_attr_at_a_time)
             tot_inputs.extend(tested_inp)
 
@@ -557,15 +559,16 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
     tsn = len(tot_inputs)
     dsn = len(f_results)
 
-    for k, v in dsn_per_protected_attr.items():
-        dsn_per_protected_attr[k] = v / tsn
+    for k, v in dsn_by_attr_value.items():
+        if k != 'total':
+            dsn_by_attr_value[k]['SUR'] = dsn_by_attr_value[k]['DSN'] / dsn_by_attr_value[k]['TSN']
 
     metrics = {
         "TSN": tsn,
         "DSN": dsn,
         "SUR": round(dsn / tsn, 2) if tsn > 0 else 0,
         "DSS": round(execution_time / dsn, 2) if dsn > 0 else 0,
-        "dsn_by_attr_value": dsn_per_protected_attr  # Add the dsn_by_attr_value tracking to the metrics
+        "dsn_by_attr_value": dsn_by_attr_value  # Add the dsn_by_attr_value tracking to the metrics
     }
 
     return results_df, metrics

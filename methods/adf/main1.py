@@ -135,7 +135,7 @@ def check_for_error_condition(
         data_obj,
         model,
         x: np.ndarray,
-        dsn_per_protected_attr,
+        dsn_by_attr_value,
         one_attr_at_a_time: bool = False
 ) -> Tuple[bool, set, list]:
     """Check if test case shows discrimination.
@@ -174,6 +174,7 @@ def check_for_error_condition(
                 new_case = inp_df.copy()
                 new_case[attr] = value
                 test_cases.append(new_case)
+                dsn_by_attr_value[attr]['TSN'] += 1
 
     else:
         # Original approach: vary all combinations of protected attributes
@@ -188,9 +189,8 @@ def check_for_error_condition(
             new_case = inp_df.copy()
             for attr, value in zip(attr_names, combination):
                 new_case[attr] = value
-                # dsn_per_protected_attr[attr] += 1
+                dsn_by_attr_value[attr]['TSN'] += 1
 
-            # dsn_per_protected_attr['total'] += 1
             test_cases.append(new_case)
 
     if not test_cases:
@@ -209,8 +209,8 @@ def check_for_error_condition(
         for attr in data_obj.protected_attributes:
             n_el = pd.DataFrame(np.expand_dims(el, 0), columns=inp_df.columns)
             if n_el[attr].iloc[0] != inp_df[attr].iloc[0]:
-                dsn_per_protected_attr[attr] += 1
-                dsn_per_protected_attr['total'] += 1
+                dsn_by_attr_value[attr]['DSN'] += 1
+                dsn_by_attr_value['total'] += 1
 
     all_tested = set([tuple(e) for e in test_cases_df.values])
 
@@ -419,8 +419,8 @@ def adf_fairness_testing(
     global_disc_inputs = []
     local_disc_inputs = []
 
-    dsn_per_protected_attr = {e: 0 for e in data_obj.protected_attributes}
-    dsn_per_protected_attr['total'] = 0
+    dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in data_obj.protected_attributes}
+    dsn_by_attr_value['total'] = 0
 
     data = data_obj.training_dataframe.copy()
 
@@ -493,7 +493,7 @@ def adf_fairness_testing(
         result = False
         if (discr_key not in tot_inputs):
             result, discr_res, all_tested = check_for_error_condition(data_obj, model, inp,
-                                                                      dsn_per_protected_attr,
+                                                                      dsn_by_attr_value,
                                                                       one_attr_at_a_time=one_attr_at_a_time)
 
             tot_inputs.add(discr_key)
@@ -703,19 +703,20 @@ def adf_fairness_testing(
     sur = dsn / tsn if tsn > 0 else 0
     dss = total_time / dsn if dsn > 0 else float('inf')
 
-    for k, v in dsn_per_protected_attr.items():
-        dsn_per_protected_attr[k] = v / tsn
+    for k, v in dsn_by_attr_value.items():
+        if k != 'total':
+            dsn_by_attr_value[k]['SUR'] = dsn_by_attr_value[k]['DSN'] / dsn_by_attr_value[k]['TSN']
 
     metrics = {
-        'tsn': tsn,
-        'dsn': dsn,
-        'sur': sur,
-        'dss': total_time / dsn if dsn > 0 else float('inf'),
+        'TSN': tsn,
+        'DSN': dsn,
+        'SUR': sur,
+        'DSS': total_time / dsn if dsn > 0 else float('inf'),
         'total_time': total_time,
         'time_limit_reached': time_limit_reached,
         'tsn_threshold_reached': tsn_threshold_reached,
         'search_iterations': search_iteration,
-        'dsn_by_attr_value': dsn_per_protected_attr
+        'dsn_by_attr_value': dsn_by_attr_value
     }
 
     logger.info("Final Results:")
@@ -731,9 +732,9 @@ def adf_fairness_testing(
     if termination_reasons:
         logger.info(f"Termination reason(s): {', '.join(termination_reasons)}")
 
-    logger.info(f"Final Metrics - TSN: {tsn}, DSN: {dsn}, DSR: {metrics['sur']:.4f}")
-    logger.info(f"Success Rate: {metrics['sur']:.4f}")
-    logger.info(f"Search Time per Discriminatory Sample: {metrics['dss']:.2f}s")
+    logger.info(f"Final Metrics - TSN: {tsn}, DSN: {dsn}, DSR: {metrics['SUR']:.4f}")
+    logger.info(f"Success Rate: {metrics['SUR']:.4f}")
+    logger.info(f"Search Time per Discriminatory Sample: {metrics['DSS']:.2f}s")
 
     all_rows = []
     feature_cols = data_obj.feature_names

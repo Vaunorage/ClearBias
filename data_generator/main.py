@@ -1912,7 +1912,9 @@ def get_real_data(
     dataset_configs = {
         'adult': {
             'id': 2,
-            'protected_columns': ['race', 'sex'] if protected_columns is None else protected_columns,
+            'protected_columns': ['race', 'sex',
+                                  # 'age'
+                                  ] if protected_columns is None else protected_columns,
             'outcome_column': 'income' if outcome_column is None else outcome_column,
             'drop_columns': ['fnlwgt']
         },
