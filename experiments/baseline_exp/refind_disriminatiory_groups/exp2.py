@@ -48,17 +48,15 @@ def run_experiment(method, dataset_name, conn):
 
     # Run fairness testing on synthetic data
     if method == 'adf':
-        results_df_synth, metrics_synth = adf_fairness_testing(
-            data_obj_synth, max_global=10000, max_local=2000,
-            max_iter=2000, cluster_num=100, random_seed=seed,
-            max_runtime_seconds=600, max_tsn=5000
-        )
+        results_df_synth, metrics_synth = adf_fairness_testing(data_obj_synth, max_global=10000, max_local=2000,
+                                                               max_iter=2000, cluster_num=100, random_seed=seed,
+                                                               max_runtime_seconds=600, max_tsn=5000)
 
     if method == 'aequitas':
         results_df_synth, metrics_synth = run_aequitas(discrimination_data=data_obj_synth,
                                                        model_type='rf', max_global=10000,
                                                        max_local=5000, step_size=1.0, random_seed=42,
-                                                       max_tsn=5000, max_total_iterations=5000)
+                                                       max_tsn=5000)
     if method == 'sg':
         results_df_synth, metrics_synth = run_sg(ge=data_obj_synth,
                                                  model_type='rf', cluster_num=50, max_tsn=5000, time_limit=1000)
@@ -140,7 +138,6 @@ from path import HERE
 
 num_experiments = 10
 
-# Set fixed random seeds for reproducibility
 random_seeds = [42]
 
 # List of datasets to test

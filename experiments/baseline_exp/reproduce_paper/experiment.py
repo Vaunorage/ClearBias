@@ -2,10 +2,11 @@ import pandas as pd
 import sqlite3
 from pathlib import Path
 from data_generator.main import get_real_data
+from experiments.baseline_exp.reproduce_paper.reference_exp import ref_data
 from methods.adf.main1 import adf_fairness_testing
 from methods.sg.main import run_sg
 from methods.exp_ga.algo import run_expga
-from methods.aequitas.algo import run_aequitas
+from methods.aequitas.algo import run_aequitas2
 import time
 from typing import Dict, List
 from collections import defaultdict
@@ -30,8 +31,7 @@ def setup_results_table(conn):
         DSN INTEGER,
         DSS REAL,
         SUR REAL,
-        execution_time REAL,
-        UNIQUE(model, dataset, feature, algorithm)
+        execution_time REAL
     )
     ''')
     conn.commit()
@@ -51,7 +51,7 @@ def save_experiment_result(conn, result: dict):
     """Save a single experiment result to the database."""
     cursor = conn.cursor()
     cursor.execute('''
-    INSERT OR REPLACE INTO paper_reproduction_results 
+    INSERT INTO paper_reproduction_results 
     (model, dataset, feature, algorithm, TSN, DSN, DSS, SUR, execution_time)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
@@ -124,99 +124,117 @@ def analyze_discrimination_results(results_df: pd.DataFrame, dataset) -> Dict:
     return final_metrics
 
 
-def run_experiment_for_model(model_type: str, dataset_name: str, sensitive_feature: str, completed_experiments: set) -> \
-        List[Dict]:
+def run_experiment_for_model(model_type: str, dataset_name: str, sensitive_feature: str, completed_experiments: set,
+                             ref_data: pd.DataFrame, conn) -> List[Dict]:
     """Run experiment for a specific model and dataset combination."""
     print(f"\nRunning experiment for {model_type} on {dataset_name} dataset with {sensitive_feature} feature")
 
-    results = []
+    conv_data_name = {'adult': 'Census', 'credit': 'Credit', 'bank': 'Bank'}
+
+    ref_keys = ref_data[(ref_data['dataset'] == conv_data_name[dataset_name]) & (ref_data['model'] == model_type)]
 
     # Get the dataset
     data_obj, schema = get_real_data(dataset_name, use_cache=True)
 
     # Run ExpGA if not already done
-    if (model_type, dataset_name, sensitive_feature, 'ExpGA') not in completed_experiments:
-        print("Running ExpGA...")
-        start_time = time.time()
-        expga_results, expga_metrics = run_expga(
-            dataset=data_obj,
-            model_type=model_type.lower(),
-            threshold=0.5,
-            threshold_rank=0.5,
-            max_global=5000,
-            max_local=2000,
-            max_tsn=70000,
-            time_limit=1000,
-        )
-        execution_time = time.time() - start_time
-        print("EXPGA METRICS", expga_metrics)
-
-        # Use metrics directly from the algorithm's dsn_by_attr_value if available
-        for attr, attr_metrics in expga_metrics['dsn_by_attr_value'].items():
-            if attr != 'total':  # Skip the total metrics
-                results.append({
-                    'Model': model_type,
-                    'Dataset': dataset_name,
-                    'Feature': attr,
-                    'Algorithm': 'ExpGA',
-                    'TSN': attr_metrics['TSN'],
-                    'DSN': attr_metrics['DSN'],
-                    'DSS': expga_metrics['DSS'],
-                    'SUR': attr_metrics['SUR'],
-                    'execution_time': execution_time
-                })
+    # if (model_type, dataset_name, sensitive_feature, 'ExpGA') not in completed_experiments:
+    #     print("Running ExpGA...")
+    #
+    #     keys = ref_keys[ref_keys['algorithm'] == 'ExpGA']
+    #
+    #     print("MAX TSN", keys['TSN'].max())
+    #
+    #     start_time = time.time()
+    #     expga_results, expga_metrics = run_expga(
+    #         dataset=data_obj,
+    #         model_type=model_type.lower(),
+    #         threshold=0.5,
+    #         threshold_rank=0.5,
+    #         max_global=5000,
+    #         max_local=2000,
+    #         max_tsn=keys['TSN'].max(),
+    #         time_limit=1000,
+    #         one_attr_at_a_time=True
+    #     )
+    #     execution_time = time.time() - start_time
+    #     print("EXPGA METRICS", expga_metrics)
+    #
+    #     # Use metrics directly from the algorithm's dsn_by_attr_value if available
+    #     for attr, attr_metrics in expga_metrics['dsn_by_attr_value'].items():
+    #         if attr != 'total':
+    #             save_experiment_result(conn, {
+    #                 'Model': model_type,
+    #                 'Dataset': dataset_name,
+    #                 'Feature': attr,
+    #                 'Algorithm': 'ExpGA',
+    #                 'TSN': attr_metrics['TSN'],
+    #                 'DSN': attr_metrics['DSN'],
+    #                 'DSS': expga_metrics['DSS'],
+    #                 'SUR': attr_metrics['SUR'],
+    #                 'execution_time': execution_time
+    #             })
 
     # Run SG if not already done
-    if (model_type, dataset_name, sensitive_feature, 'SG') not in completed_experiments:
-        print("Running SG...")
-        start_time = time.time()
-        sg_results, sg_metrics = run_sg(
-            ge=data_obj,
-            model_type=model_type.lower(),
-            cluster_num=50,
-            max_tsn=70000,
-            time_limit=10000
-        )
-        execution_time = time.time() - start_time
-        print("SG METRICS", sg_metrics)
-
-        # Use metrics directly from the algorithm's dsn_by_attr_value if available
-        for attr, attr_metrics in sg_metrics['dsn_by_attr_value'].items():
-            if attr != 'total':  # Skip the total metrics
-                results.append({
-                    'Model': model_type,
-                    'Dataset': dataset_name,
-                    'Feature': attr,
-                    'Algorithm': 'SG',
-                    'TSN': attr_metrics['TSN'],
-                    'DSN': attr_metrics['DSN'],
-                    'DSS': sg_metrics['DSS'],
-                    'SUR': attr_metrics['SUR'],
-                    'execution_time': execution_time
-                })
+    # if (model_type, dataset_name, sensitive_feature, 'SG') not in completed_experiments:
+    #     print("Running SG...")
+    #
+    #     keys = ref_keys[ref_keys['algorithm'] == 'SG']
+    #
+    #     print("MAX TSN", keys['TSN'].max())
+    #
+    #     start_time = time.time()
+    #     sg_results, sg_metrics = run_sg(
+    #         ge=data_obj,
+    #         model_type=model_type.lower(),
+    #         cluster_num=50,
+    #         max_tsn=keys['TSN'].max(),
+    #         time_limit=10000,
+    #         one_attr_at_a_time=True
+    #     )
+    #     execution_time = time.time() - start_time
+    #     print("SG METRICS", sg_metrics)
+    #
+    #     # Use metrics directly from the algorithm's dsn_by_attr_value if available
+    #     for attr, attr_metrics in sg_metrics['dsn_by_attr_value'].items():
+    #         if attr != 'total':
+    #             save_experiment_result(conn, {
+    #             'Model': model_type,
+    #             'Dataset': dataset_name,
+    #             'Feature': attr,
+    #             'Algorithm': 'SG',
+    #             'TSN': attr_metrics['TSN'],
+    #             'DSN': attr_metrics['DSN'],
+    #             'DSS': sg_metrics['DSS'],
+    #             'SUR': attr_metrics['SUR'],
+    #             'execution_time': execution_time
+    #         })
 
     # Run Aequitas if not already done
     if (model_type, dataset_name, sensitive_feature, 'Aequitas') not in completed_experiments:
         print("Running Aequitas...")
+
+        keys = ref_keys[ref_keys['algorithm'] == 'Aequitas']
+
         start_time = time.time()
-        aequitas_results, aequitas_metrics = run_aequitas(
+        print("MAX TSN", keys['TSN'].max())
+        aequitas_results, aequitas_metrics = run_aequitas2(
             discrimination_data=data_obj,
             model_type=model_type.lower(),
             max_global=5000,
             max_local=2000,
             step_size=1.0,
             random_seed=42,
-            max_total_iterations=10000,
-            max_tsn=70000,
-            time_limit_seconds=10000
+            max_tsn=keys['TSN'].max(),
+            time_limit_seconds=10000,
+            one_attr_at_a_time=True
         )
         execution_time = time.time() - start_time
         print("AEQUITAS METRICS", aequitas_metrics)
 
         # Use metrics directly from the algorithm's dsn_by_attr_value if available
         for attr, attr_metrics in aequitas_metrics['dsn_by_attr_value'].items():
-            if attr != 'total':  # Skip the total metrics
-                results.append({
+            if attr != 'total':
+                save_experiment_result(conn, {
                     'Model': model_type,
                     'Dataset': dataset_name,
                     'Feature': attr,
@@ -229,39 +247,42 @@ def run_experiment_for_model(model_type: str, dataset_name: str, sensitive_featu
                 })
 
     # Run ADF (only for MLP) if not already done
-    if model_type.lower() == 'mlp' and (
-            model_type, dataset_name, sensitive_feature, 'ADF') not in completed_experiments:
-        print("Running ADF...")
-        start_time = time.time()
-        adf_results, adf_metrics = adf_fairness_testing(
-            data_obj,
-            max_global=10000,
-            max_local=5000,
-            max_iter=1000,
-            cluster_num=100,
-            random_seed=42,
-            max_tsn=70000,
-            max_runtime_seconds=10000
-        )
-        execution_time = time.time() - start_time
-        print("ADF METRICS", adf_metrics)
-
-        # Use metrics directly from the algorithm's dsn_by_attr_value if available
-        for attr, attr_metrics in adf_metrics['dsn_by_attr_value'].items():
-            if attr != 'total':  # Skip the total metrics
-                results.append({
-                    'Model': model_type,
-                    'Dataset': dataset_name,
-                    'Feature': attr,
-                    'Algorithm': 'ADF',
-                    'TSN': attr_metrics['TSN'],
-                    'DSN': attr_metrics['DSN'],
-                    'DSS': adf_metrics['DSS'],
-                    'SUR': attr_metrics['SUR'],
-                    'execution_time': execution_time
-                })
-
-    return results
+    # if model_type.lower() == 'mlp' and (
+    #         model_type, dataset_name, sensitive_feature, 'ADF') not in completed_experiments:
+    #     print("Running ADF...")
+    #
+    #     keys = ref_keys[ref_keys['algorithm'] == 'ADF']
+    #     print("MAX TSN", keys['TSN'].max())
+    #
+    #     start_time = time.time()
+    #     adf_results, adf_metrics = adf_fairness_testing(
+    #         data_obj,
+    #         max_global=10000,
+    #         max_local=5000,
+    #         max_iter=1000,
+    #         cluster_num=100,
+    #         random_seed=42,
+    #         max_tsn=keys['TSN'].max(),
+    #         max_runtime_seconds=10000,
+    #         one_attr_at_a_time=True
+    #     )
+    #     execution_time = time.time() - start_time
+    #     print("ADF METRICS", adf_metrics)
+    #
+    #     # Use metrics directly from the algorithm's dsn_by_attr_value if available
+    #     for attr, attr_metrics in adf_metrics['dsn_by_attr_value'].items():
+    #         if attr != 'total':
+    #             save_experiment_result(conn, {
+    #             'Model': model_type,
+    #             'Dataset': dataset_name,
+    #             'Feature': attr,
+    #             'Algorithm': 'ADF',
+    #             'TSN': attr_metrics['TSN'],
+    #             'DSN': attr_metrics['DSN'],
+    #             'DSS': adf_metrics['DSS'],
+    #             'SUR': attr_metrics['SUR'],
+    #             'execution_time': execution_time
+    #         })
 
 
 def organize_results_by_algorithm(results_df: pd.DataFrame) -> pd.DataFrame:
@@ -288,7 +309,9 @@ def organize_results_by_algorithm(results_df: pd.DataFrame) -> pd.DataFrame:
         }
 
         # Add metrics for each algorithm
-        for algorithm in ['ExpGA', 'SG', 'ADF', 'Aequitas']:
+        for algorithm in [
+            'ExpGA', 'SG', 'ADF',
+            'Aequitas']:
             algo_data = group[group['algorithm'] == algorithm]
             if not algo_data.empty:
                 row_data.update({
@@ -348,13 +371,9 @@ def run_all_experiments():
 
     # Run experiments that haven't been completed
     for model_type, dataset_name, feature in experiments:
-        results = run_experiment_for_model(model_type, dataset_name, feature, completed_experiments)
-
-        # Save results to database
-        for result in results:
-            save_experiment_result(conn, result)
-
-
+        ref_experiments = ref_data()
+        run_experiment_for_model(model_type, dataset_name, feature,
+                                 completed_experiments, ref_experiments, conn)
 
 
 if __name__ == "__main__":

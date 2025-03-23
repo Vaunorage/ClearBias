@@ -306,10 +306,22 @@ class DiscriminationData:
     def ydf(self):
         return self.dataframe[self.outcome_column]
 
-    # @property
-    # def schema(self):
-    #     return '|'.join(
-    #         [''.join(list(map(str, e))).replace('-1', '') for e in self.attr_possible_values.values()])
+    def get_random_rows(self, n: int) -> pd.DataFrame:
+        random_data = {}
+
+        for i, attr in enumerate(self.attributes.keys()):
+            min_val, max_val = self.input_bounds[i]
+
+            if attr in self.categorical_columns:
+                random_values = np.random.randint(min_val, max_val + 1, size=n)
+            else:
+                random_values = np.random.uniform(min_val, max_val, size=n)
+
+            random_data[attr] = random_values
+
+        random_df = pd.DataFrame(random_data)
+
+        return random_df
 
     def __post_init__(self):
         self.input_bounds = []
