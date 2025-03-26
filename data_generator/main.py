@@ -291,8 +291,12 @@ class DiscriminationData:
         return list(self.attributes)
 
     @property
-    def sensitive_indices(self):
+    def sensitive_indices_dict(self):
         return {k: i for i, (k, v) in enumerate(self.attributes.items()) if v}
+
+    @property
+    def sensitive_indices(self):
+        return [i for i, (k, v) in enumerate(self.attributes.items()) if v]
 
     @property
     def training_dataframe(self):
@@ -305,6 +309,18 @@ class DiscriminationData:
     @property
     def ydf(self):
         return self.dataframe[self.outcome_column]
+
+    @property
+    def input_bounds(self):
+        input_bounds = getattr(self, '_input_bounds', None)
+        if input_bounds is None:
+            self._input_bounds = []
+            for col in list(self.attributes):
+                min_val = max(math.floor(self.xdf[col].min()), 0)
+                max_val = math.ceil(self.xdf[col].max())
+                self._input_bounds.append([min_val, max_val])
+        input_bounds = getattr(self, '_input_bounds')
+        return input_bounds
 
     def get_random_rows(self, n: int) -> pd.DataFrame:
         random_data = {}
@@ -322,13 +338,6 @@ class DiscriminationData:
         random_df = pd.DataFrame(random_data)
 
         return random_df
-
-    def __post_init__(self):
-        self.input_bounds = []
-        for col in list(self.attributes):
-            min_val = max(math.floor(self.xdf[col].min()), 0)
-            max_val = math.ceil(self.xdf[col].max())
-            self.input_bounds.append([min_val, max_val])
 
 
 def create_sdv_numerical_distributions(data_schema):

@@ -6,7 +6,7 @@ from experiments.baseline_exp.reproduce_paper.reference_exp import ref_data
 from methods.adf.main1 import adf_fairness_testing
 from methods.sg.main import run_sg
 from methods.exp_ga.algo import run_expga
-from methods.aequitas.algo import run_aequitas2
+from methods.aequitas.algo import run_aequitas
 import time
 from typing import Dict, List
 from collections import defaultdict
@@ -100,7 +100,7 @@ def analyze_discrimination_results(results_df: pd.DataFrame, dataset) -> Dict:
 
         # Find which protected attributes were changed
         for attr in protected_attrs:
-            idx = dataset.sensitive_indices[attr]
+            idx = dataset.sensitive_indices_dict[attr]
             if original_features[idx] != modified_features[idx]:
                 metrics[attr]['DSN'] += 1
                 # Track DSN by attribute value
@@ -217,7 +217,7 @@ def run_experiment_for_model(model_type: str, dataset_name: str, sensitive_featu
 
         start_time = time.time()
         print("MAX TSN", keys['TSN'].max())
-        aequitas_results, aequitas_metrics = run_aequitas2(
+        aequitas_results, aequitas_metrics = run_aequitas(
             discrimination_data=data_obj,
             model_type=model_type.lower(),
             max_global=5000,

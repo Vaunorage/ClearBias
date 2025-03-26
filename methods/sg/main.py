@@ -422,7 +422,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
             org_input = np.array(org_input[1])
 
             found, org_df, found_df, tested_inp = check_for_discrimination_case(ge, model, org_input,
-                                                                                ge.sensitive_indices,
+                                                                                ge.sensitive_indices_dict,
                                                                                 dsn_by_attr_value,
                                                                                 one_attr_at_a_time=one_attr_at_a_time)
             tot_inputs.extend(tested_inp)
@@ -430,7 +430,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
             decision_rules = extract_lime_decision_constraints(ge, model, org_input, random_state)
 
             # Create a version of the input without any sensitive parameters
-            input_without_sensitive = remove_sensitive_attributes(org_input.tolist(), ge.sensitive_indices)
+            input_without_sensitive = remove_sensitive_attributes(org_input.tolist(), ge.sensitive_indices_dict)
             input_key = tuple(input_without_sensitive)
 
             # Track unique inputs and check for discrimination
@@ -440,18 +440,18 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
                 # Update dsn_by_attr_value for each discriminatory case
                 for el in found_df.iterrows():
                     f_results.append((org_df, el[1].to_frame().T))
-                    add_inputs(tuple(remove_sensitive_attributes(el[1].tolist(), ge.sensitive_indices)))
+                    add_inputs(tuple(remove_sensitive_attributes(el[1].tolist(), ge.sensitive_indices_dict)))
 
                     # Record the protected attribute values in the original input that led to discrimination
                     for attr_name in ge.protected_attributes:
-                        attr_idx = ge.sensitive_indices[attr_name]
+                        attr_idx = ge.sensitive_indices_dict[attr_name]
                         attr_value = int(org_input[attr_idx])
 
                 # local search
                 for decision_rule_index in range(len(decision_rules)):
                     path_constraint = copy.deepcopy(decision_rules)
                     c = path_constraint[decision_rule_index]
-                    if c[0] in ge.sensitive_indices.values():
+                    if c[0] in ge.sensitive_indices_dict.values():
                         continue
 
                     if c[1] == "<=":
@@ -486,7 +486,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
             # global search
             prefix_pred = []
             for c in decision_rules:
-                if c[0] in ge.sensitive_indices.values():
+                if c[0] in ge.sensitive_indices_dict.values():
                     continue
                 if c[3] < T1:
                     break

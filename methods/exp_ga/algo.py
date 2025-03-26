@@ -168,7 +168,7 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
 
             # Check each protected attribute
             for attr_name in dataset.protected_attributes:
-                attr_idx = dataset.sensitive_indices[attr_name]
+                attr_idx = dataset.sensitive_indices_dict[attr_name]
                 current_value = input_array[attr_idx]
 
                 dsn_by_attr_value[attr_name]['TSN'] += 1
@@ -229,7 +229,7 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
 
     # Create seeds for each protected attribute
     for p_attr in dataset.protected_attributes:
-        sensitive_idx = dataset.sensitive_indices[p_attr]
+        sensitive_idx = dataset.sensitive_indices_dict[p_attr]
 
         # Generate samples focused on this attribute
         attr_samples = global_discovery(

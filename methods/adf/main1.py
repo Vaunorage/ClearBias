@@ -486,7 +486,7 @@ def adf_fairness_testing(
 
         discr_key = []
         for i in range(len(inp)):
-            if i not in data_obj.sensitive_indices.values():
+            if i not in data_obj.sensitive_indices_dict.values():
                 discr_key.append(inp[i])
         discr_key = tuple(discr_key)
 
@@ -576,7 +576,7 @@ def adf_fairness_testing(
                 n_values = {}
 
                 sensitive_values = {}
-                for sens_name, sens_idx in data_obj.sensitive_indices.items():
+                for sens_name, sens_idx in data_obj.sensitive_indices_dict.items():
                     sensitive_values[sens_name] = np.unique(data_obj.xdf.iloc[:, sens_idx]).tolist()
 
                 value_combinations = list(
@@ -598,7 +598,7 @@ def adf_fairness_testing(
 
                     discr_key = []
                     for i in range(len(n_sample[0])):
-                        if i not in data_obj.sensitive_indices.values():
+                        if i not in data_obj.sensitive_indices_dict.values():
                             discr_key.append(n_sample[0][i])
                     discr_key = tuple(discr_key)
 
@@ -610,7 +610,7 @@ def adf_fairness_testing(
 
                     if label != n_label:
                         for name, value in zip(sensitive_values.keys(), values):
-                            n_values[data_obj.sensitive_indices[name]] = value
+                            n_values[data_obj.sensitive_indices_dict[name]] = value
 
                         global_disc_inputs.append(discr_key)
 
@@ -630,7 +630,7 @@ def adf_fairness_testing(
                             }
 
                             local_perturbation = LocalPerturbation(
-                                model, n_values, data_obj.sensitive_indices.values(),
+                                model, n_values, data_obj.sensitive_indices_dict.values(),
                                 X.shape[1], data_obj, random_seed
                             )
 
@@ -664,7 +664,7 @@ def adf_fairness_testing(
                         if prob_diff > max_diff:
                             max_diff = prob_diff
                             for name, value in zip(sensitive_values.keys(), values):
-                                n_values[data_obj.sensitive_indices[name]] = value
+                                n_values[data_obj.sensitive_indices_dict[name]] = value
 
                 if should_terminate():
                     break
