@@ -1,4 +1,5 @@
 import time
+from itertools import product
 from typing import TypedDict, List, Tuple, Dict, Any, Union, Set
 import math
 import uuid
@@ -18,20 +19,13 @@ from lime.lime_tabular import LimeTabularExplainer
 
 from data_generator.main import DiscriminationData
 from methods.exp_ga.genetic_algorithm import GA
+from methods.utils import check_for_error_condition
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
-
-
-class ExpGAResultRow(TypedDict, total=False):
-    case_id: int
-    outcome: float
-    diff_outcome: float
-    indv_key: str
-    couple_key: str
 
 
 class Metrics(TypedDict):
@@ -116,14 +110,17 @@ class GlobalDiscovery:
         return samples
 
 
-def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_rank: float,
-                     max_global: int, max_local: int, model_type: str = 'rf',
-                     time_limit: float = None, max_tsn: int = None, nb_seed=100, **model_kwargs) -> Tuple[
-    ExpGAResultDF, Metrics]:
+def run_expga(dataset: DiscriminationData, threshold_rank: float,
+              max_global: int, max_local: int, model_type: str = 'rf', cross_rate=0.9, mutation=0.1,
+              time_limit: float = None, max_tsn: int = None, nb_seed=100, one_attr_at_a_time=False,
+              **model_kwargs) -> Tuple[pd.DataFrame, Metrics]:
     """
     XAI fairness testing that works on all protected attributes simultaneously.
     Fixed to handle array shape issues properly.
     """
+
+    logger.info("Starting ExpGA with all protected attributes")
+
     start_time = time.time()
     disc_times: List[float] = []
 
@@ -134,6 +131,8 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
     global_disc_inputs: Set[Tuple[float, ...]] = set()
     local_disc_inputs: Set[Tuple[float, ...]] = set()
     total_inputs: Set[Tuple[float, ...]] = set()
+    tot_inputs = set()
+    all_discriminations = set()
 
     results: List[Tuple[np.ndarray, np.ndarray, float, float]] = []
     dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in dataset.protected_attributes}
@@ -146,80 +145,21 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
         if time_limit and time.time() - start_time > time_limit:
             return 0.0
 
-        try:
-            # Standardize input format
-            input_array = np.array(input_sample, dtype=float).flatten()
+        input_array = np.array(input_sample, dtype=float).flatten()
 
-            # Verify dimensions
-            if len(input_array) != len(dataset.feature_names):
-                return 0.0
+        result, results_df, max_diff, org_df, tested_inp = check_for_error_condition(logger=logger,
+                                                                                     discrimination_data=dataset,
+                                                                                     dsn_by_attr_value=dsn_by_attr_value,
+                                                                                     model=model, instance=input_sample,
+                                                                                     tot_inputs=tot_inputs,
+                                                                                     all_discriminations=all_discriminations,
+                                                                                     one_attr_at_a_time=one_attr_at_a_time)
 
-            # Add to total inputs
-            total_inputs.add(tuple(input_array))
-
-            # Get original prediction
-            input_df = pd.DataFrame([input_array], columns=dataset.feature_names)
-            output_original = model.predict(input_df)[0]
-
-            # Track best discrimination found
-            max_diff = 0.0
-            best_altered_input = None
-            best_output = None
-
-            # Check each protected attribute
-            for attr_name in dataset.protected_attributes:
-                attr_idx = dataset.sensitive_indices_dict[attr_name]
-                current_value = input_array[attr_idx]
-
-                dsn_by_attr_value[attr_name]['TSN'] += 1
-
-                # Try each possible value
-                for val in range(int(dataset.input_bounds[attr_idx][0]),
-                                 int(dataset.input_bounds[attr_idx][1]) + 1):
-                    if val == current_value:
-                        continue
-
-                    # Create altered input
-                    altered_input = input_array.copy()
-                    altered_input[attr_idx] = val
-
-                    # Predict outcome
-                    altered_df = pd.DataFrame([altered_input], columns=dataset.feature_names)
-                    output_altered = model.predict(altered_df)[0]
-
-                    # Check for discrimination
-                    diff = abs(output_original - output_altered)
-
-                    # If this is the best discrimination found so far
-                    if diff > threshold and diff > max_diff:
-                        max_diff = diff
-                        best_altered_input = altered_input
-                        best_output = output_altered
-
-                        dsn_by_attr_value[attr_name]['DSN'] += 1
-                        dsn_by_attr_value['total'] += 1
-
-                        # Early return for efficiency - follows original algorithm approach
-                        if tuple(input_array) not in global_disc_inputs.union(local_disc_inputs):
-                            local_disc_inputs.add(tuple(input_array))
-                            results.append((input_array, altered_input, output_original, output_altered))
-                            disc_times.append(time.time() - start_time)
-                            return 2 * diff + 1
-
-            # If we found discrimination but didn't do early return
-            if max_diff > 0 and best_altered_input is not None:
-                if tuple(input_array) not in global_disc_inputs.union(local_disc_inputs):
-                    local_disc_inputs.add(tuple(input_array))
-                    results.append((input_array, best_altered_input, output_original, best_output))
-                    disc_times.append(time.time() - start_time)
-                return 2 * max_diff + 1
-
-            # No discrimination found
-            return 0.0
-
-        except Exception as e:
-            logger.error(f"Error in evaluate_local: {str(e)}")
-            return 0.0
+        if result and tuple(input_array) not in global_disc_inputs.union(local_disc_inputs):
+            local_disc_inputs.add(tuple(input_array))
+            disc_times.append(time.time() - start_time)
+            return 2 * max_diff + 1
+        return 0.0
 
     # Generate seeds for each protected attribute
     seeds = []
@@ -280,149 +220,128 @@ def xai_fair_testing(dataset: DiscriminationData, threshold: float, threshold_ra
             continue
 
     # Run genetic algorithm
-    try:
-        ga = GA(
-            nums=formatted_seeds,
-            bound=dataset.input_bounds,
-            func=evaluate_local,
-            DNA_SIZE=len(dataset.input_bounds),
-            cross_rate=0.9,
-            mutation=0.1
-        )
+    ga = GA(
+        nums=formatted_seeds,
+        bound=dataset.input_bounds,
+        func=evaluate_local,
+        DNA_SIZE=len(dataset.input_bounds),
+        cross_rate=cross_rate,
+        mutation=mutation
+    )
 
-        # Evolve population
-        for iteration in tqdm(range(max_local), desc="Local search progress"):
-            if (max_tsn and len(total_inputs) >= max_tsn) or (time_limit and time.time() - start_time > time_limit):
-                break
+    # Evolve population
+    for iteration in range(max_local):
+        if (max_tsn and len(tot_inputs) >= max_tsn) or (time_limit and time.time() - start_time > time_limit):
+            break
 
-            ga.evolve()
+        ga.evolve()
 
-            # Log progress
-            if iteration % 10 == 0:
-                logger.info(f"Iteration {iteration}: TSN={len(total_inputs)}, DSN={len(local_disc_inputs)}")
+        # Log progress
+        if iteration % 10 == 0:
+            logger.info(f"Iteration {iteration}: TSN={len(tot_inputs)}, DSN={len(all_discriminations)}")
 
-    except Exception as e:
-        logger.error(f"Error in GA: {str(e)}")
+    # Calculate final results
+    end_time = time.time()
+    total_time = end_time - start_time
 
-    # Calculate final metrics
-    tsn = len(total_inputs)
-    dsn = len(global_disc_inputs) + len(local_disc_inputs)
-    dss = sum(disc_times) / len(disc_times) if disc_times else 0
-    sur = (dsn / tsn * 100) if tsn > 0 else 0
-
-    # Calculate metrics for each attribute
-    for attr in dsn_by_attr_value:
-        if attr != 'total' and dsn_by_attr_value[attr]['TSN'] > 0:
-            dsn_by_attr_value[attr]['SUR'] = (dsn_by_attr_value[attr]['DSN'] / dsn_by_attr_value[attr]['TSN'])
-
-    metrics: Metrics = {
-        'TSN': tsn,
-        'DSN': dsn,
-        'DSS': dss,
-        'SUR': sur,
-        'dsn_by_attr_value': dsn_by_attr_value
-    }
-
-    logger.info(f"Total Inputs (TSN): {tsn}")
-    logger.info(f"Discriminatory inputs (DSN): {dsn}")
-    logger.info(f"Average time to find discriminatory sample (DSS): {dss:.2f} seconds")
-    logger.info(f"Success Rate (SUR): {sur:.2f}%")
-
-    # Process results into DataFrame
-    if not results:
-        empty_df = pd.DataFrame(columns=[
-                                            'case_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'
-                                        ] + list(dataset.feature_names))
-        return empty_df, metrics
-
-    # Create DataFrame from results
-    df = pd.DataFrame(results, columns=["Original Input", "Altered Input", "Original Outcome", "Altered Outcome"])
-
-    # Process outcome difference
-    df['Outcome Difference'] = df['Altered Outcome'] - df['Original Outcome']
-    df['case_id'] = [str(uuid.uuid4())[:8] for _ in range(df.shape[0])]
-
-    # Split into original and altered
-    df1 = df[['case_id', "Original Input", 'Original Outcome', 'Outcome Difference']].copy()
-    df1.rename(columns={'Original Input': 'input', 'Original Outcome': 'outcome'}, inplace=True)
-
-    df2 = df[['case_id', "Altered Input", 'Altered Outcome', 'Outcome Difference']].copy()
-    df2.rename(columns={'Altered Input': 'input', 'Altered Outcome': 'outcome'}, inplace=True)
-
-    # Combine
-    df = pd.concat([df1, df2])
-    df.rename(columns={'Outcome Difference': 'diff_outcome'}, inplace=True)
-    df['diff_outcome'] = df['diff_outcome'].apply(abs)
-
-    # Extract features
-    try:
-        # Convert input arrays to lists for DataFrame construction
-        input_lists = []
-        for inp in df['input']:
-            if hasattr(inp, 'tolist'):
-                input_lists.append(inp.tolist())
-            else:
-                input_lists.append(list(inp))
-
-        df_attr = pd.DataFrame(input_lists, columns=dataset.feature_names)
-        df = pd.concat([df.reset_index(drop=True), df_attr.reset_index(drop=True)], axis=1)
-        df.drop(columns=['input'], inplace=True)
-        df.sort_values(by=['case_id'], inplace=True)
-
-        # Generate keys
-        valid_attrs = [col for col in dataset.attributes if col in df.columns]
-        df['indv_key'] = df[valid_attrs].apply(
-            lambda row: '|'.join(str(int(x)) for x in row),
-            axis=1
-        )
-
-        df['couple_key'] = df.groupby(df.index // 2)['indv_key'].transform(lambda x: '-'.join(x))
-    except Exception as e:
-        logger.error(f"Error in DataFrame processing: {str(e)}")
-
-    # Add metrics
-    for k, v in metrics.items():
-        df[k] = v
+    # Log final results
+    tsn = len(tot_inputs)  # Total Sample Number
+    dsn = len(all_discriminations)  # Discriminatory Sample Number
+    sur = dsn / tsn if tsn > 0 else 0  # Success Rate
+    dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
 
     for k, v in dsn_by_attr_value.items():
         if k != 'total':
             dsn_by_attr_value[k]['SUR'] = dsn_by_attr_value[k]['DSN'] / dsn_by_attr_value[k]['TSN']
+            dsn_by_attr_value[k]['DSS'] = dss
 
-    metrics['dsn_by_attr_value'] = dsn_by_attr_value
+    # Log dsn_by_attr_value counts
+    logger.info("\nDiscrimination counts by protected attribute values:")
+    metrics = {
+        'TSN': tsn,
+        'DSN': dsn,
+        'SUR': sur,
+        'DSS': dss,
+        'total_time': total_time,
+        # 'time_limit_reached': time_limit_seconds is not None and total_time >= time_limit_seconds,
+        'max_tsn_reached': max_tsn is not None and tsn >= max_tsn,
+        'dsn_by_attr_value': dsn_by_attr_value
+    }
 
-    return df, metrics
+    logger.info("\nFinal Results:")
+    logger.info(f"Total inputs tested: {tsn}")
+    logger.info(f"Global discriminatory inputs: {len(global_disc_inputs)}")
+    logger.info(f"Local discriminatory inputs: {len(local_disc_inputs)}")
+    logger.info(f"Total discriminatory pairs: {dsn}")
+    logger.info(f"Success rate (SUR): {sur:.4f}")
+    logger.info(f"Avg. search time per discriminatory sample (DSS): {dss:.4f} seconds")
+    logger.info(f"Discrimination by attribute value: {dsn_by_attr_value}")
+    logger.info(f"Total time: {total_time:.2f} seconds")
 
+    # Generate result dataframe
+    res_df = []
+    case_id = 0
+    for org, org_res, counter_org, counter_org_res in all_discriminations:
+        indv1 = pd.DataFrame([list(org)], columns=dataset.attr_columns)
+        indv2 = pd.DataFrame([list(counter_org)], columns=dataset.attr_columns)
 
-def run_expga(dataset: DiscriminationData, model_type: str = 'rf', threshold: float = 0.5,
-              threshold_rank: float = 0.5, max_global: int = 50, max_local: int = 50,
-              time_limit: float = None, max_tsn: int = None, nb_seed=100, **model_kwargs) -> Tuple[
-    ExpGAResultDF, Dict[str, Any]]:
-    """
-    Simplified run_expga that tests all protected attributes at once.
-    """
-    logger.info("Starting ExpGA with all protected attributes")
+        indv_key1 = "|".join(str(x) for x in indv1[dataset.attr_columns].iloc[0])
+        indv_key2 = "|".join(str(x) for x in indv2[dataset.attr_columns].iloc[0])
 
-    # Run the improved testing function
-    df, metrics = xai_fair_testing(
-        dataset,
-        threshold,
-        threshold_rank,
-        max_global,
-        max_local,
-        model_type,
-        time_limit=time_limit,
-        max_tsn=max_tsn,
-        nb_seed=nb_seed,
-        **model_kwargs
-    )
+        # Add the additional columns
+        indv1['indv_key'] = indv_key1
+        indv1['outcome'] = org_res
+        indv2['indv_key'] = indv_key2
+        indv2['outcome'] = counter_org_res
 
-    # Empty DataFrame case
-    if df.empty:
+        # Create couple_key
+        couple_key = f"{indv_key1}-{indv_key2}"
+        diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
+
+        df_res = pd.concat([indv1, indv2])
+        df_res['couple_key'] = couple_key
+        df_res['diff_outcome'] = diff_outcome
+        df_res['case_id'] = case_id
+        res_df.append(df_res)
+        case_id += 1
+
+    if len(res_df) != 0:
+        res_df = pd.concat(res_df)
+    else:
+        res_df = pd.DataFrame([])
+
+    # Add metrics to result dataframe
+    res_df['TSN'] = tsn
+    res_df['DSN'] = dsn
+    res_df['SUR'] = sur
+    res_df['DSS'] = dss
+
+    if res_df.empty:
         empty_df = pd.DataFrame(columns=['case_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'] +
                                         list(dataset.feature_names))
         return empty_df, metrics
 
     # Process case IDs to be sequential
-    df['case_id'] = df['case_id'].replace({v: k for k, v in enumerate(df['case_id'].unique())})
+    res_df['case_id'] = res_df['case_id'].replace({v: k for k, v in enumerate(res_df['case_id'].unique())})
 
-    return df, metrics
+    return res_df, metrics
+
+
+if __name__ == "__main__":
+    from data_generator.main import get_real_data, DiscriminationData
+
+    data_obj, schema = get_real_data('adult', use_cache=True)
+
+    results_df, metrics = run_expga(
+        data_obj,
+        threshold_rank=0.5,
+        max_global=20000,
+        max_local=100,
+        cluster_num=50,
+        max_runtime_seconds=3600,
+        max_tsn=20000,
+        step_size=0.05,
+        one_attr_at_a_time=True
+    )
+
+    print(f"\nTesting Metrics: {metrics}")

@@ -5,7 +5,7 @@ from data_generator.utils import plot_distribution_comparison
 from methods.utils import reformat_discrimination_results, convert_to_non_float_rows, compare_discriminatory_groups
 
 # %%
-data_obj, schema = get_real_data('adult')
+data_obj, schema = get_real_data('adult', use_cache=True)
 results_df_origin, metrics = run_expga(dataset=data_obj,
                                        threshold=0.5, threshold_rank=0.5, max_global=3000, max_local=1000, max_tsn=50000)
 
@@ -24,7 +24,7 @@ plt.show()
 
 # %% Run fairness testing
 results_df_synth, metrics_synth = run_expga(dataset=data_obj_synth,
-                                            threshold=0.5, threshold_rank=0.5, max_global=2000, max_local=100, max_tsn=20000)
+                                            threshold=0.5, threshold_rank=0.5, max_global=2000, max_local=100, max_tsn=50000)
 
 # %%
 predefined_groups_synth = reformat_discrimination_results(convert_to_non_float_rows(results_df_synth, schema),

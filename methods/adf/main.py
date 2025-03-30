@@ -1,11 +1,10 @@
 import copy
 import os
+import random
 from collections import deque
 
 from sklearn.neural_network import MLPClassifier, MLPRegressor
-from tqdm import tqdm
 
-os.environ['PYTHONHASHSEED'] = '0'
 import itertools
 import time
 import logging
@@ -13,7 +12,7 @@ from typing import Tuple, List, Dict, Any
 import numpy as np
 import pandas as pd
 from scipy.optimize import basinhopping
-from methods.utils import train_sklearn_model
+from methods.utils import train_sklearn_model, check_for_error_condition
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearnex import patch_sklearn
@@ -32,9 +31,9 @@ logging.basicConfig(
 logger = logging.getLogger('ADF')
 
 # Set global random seed for numpy
-np.random.seed(42)
 
 # Force sklearn to use a single thread
+os.environ['PYTHONHASHSEED'] = '0'
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
 os.environ['MKL_NUM_THREADS'] = '1'
@@ -318,6 +317,7 @@ def adf_fairness_testing(
 
     # Set both numpy and random seeds
     np.random.seed(random_seed)
+    random.seed(random_seed)
 
     logger = logging.getLogger("ADF")
 
@@ -363,98 +363,6 @@ def adf_fairness_testing(
 
         return time_limit_exceeded or tsn_threshold_reached
 
-    def check_for_error_condition(model, instance, protected_indices, input_bounds, tot_inputs, all_discriminations,
-                                  one_attr_at_a_time=False):
-        # Ensure instance is integer and within bounds
-        for i, (low, high) in enumerate(input_bounds):
-            instance[i] = max(int(low), min(int(high), instance[i]))
-
-        # Convert to DataFrame for prediction
-        instance = pd.DataFrame([instance], columns=discrimination_data.attr_columns)
-
-        # Get original prediction
-        label = model.predict(instance)[0]
-
-        new_df = []
-
-        if one_attr_at_a_time:
-            # Vary one attribute at a time
-            for i, attr_idx in enumerate(protected_indices):
-                attr_name = discrimination_data.protected_attributes[i]
-                current_value = instance[attr_name].values[0]
-
-                # Get all possible values for this attribute
-                values = range(int(input_bounds[attr_idx][0]), int(input_bounds[attr_idx][1]) + 1)
-
-                # Create variants with different values for this attribute only
-                for value in values:
-                    if int(current_value) == value:
-                        continue
-
-                    new_instance = instance.copy()
-                    new_instance[attr_name] = value
-                    new_df.append(new_instance)
-                    dsn_by_attr_value[attr_name]['TSN'] += 1
-        else:
-            # Generate all possible combinations of protected attribute values
-            protected_values = []
-            for idx in protected_indices:
-                values = range(int(input_bounds[idx][0]), int(input_bounds[idx][1]) + 1)
-                protected_values.append(list(values))
-
-            # Create variants with all combinations of protected attributes
-            for values in itertools.product(*protected_values):
-                if tuple(instance[discrimination_data.protected_attributes].values[0]) != values:
-                    new_instance = instance.copy()
-                    for i, attr in enumerate(discrimination_data.protected_attributes):
-                        new_instance[attr] = values[i]
-                        dsn_by_attr_value[attr]['TSN'] += 1
-                    new_df.append(new_instance)
-
-        if not new_df:  # If no combinations were found
-            return False
-
-        new_df = pd.concat(new_df)
-        new_predictions = model.predict(new_df)
-        new_df['outcome'] = new_predictions
-
-        # Add to total inputs
-        # for row in new_df.to_numpy():
-        #     tot_inputs.add(tuple(row.astype(int)))
-        inst_key = tuple(instance.values[0].astype(int))
-        if inst_key not in tot_inputs:
-            tot_inputs.add(inst_key)
-
-        # Find discriminatory instances (different outcome)
-        discrimination_df = new_df[new_df['outcome'] != label]
-
-        tsn = len(tot_inputs)
-        dsn = len(all_discriminations)
-        sur = dsn / tsn if tsn > 0 else 0
-        logger.info(f"Current Metrics - TSN: {tsn}, DSN: {dsn}, SUR: {sur:.4f}")
-
-        # Record discriminatory pairs and update attribute value counts
-        for _, row in discrimination_df.iterrows():
-            # Create the discrimination pair tuple
-            disc_pair = (tuple(instance.values[0].astype(int)), int(label),
-                         tuple(row[discrimination_data.attr_columns].astype(int)), int(row['outcome']))
-
-            # Only count if this is a new discrimination
-            if disc_pair not in all_discriminations:
-                all_discriminations.add(disc_pair)
-
-                n_inp = pd.DataFrame(np.expand_dims(disc_pair[0], 0), columns=discrimination_data.attr_columns)
-                n_counter = pd.DataFrame(np.expand_dims(disc_pair[2], 0), columns=discrimination_data.attr_columns)
-
-                # Update counts for each protected attribute value in both original and variant
-                for i, attr in enumerate(discrimination_data.protected_attributes):
-                    if n_inp[attr].iloc[0] != n_counter[attr].iloc[0]:
-                        dsn_by_attr_value[attr]['DSN'] += 1
-                        dsn_by_attr_value['total'] += 1
-
-        return discrimination_df.shape[0] > 0, discrimination_df
-
-    # GLOBAL SEARCH
     clusters = seed_test_input(X, cluster_num, random_seed=random_seed)
 
     def round_robin_clusters(clusters):
@@ -470,32 +378,60 @@ def adf_fairness_testing(
                     iter_cycle = itertools.cycle(queues)
 
     for inst_num, instance_id in enumerate(round_robin_clusters(clusters)):
+        # print(inst_num)
         instance = X[instance_id]
         if inst_num > max_global or should_terminate():
             break
 
-        for glob_iter in range(max_global):
-            result, result_df = check_for_error_condition(model, instance,
-                                                          discrimination_data.sensitive_indices,
-                                                          discrimination_data.input_bounds, tot_inputs,
-                                                          all_discriminations,
-                                                          one_attr_at_a_time=one_attr_at_a_time)
+        for it_global in range(10):
+            result, result_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=logger,
+                                                                                         model=model,
+                                                                                         instance=instance,
+                                                                                         dsn_by_attr_value=dsn_by_attr_value,
+                                                                                         discrimination_data=discrimination_data,
+                                                                                         tot_inputs=tot_inputs,
+                                                                                         all_discriminations=all_discriminations,
+                                                                                         one_attr_at_a_time=one_attr_at_a_time)
 
             if result:
                 global_disc_inputs.add(tuple(instance.astype(float).tolist()))
                 break
             else:
-                last_instance = copy.deepcopy(instance)
                 instance = global_perturbation(model, instance, discrimination_data.sensitive_indices,
                                                discrimination_data.input_bounds, step_size=step_size)
-                if (instance == last_instance).all():
-                    # the pertubations will lead to no where better to skip this instance
-                    break
+
+        # repeat_instance = 0
+        # checked_instances = set()
+        # while repeat_instance <= 2:
+        #     checked_instances.add(tuple(instance.tolist()))
+        #     # print(tuple(instance.tolist()))
+        #     result, result_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=None,
+        #                                                                                  model=model,
+        #                                                                                  instance=instance,
+        #                                                                                  dsn_by_attr_value=dsn_by_attr_value,
+        #                                                                                  discrimination_data=discrimination_data,
+        #                                                                                  tot_inputs=tot_inputs,
+        #                                                                                  all_discriminations=all_discriminations,
+        #                                                                                  one_attr_at_a_time=one_attr_at_a_time)
+        #
+        #     if result:
+        #         global_disc_inputs.add(tuple(instance.astype(float).tolist()))
+        #         break
+        #     else:
+        #         instance = global_perturbation(model, instance, discrimination_data.sensitive_indices,
+        #                                        discrimination_data.input_bounds, step_size=step_size)
+        #         if tuple(instance.tolist()) in checked_instances:
+        #             repeat_instance += 1
 
     def evaluate_local(inp):
-        is_discriminatory, _ = check_for_error_condition(model, inp, discrimination_data.sensitive_indices,
-                                                         discrimination_data.input_bounds, tot_inputs,
-                                                         all_discriminations, one_attr_at_a_time=one_attr_at_a_time)
+        is_discriminatory, found_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=logger,
+                                                                                               model=model,
+                                                                                               instance=inp,
+                                                                                               dsn_by_attr_value=dsn_by_attr_value,
+                                                                                               discrimination_data=discrimination_data,
+                                                                                               tot_inputs=tot_inputs,
+                                                                                               all_discriminations=all_discriminations,
+                                                                                               one_attr_at_a_time=one_attr_at_a_time)
 
         if is_discriminatory:
             local_disc_inputs.add(tuple(inp.astype(float).tolist()))
@@ -511,13 +447,11 @@ def adf_fairness_testing(
 
         minimizer = {"method": "L-BFGS-B"}
 
-        try:
-            basinhopping(evaluate_local, np.array(global_inp),
-                         stepsize=step_size, take_step=local_perturbation,
-                         minimizer_kwargs=minimizer, niter=max_local,
-                         accept_test=lambda: not should_terminate())
-        except:
-            break
+        basinhopping(evaluate_local, np.array(global_inp),
+                     stepsize=step_size, take_step=local_perturbation,
+                     minimizer_kwargs=minimizer, niter=max_local,
+                     accept_test=lambda f_new, x_new, f_old, x_old: not should_terminate(),
+                     seed=random_seed)
 
     # Calculate final results
     end_time = time.time()
@@ -599,19 +533,19 @@ def adf_fairness_testing(
 
 
 if __name__ == "__main__":
-    from data_generator.main import get_real_data, generate_from_real_data, DiscriminationData
+    from data_generator.main import get_real_data, DiscriminationData
 
     data_obj, schema = get_real_data('adult', use_cache=True)
 
     results_df, metrics = adf_fairness_testing(
         data_obj,
-        max_global=20000,
-        max_local=100,
+        max_global=100,
+        max_local=1000,
         cluster_num=50,
-        max_runtime_seconds=3600,  # 1 hour time limit
-        max_tsn=20000,  # Set target TSN threshold
-        step_size=0.05,
-        one_attr_at_a_time=True
+        max_runtime_seconds=3600,
+        max_tsn=20000,
+        step_size=0.1,
+        # one_attr_at_a_time=True
     )
 
     print(f"\nTesting Metrics: {metrics}")

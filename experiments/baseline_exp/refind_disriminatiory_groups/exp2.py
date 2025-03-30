@@ -143,7 +143,7 @@ random_seeds = [42]
 # List of datasets to test
 datasets = ['credit']
 
-methods = ['sg', 'expga']
+methods = ['sg', 'expga', '']
 
 conn = sqlite3.connect(HERE.joinpath('experiments/baseline_exp/exp.db'))
 setup_database(conn)

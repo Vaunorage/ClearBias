@@ -3,7 +3,7 @@ import sqlite3
 from pathlib import Path
 from data_generator.main import get_real_data
 from experiments.baseline_exp.reproduce_paper.reference_exp import ref_data
-from methods.adf.main1 import adf_fairness_testing
+from methods.adf.main import adf_fairness_testing
 from methods.sg.main import run_sg
 from methods.exp_ga.algo import run_expga
 from methods.aequitas.algo import run_aequitas
@@ -137,77 +137,77 @@ def run_experiment_for_model(model_type: str, dataset_name: str, sensitive_featu
     data_obj, schema = get_real_data(dataset_name, use_cache=True)
 
     # Run ExpGA if not already done
-    # if (model_type, dataset_name, sensitive_feature, 'ExpGA') not in completed_experiments:
-    #     print("Running ExpGA...")
-    #
-    #     keys = ref_keys[ref_keys['algorithm'] == 'ExpGA']
-    #
-    #     print("MAX TSN", keys['TSN'].max())
-    #
-    #     start_time = time.time()
-    #     expga_results, expga_metrics = run_expga(
-    #         dataset=data_obj,
-    #         model_type=model_type.lower(),
-    #         threshold=0.5,
-    #         threshold_rank=0.5,
-    #         max_global=5000,
-    #         max_local=2000,
-    #         max_tsn=keys['TSN'].max(),
-    #         time_limit=1000,
-    #         one_attr_at_a_time=True
-    #     )
-    #     execution_time = time.time() - start_time
-    #     print("EXPGA METRICS", expga_metrics)
-    #
-    #     # Use metrics directly from the algorithm's dsn_by_attr_value if available
-    #     for attr, attr_metrics in expga_metrics['dsn_by_attr_value'].items():
-    #         if attr != 'total':
-    #             save_experiment_result(conn, {
-    #                 'Model': model_type,
-    #                 'Dataset': dataset_name,
-    #                 'Feature': attr,
-    #                 'Algorithm': 'ExpGA',
-    #                 'TSN': attr_metrics['TSN'],
-    #                 'DSN': attr_metrics['DSN'],
-    #                 'DSS': expga_metrics['DSS'],
-    #                 'SUR': attr_metrics['SUR'],
-    #                 'execution_time': execution_time
-    #             })
+    if (model_type, dataset_name, sensitive_feature, 'ExpGA') not in completed_experiments:
+        print("Running ExpGA...")
+
+        keys = ref_keys[ref_keys['algorithm'] == 'ExpGA']
+
+        print("MAX TSN", keys['TSN'].max())
+
+        start_time = time.time()
+        expga_results, expga_metrics = run_expga(
+            dataset=data_obj,
+            model_type=model_type.lower(),
+            threshold=0.5,
+            threshold_rank=0.5,
+            max_global=5000,
+            max_local=2000,
+            max_tsn=keys['TSN'].max(),
+            time_limit=1000,
+            one_attr_at_a_time=True
+        )
+        execution_time = time.time() - start_time
+        print("EXPGA METRICS", expga_metrics)
+
+        # Use metrics directly from the algorithm's dsn_by_attr_value if available
+        for attr, attr_metrics in expga_metrics['dsn_by_attr_value'].items():
+            if attr != 'total':
+                save_experiment_result(conn, {
+                    'Model': model_type,
+                    'Dataset': dataset_name,
+                    'Feature': attr,
+                    'Algorithm': 'ExpGA',
+                    'TSN': attr_metrics['TSN'],
+                    'DSN': attr_metrics['DSN'],
+                    'DSS': expga_metrics['DSS'],
+                    'SUR': attr_metrics['SUR'],
+                    'execution_time': execution_time
+                })
 
     # Run SG if not already done
-    # if (model_type, dataset_name, sensitive_feature, 'SG') not in completed_experiments:
-    #     print("Running SG...")
-    #
-    #     keys = ref_keys[ref_keys['algorithm'] == 'SG']
-    #
-    #     print("MAX TSN", keys['TSN'].max())
-    #
-    #     start_time = time.time()
-    #     sg_results, sg_metrics = run_sg(
-    #         ge=data_obj,
-    #         model_type=model_type.lower(),
-    #         cluster_num=50,
-    #         max_tsn=keys['TSN'].max(),
-    #         time_limit=10000,
-    #         one_attr_at_a_time=True
-    #     )
-    #     execution_time = time.time() - start_time
-    #     print("SG METRICS", sg_metrics)
-    #
-    #     # Use metrics directly from the algorithm's dsn_by_attr_value if available
-    #     for attr, attr_metrics in sg_metrics['dsn_by_attr_value'].items():
-    #         if attr != 'total':
-    #             save_experiment_result(conn, {
-    #             'Model': model_type,
-    #             'Dataset': dataset_name,
-    #             'Feature': attr,
-    #             'Algorithm': 'SG',
-    #             'TSN': attr_metrics['TSN'],
-    #             'DSN': attr_metrics['DSN'],
-    #             'DSS': sg_metrics['DSS'],
-    #             'SUR': attr_metrics['SUR'],
-    #             'execution_time': execution_time
-    #         })
+    if (model_type, dataset_name, sensitive_feature, 'SG') not in completed_experiments:
+        print("Running SG...")
+
+        keys = ref_keys[ref_keys['algorithm'] == 'SG']
+
+        print("MAX TSN", keys['TSN'].max())
+
+        start_time = time.time()
+        sg_results, sg_metrics = run_sg(
+            ge=data_obj,
+            model_type=model_type.lower(),
+            cluster_num=50,
+            max_tsn=keys['TSN'].max(),
+            time_limit=10000,
+            one_attr_at_a_time=True
+        )
+        execution_time = time.time() - start_time
+        print("SG METRICS", sg_metrics)
+
+        # Use metrics directly from the algorithm's dsn_by_attr_value if available
+        for attr, attr_metrics in sg_metrics['dsn_by_attr_value'].items():
+            if attr != 'total':
+                save_experiment_result(conn, {
+                'Model': model_type,
+                'Dataset': dataset_name,
+                'Feature': attr,
+                'Algorithm': 'SG',
+                'TSN': attr_metrics['TSN'],
+                'DSN': attr_metrics['DSN'],
+                'DSS': sg_metrics['DSS'],
+                'SUR': attr_metrics['SUR'],
+                'execution_time': execution_time
+            })
 
     # Run Aequitas if not already done
     if (model_type, dataset_name, sensitive_feature, 'Aequitas') not in completed_experiments:
@@ -247,42 +247,41 @@ def run_experiment_for_model(model_type: str, dataset_name: str, sensitive_featu
                 })
 
     # Run ADF (only for MLP) if not already done
-    # if model_type.lower() == 'mlp' and (
-    #         model_type, dataset_name, sensitive_feature, 'ADF') not in completed_experiments:
-    #     print("Running ADF...")
-    #
-    #     keys = ref_keys[ref_keys['algorithm'] == 'ADF']
-    #     print("MAX TSN", keys['TSN'].max())
-    #
-    #     start_time = time.time()
-    #     adf_results, adf_metrics = adf_fairness_testing(
-    #         data_obj,
-    #         max_global=10000,
-    #         max_local=5000,
-    #         max_iter=1000,
-    #         cluster_num=100,
-    #         random_seed=42,
-    #         max_tsn=keys['TSN'].max(),
-    #         max_runtime_seconds=10000,
-    #         one_attr_at_a_time=True
-    #     )
-    #     execution_time = time.time() - start_time
-    #     print("ADF METRICS", adf_metrics)
-    #
-    #     # Use metrics directly from the algorithm's dsn_by_attr_value if available
-    #     for attr, attr_metrics in adf_metrics['dsn_by_attr_value'].items():
-    #         if attr != 'total':
-    #             save_experiment_result(conn, {
-    #             'Model': model_type,
-    #             'Dataset': dataset_name,
-    #             'Feature': attr,
-    #             'Algorithm': 'ADF',
-    #             'TSN': attr_metrics['TSN'],
-    #             'DSN': attr_metrics['DSN'],
-    #             'DSS': adf_metrics['DSS'],
-    #             'SUR': attr_metrics['SUR'],
-    #             'execution_time': execution_time
-    #         })
+    if model_type.lower() == 'mlp' and (
+            model_type, dataset_name, sensitive_feature, 'ADF') not in completed_experiments:
+        print("Running ADF...")
+
+        keys = ref_keys[ref_keys['algorithm'] == 'ADF']
+        print("MAX TSN", keys['TSN'].max())
+
+        start_time = time.time()
+        adf_results, adf_metrics = adf_fairness_testing(
+            data_obj,
+            max_global=10000,
+            max_local=5000,
+            cluster_num=100,
+            random_seed=42,
+            max_tsn=keys['TSN'].max(),
+            max_runtime_seconds=10000,
+            one_attr_at_a_time=True
+        )
+        execution_time = time.time() - start_time
+        print("ADF METRICS", adf_metrics)
+
+        # Use metrics directly from the algorithm's dsn_by_attr_value if available
+        for attr, attr_metrics in adf_metrics['dsn_by_attr_value'].items():
+            if attr != 'total':
+                save_experiment_result(conn, {
+                'Model': model_type,
+                'Dataset': dataset_name,
+                'Feature': attr,
+                'Algorithm': 'ADF',
+                'TSN': attr_metrics['TSN'],
+                'DSN': attr_metrics['DSN'],
+                'DSS': adf_metrics['DSS'],
+                'SUR': attr_metrics['SUR'],
+                'execution_time': execution_time
+            })
 
 
 def organize_results_by_algorithm(results_df: pd.DataFrame) -> pd.DataFrame:

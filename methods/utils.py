@@ -1,3 +1,4 @@
+import itertools
 from typing import List
 
 import sklearn
@@ -11,7 +12,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from data_generator.main import GroupDefinition, DataSchema
+from data_generator.main import GroupDefinition, DataSchema, DiscriminationData
 
 
 def train_sklearn_model(data, model_type='rf', model_params=None, target_col='class', sensitive_attrs=None,
@@ -290,3 +291,104 @@ def get_groups(results_df_origin, data_obj, schema):
     predefined_groups_origin = reformat_discrimination_results(non_float_df, data_obj.dataframe)
     nb_elements = sum([el.group_size for el in predefined_groups_origin])
     return predefined_groups_origin, nb_elements
+
+
+def check_for_error_condition(dsn_by_attr_value, discrimination_data: DiscriminationData, model, instance,
+                              tot_inputs, all_discriminations, one_attr_at_a_time=False, logger=None):
+    # Ensure instance is integer and within bounds
+    instance = np.round(instance).astype(int)
+    for i, (low, high) in enumerate(discrimination_data.input_bounds):
+        instance[i] = max(int(low), min(int(high), instance[i]))
+
+    # Convert to DataFrame for prediction
+    instance = pd.DataFrame([instance], columns=discrimination_data.attr_columns)
+
+    # Get original prediction
+    label = model.predict(instance)[0]
+
+    new_df = []
+
+    if one_attr_at_a_time:
+        # Vary one attribute at a time
+        for i, attr_idx in enumerate(discrimination_data.sensitive_indices):
+            attr_name = discrimination_data.protected_attributes[i]
+            current_value = instance[attr_name].values[0]
+
+            # Get all possible values for this attribute
+            values = range(int(discrimination_data.input_bounds[attr_idx][0]),
+                           int(discrimination_data.input_bounds[attr_idx][1]) + 1)
+
+            # Create variants with different values for this attribute only
+            for value in values:
+                if int(current_value) == value:
+                    continue
+
+                new_instance = instance.copy()
+                new_instance[attr_name] = value
+                new_df.append(new_instance)
+                dsn_by_attr_value[attr_name]['TSN'] += 1
+    else:
+        # Generate all possible combinations of protected attribute values
+        protected_values = []
+        for idx in discrimination_data.sensitive_indices:
+            values = range(int(discrimination_data.input_bounds[idx][0]),
+                           int(discrimination_data.input_bounds[idx][1]) + 1)
+            protected_values.append(list(values))
+
+        # Create variants with all combinations of protected attributes
+        for values in itertools.product(*protected_values):
+            if tuple(instance[discrimination_data.protected_attributes].values[0]) != values:
+                new_instance = instance.copy()
+                for i, attr in enumerate(discrimination_data.protected_attributes):
+                    new_instance[attr] = values[i]
+                    dsn_by_attr_value[attr]['TSN'] += 1
+                new_df.append(new_instance)
+
+    if not new_df:  # If no combinations were found
+        return False
+
+    new_df = pd.concat(new_df)
+    new_predictions = model.predict(new_df)
+    new_df['outcome'] = new_predictions
+
+    # Add to total inputs
+    for row in new_df.to_numpy():
+        tot_inputs.add(tuple(row.astype(int)))
+    # tot_inputs.add(tuple(instance.to_numpy().tolist()[0]))
+
+    # Find discriminatory instances (different outcome)
+    discrimination_df = new_df[new_df['outcome'] != label]
+
+    max_discrimination = 0
+    if not discrimination_df.empty:
+        max_discrimination = max(abs(discrimination_df['outcome'] - label))
+
+    tsn = len(tot_inputs)
+    dsn = len(all_discriminations)
+    sur = dsn / tsn if tsn > 0 else 0
+
+    if logger and tsn % 100 == 0:
+        logger.info(f"Current Metrics - TSN: {tsn}, DSN: {dsn}, SUR: {sur:.4f}")
+
+    # Record discriminatory pairs and update attribute value counts
+    for _, row in discrimination_df.iterrows():
+        # Create the discrimination pair tuple
+        disc_pair = (tuple(instance.values[0].astype(int)), int(label),
+                     tuple(row[discrimination_data.attr_columns].astype(int)), int(row['outcome']))
+
+        # Only count if this is a new discrimination
+        if disc_pair not in all_discriminations:
+            all_discriminations.add(disc_pair)
+
+            n_inp = pd.DataFrame(np.expand_dims(disc_pair[0], 0), columns=discrimination_data.attr_columns)
+            n_counter = pd.DataFrame(np.expand_dims(disc_pair[2], 0), columns=discrimination_data.attr_columns)
+
+            # Update counts for each protected attribute value in both original and variant
+            for i, attr in enumerate(discrimination_data.protected_attributes):
+                if n_inp[attr].iloc[0] != n_counter[attr].iloc[0]:
+                    dsn_by_attr_value[attr]['DSN'] += 1
+                    dsn_by_attr_value['total'] += 1
+
+    tested_inp = new_df[discrimination_data.attr_columns].to_numpy().tolist()
+
+    return discrimination_df.shape[0] > 0, discrimination_df, max_discrimination, instance, tested_inp

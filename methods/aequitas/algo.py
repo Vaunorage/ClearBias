@@ -7,7 +7,7 @@ from scipy.optimize import basinhopping
 import logging
 import sys
 from data_generator.main import get_real_data, DiscriminationData
-from methods.utils import train_sklearn_model
+from methods.utils import train_sklearn_model, check_for_error_condition
 from sklearnex import patch_sklearn
 
 patch_sklearn()
@@ -281,10 +281,18 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
             # Check for discrimination
             rounded_x = np.round(x).astype(int)
-            error_condition, discrimination_df = check_for_error_condition(self.model, rounded_x, self.sensitive_params,
-                                                                           self.input_bounds, tot_inputs,
-                                                                           all_discriminations,
-                                                                           one_attr_at_a_time=one_attr_at_a_time)
+            error_condition, discrimination_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=logger,
+                                                                                                          discrimination_data=discrimination_data,
+                                                                                                          model=self.model,
+                                                                                                          dsn_by_attr_value=dsn_by_attr_value,
+                                                                                                          instance=rounded_x,
+                                                                                                          tot_inputs=tot_inputs,
+                                                                                                          all_discriminations=all_discriminations,
+                                                                                                          one_attr_at_a_time=one_attr_at_a_time)
+            # error_condition, discrimination_df = check_for_error_condition(self.model, rounded_x, self.sensitive_params,
+            #                                                                self.input_bounds, tot_inputs,
+            #                                                                all_discriminations,
+            #                                                                one_attr_at_a_time=one_attr_at_a_time)
 
             # Update direction probabilities
             if (error_condition and direction_choice == -1) or (not error_condition and direction_choice == 1):
@@ -330,9 +338,17 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         inp = np.round(inp).astype(int)
 
         # Check for discrimination
-        error_condition, discrimination_df = check_for_error_condition(model, inp, sensitive_params, input_bounds,
-                                                                       tot_inputs, all_discriminations,
-                                                                       one_attr_at_a_time=one_attr_at_a_time)
+        # error_condition, discrimination_df = check_for_error_condition(model, inp, sensitive_params, input_bounds,
+        #                                                                tot_inputs, all_discriminations,
+        #                                                                one_attr_at_a_time=one_attr_at_a_time)
+        error_condition, discrimination_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=logger,
+                                                                                                      discrimination_data=discrimination_data,
+                                                                                                      model=model,
+                                                                                                      dsn_by_attr_value=dsn_by_attr_value,
+                                                                                                      instance=inp,
+                                                                                                      tot_inputs=tot_inputs,
+                                                                                                      all_discriminations=all_discriminations,
+                                                                                                      one_attr_at_a_time=one_attr_at_a_time)
 
         # Track inputs
         temp = tuple(inp.tolist())
@@ -360,99 +376,19 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
         return float(not error_condition)
 
-    def check_for_error_condition(model, instance, protected_indices, input_bounds, tot_inputs, all_discriminations,
-                                  one_attr_at_a_time=False):
-        # Ensure instance is integer and within bounds
-        instance = np.round(instance).astype(int)
-        for i, (low, high) in enumerate(input_bounds):
-            instance[i] = max(int(low), min(int(high), instance[i]))
-
-        # Convert to DataFrame for prediction
-        instance = pd.DataFrame([instance], columns=discrimination_data.attr_columns)
-
-        # Get original prediction
-        label = model.predict(instance)[0]
-
-        new_df = []
-
-        if one_attr_at_a_time:
-            # Vary one attribute at a time
-            for i, attr_idx in enumerate(protected_indices):
-                attr_name = discrimination_data.protected_attributes[i]
-                current_value = instance[attr_name].values[0]
-
-                # Get all possible values for this attribute
-                values = range(int(input_bounds[attr_idx][0]), int(input_bounds[attr_idx][1]) + 1)
-
-                # Create variants with different values for this attribute only
-                for value in values:
-                    if int(current_value) == value:
-                        continue
-
-                    new_instance = instance.copy()
-                    new_instance[attr_name] = value
-                    new_df.append(new_instance)
-                    dsn_by_attr_value[attr_name]['TSN'] += 1
-        else:
-            # Generate all possible combinations of protected attribute values
-            protected_values = []
-            for idx in protected_indices:
-                values = range(int(input_bounds[idx][0]), int(input_bounds[idx][1]) + 1)
-                protected_values.append(list(values))
-
-            # Create variants with all combinations of protected attributes
-            for values in product(*protected_values):
-                if tuple(instance[discrimination_data.protected_attributes].values[0]) != values:
-                    new_instance = instance.copy()
-                    for i, attr in enumerate(discrimination_data.protected_attributes):
-                        new_instance[attr] = values[i]
-                        dsn_by_attr_value[attr]['TSN'] += 1
-                    new_df.append(new_instance)
-
-        if not new_df:  # If no combinations were found
-            return False
-
-        new_df = pd.concat(new_df)
-        new_predictions = model.predict(new_df)
-        new_df['outcome'] = new_predictions
-
-        # Add to total inputs
-        for row in new_df.to_numpy():
-            tot_inputs.add(tuple(row.astype(int)))
-
-        # Find discriminatory instances (different outcome)
-        discrimination_df = new_df[new_df['outcome'] != label]
-
-        # Record discriminatory pairs and update attribute value counts
-        for _, row in discrimination_df.iterrows():
-            # Create the discrimination pair tuple
-            disc_pair = (tuple(instance.values[0].astype(int)), int(label),
-                         tuple(row[discrimination_data.attr_columns].astype(int)), int(row['outcome']))
-
-            # Only count if this is a new discrimination
-            if disc_pair not in all_discriminations:
-                all_discriminations.add(disc_pair)
-
-                n_inp = pd.DataFrame(np.expand_dims(disc_pair[0], 0), columns=discrimination_data.attr_columns)
-                n_counter = pd.DataFrame(np.expand_dims(disc_pair[2], 0), columns=discrimination_data.attr_columns)
-
-                # Update counts for each protected attribute value in both original and variant
-                for i, attr in enumerate(discrimination_data.protected_attributes):
-                    if n_inp[attr].iloc[0] != n_counter[attr].iloc[0]:
-                        dsn_by_attr_value[attr]['DSN'] += 1
-                        dsn_by_attr_value['total'] += 1
-
-        return discrimination_df.shape[0] > 0, discrimination_df
-
     # GLOBAL DISCRIMINATION DISCOVERY :
 
     global_inputs = discrimination_data.get_random_rows(max_global)
 
     for i, global_inp in global_inputs.iterrows():
-        result, discrimination_df = check_for_error_condition(model, global_inp.to_numpy(),
-                                                              list(discrimination_data.sensitive_indices_dict.values()),
-                                                              input_bounds, tot_inputs, all_discriminations,
-                                                              one_attr_at_a_time=one_attr_at_a_time)
+        result, discrimination_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=logger,
+                                                                                             discrimination_data=discrimination_data,
+                                                                                             model=model,
+                                                                                             dsn_by_attr_value=dsn_by_attr_value,
+                                                                                             instance=global_inp.to_numpy(),
+                                                                                             tot_inputs=tot_inputs,
+                                                                                             all_discriminations=all_discriminations,
+                                                                                             one_attr_at_a_time=one_attr_at_a_time)
         if result:
             global_disc_inputs.add(tuple(global_inp.to_numpy()))
 
