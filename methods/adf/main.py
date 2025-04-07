@@ -1,4 +1,3 @@
-import copy
 import os
 import random
 from collections import deque
@@ -12,7 +11,7 @@ from typing import Tuple, List, Dict, Any
 import numpy as np
 import pandas as pd
 from scipy.optimize import basinhopping
-from methods.utils import train_sklearn_model, check_for_error_condition
+from methods.utils import train_sklearn_model, check_for_error_condition, make_final_metrics_and_dataframe
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearnex import patch_sklearn
@@ -356,12 +355,19 @@ def adf_fairness_testing(
     tot_inputs = set()
     all_discriminations = set()
 
+    # Early termination flag - will be used to break out of the local search
+    early_termination = False
+
     def should_terminate() -> bool:
+        nonlocal early_termination
         current_runtime = time.time() - start_time
         time_limit_exceeded = current_runtime > max_runtime_seconds
-        tsn_threshold_reached = len(tot_inputs) >= max_tsn if max_tsn is not None else False
+        tsn_threshold_reached = max_tsn is not None and len(tot_inputs) >= max_tsn
 
-        return time_limit_exceeded or tsn_threshold_reached
+        if time_limit_exceeded or tsn_threshold_reached:
+            early_termination = True
+            return True
+        return False
 
     clusters = seed_test_input(X, cluster_num, random_seed=random_seed)
 
@@ -377,158 +383,108 @@ def adf_fairness_testing(
                     queues.remove(queue)  # Remove empty queues
                     iter_cycle = itertools.cycle(queues)
 
+    # Global search phase
     for inst_num, instance_id in enumerate(round_robin_clusters(clusters)):
-        # print(inst_num)
-        instance = X[instance_id]
-        if inst_num > max_global or should_terminate():
+        if inst_num >= max_global or should_terminate():
             break
 
+        instance = X[instance_id]
+
         for it_global in range(10):
-            result, result_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=logger,
-                                                                                         model=model,
-                                                                                         instance=instance,
-                                                                                         dsn_by_attr_value=dsn_by_attr_value,
-                                                                                         discrimination_data=discrimination_data,
-                                                                                         tot_inputs=tot_inputs,
-                                                                                         all_discriminations=all_discriminations,
-                                                                                         one_attr_at_a_time=one_attr_at_a_time)
+            result, result_df, max_discr, org_df, tested_inp = check_for_error_condition(
+                logger=logger,
+                model=model,
+                instance=instance,
+                dsn_by_attr_value=dsn_by_attr_value,
+                discrimination_data=discrimination_data,
+                tot_inputs=tot_inputs,
+                all_discriminations=all_discriminations,
+                one_attr_at_a_time=one_attr_at_a_time
+            )
+
+            if should_terminate():
+                break
 
             if result:
                 global_disc_inputs.add(tuple(instance.astype(float).tolist()))
                 break
             else:
-                instance = global_perturbation(model, instance, discrimination_data.sensitive_indices,
-                                               discrimination_data.input_bounds, step_size=step_size)
+                instance = global_perturbation(
+                    model,
+                    instance,
+                    discrimination_data.sensitive_indices,
+                    discrimination_data.input_bounds,
+                    step_size=step_size
+                )
 
-        # repeat_instance = 0
-        # checked_instances = set()
-        # while repeat_instance <= 2:
-        #     checked_instances.add(tuple(instance.tolist()))
-        #     # print(tuple(instance.tolist()))
-        #     result, result_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=None,
-        #                                                                                  model=model,
-        #                                                                                  instance=instance,
-        #                                                                                  dsn_by_attr_value=dsn_by_attr_value,
-        #                                                                                  discrimination_data=discrimination_data,
-        #                                                                                  tot_inputs=tot_inputs,
-        #                                                                                  all_discriminations=all_discriminations,
-        #                                                                                  one_attr_at_a_time=one_attr_at_a_time)
-        #
-        #     if result:
-        #         global_disc_inputs.add(tuple(instance.astype(float).tolist()))
-        #         break
-        #     else:
-        #         instance = global_perturbation(model, instance, discrimination_data.sensitive_indices,
-        #                                        discrimination_data.input_bounds, step_size=step_size)
-        #         if tuple(instance.tolist()) in checked_instances:
-        #             repeat_instance += 1
+        if should_terminate():
+            break
+
+    # Define a callback to allow early termination in basinhopping
+    class EarlyTerminationCallback:
+        def __init__(self):
+            self.should_stop = False
+
+        def __call__(self, x, f, accept):
+            if should_terminate():
+                self.should_stop = True
+                return True  # Signal to stop
+            return False  # Continue normally
 
     def evaluate_local(inp):
-        is_discriminatory, found_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=logger,
-                                                                                               model=model,
-                                                                                               instance=inp,
-                                                                                               dsn_by_attr_value=dsn_by_attr_value,
-                                                                                               discrimination_data=discrimination_data,
-                                                                                               tot_inputs=tot_inputs,
-                                                                                               all_discriminations=all_discriminations,
-                                                                                               one_attr_at_a_time=one_attr_at_a_time)
+        if early_termination:
+            return 0.0  # Return immediately if early termination is flagged
+
+        is_discriminatory, found_df, max_discr, org_df, tested_inp = check_for_error_condition(
+            logger=logger,
+            model=model,
+            instance=inp,
+            dsn_by_attr_value=dsn_by_attr_value,
+            discrimination_data=discrimination_data,
+            tot_inputs=tot_inputs,
+            all_discriminations=all_discriminations,
+            one_attr_at_a_time=one_attr_at_a_time
+        )
 
         if is_discriminatory:
             local_disc_inputs.add(tuple(inp.astype(float).tolist()))
+
         return float(not is_discriminatory)
 
-    # LOCAL SEARCH
+    # LOCAL SEARCH phase
     for glob_num, global_inp in enumerate(global_disc_inputs):
-        if glob_num > max_local:
+        if glob_num >= max_local or should_terminate():
             break
 
-        local_perturbation = LocalPerturbation(model, discrimination_data.sensitive_indices,
-                                               discrimination_data.input_bounds, step_size=step_size)
+        local_perturbation = LocalPerturbation(
+            model,
+            discrimination_data.sensitive_indices,
+            discrimination_data.input_bounds,
+            step_size=step_size
+        )
 
         minimizer = {"method": "L-BFGS-B"}
+        callback = EarlyTerminationCallback()
 
-        basinhopping(evaluate_local, np.array(global_inp),
-                     stepsize=step_size, take_step=local_perturbation,
-                     minimizer_kwargs=minimizer, niter=max_local,
-                     accept_test=lambda f_new, x_new, f_old, x_old: not should_terminate(),
-                     seed=random_seed)
+        basinhopping(
+            evaluate_local,
+            np.array(global_inp),
+            stepsize=step_size,
+            take_step=local_perturbation,
+            minimizer_kwargs=minimizer,
+            niter=max_local,
+            callback=callback,  # Add callback to check termination after each iteration
+            accept_test=lambda f_new, x_new, f_old, x_old: not should_terminate(),
+            seed=random_seed
+        )
 
-    # Calculate final results
-    end_time = time.time()
-    total_time = end_time - start_time
-
-    # Log final results
-    tsn = len(tot_inputs)  # Total Sample Number
-    dsn = len(all_discriminations)  # Discriminatory Sample Number
-    sur = dsn / tsn if tsn > 0 else 0  # Success Rate
-    dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
-
-    for k, v in dsn_by_attr_value.items():
-        if k != 'total':
-            dsn_by_attr_value[k]['SUR'] = dsn_by_attr_value[k]['DSN'] / dsn_by_attr_value[k]['TSN']
-            dsn_by_attr_value[k]['DSS'] = dss
-
-    # Log dsn_by_attr_value counts
-    logger.info("\nDiscrimination counts by protected attribute values:")
-    metrics = {
-        'TSN': tsn,
-        'DSN': dsn,
-        'SUR': sur,
-        'DSS': dss,
-        'total_time': total_time,
-        'time_limit_reached': max_runtime_seconds is not None and total_time >= max_runtime_seconds,
-        'max_tsn_reached': max_tsn is not None and tsn >= max_tsn,
-        'dsn_by_attr_value': dsn_by_attr_value
-    }
-
-    logger.info("\nFinal Results:")
-    logger.info(f"Total inputs tested: {tsn}")
-    logger.info(f"Global discriminatory inputs: {len(global_disc_inputs)}")
-    logger.info(f"Local discriminatory inputs: {len(local_disc_inputs)}")
-    logger.info(f"Total discriminatory pairs: {dsn}")
-    logger.info(f"Success rate (SUR): {sur:.4f}")
-    logger.info(f"Avg. search time per discriminatory sample (DSS): {dss:.4f} seconds")
-    logger.info(f"Discrimination by attribute value: {dsn_by_attr_value}")
-    logger.info(f"Total time: {total_time:.2f} seconds")
-
-    # Generate result dataframe
-    res_df = []
-    case_id = 0
-    for org, org_res, counter_org, counter_org_res in all_discriminations:
-        indv1 = pd.DataFrame([list(org)], columns=discrimination_data.attr_columns)
-        indv2 = pd.DataFrame([list(counter_org)], columns=discrimination_data.attr_columns)
-
-        indv_key1 = "|".join(str(x) for x in indv1[discrimination_data.attr_columns].iloc[0])
-        indv_key2 = "|".join(str(x) for x in indv2[discrimination_data.attr_columns].iloc[0])
-
-        # Add the additional columns
-        indv1['indv_key'] = indv_key1
-        indv1['outcome'] = org_res
-        indv2['indv_key'] = indv_key2
-        indv2['outcome'] = counter_org_res
-
-        # Create couple_key
-        couple_key = f"{indv_key1}-{indv_key2}"
-        diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
-
-        df_res = pd.concat([indv1, indv2])
-        df_res['couple_key'] = couple_key
-        df_res['diff_outcome'] = diff_outcome
-        df_res['case_id'] = case_id
-        res_df.append(df_res)
-        case_id += 1
-
-    if len(res_df) != 0:
-        res_df = pd.concat(res_df)
-    else:
-        res_df = pd.DataFrame([])
-
-    # Add metrics to result dataframe
-    res_df['TSN'] = tsn
-    res_df['DSN'] = dsn
-    res_df['SUR'] = sur
-    res_df['DSS'] = dss
-
+        # Break out early if the callback indicates we should stop
+        if callback.should_stop or early_termination:
+            logger.info("Early termination triggered during local search")
+            break
+    res_df, metrics = make_final_metrics_and_dataframe(discrimination_data, tot_inputs, all_discriminations,
+                                                       dsn_by_attr_value,
+                                                       start_time, logger=logger)
     return res_df, metrics
 
 
@@ -540,7 +496,7 @@ if __name__ == "__main__":
     results_df, metrics = adf_fairness_testing(
         data_obj,
         max_global=100,
-        max_local=1000,
+        max_local=100,
         cluster_num=50,
         max_runtime_seconds=3600,
         max_tsn=20000,

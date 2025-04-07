@@ -9,7 +9,6 @@ import random
 import logging
 import pandas as pd
 from pandas import DataFrame
-from tqdm import tqdm
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neural_network import MLPClassifier
@@ -19,7 +18,7 @@ from lime.lime_tabular import LimeTabularExplainer
 
 from data_generator.main import DiscriminationData
 from methods.exp_ga.genetic_algorithm import GA
-from methods.utils import check_for_error_condition
+from methods.utils import check_for_error_condition, make_final_metrics_and_dataframe
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -112,11 +111,11 @@ class GlobalDiscovery:
 
 def run_expga(dataset: DiscriminationData, threshold_rank: float,
               max_global: int, max_local: int, model_type: str = 'rf', cross_rate=0.9, mutation=0.1,
-              time_limit: float = None, max_tsn: int = None, nb_seed=100, one_attr_at_a_time=False,
+              max_runtime_seconds: float = None, max_tsn: int = None, nb_seed=100, one_attr_at_a_time=False,
               **model_kwargs) -> Tuple[pd.DataFrame, Metrics]:
     """
     XAI fairness testing that works on all protected attributes simultaneously.
-    Fixed to handle array shape issues properly.
+    Uses a centralized termination check to improve code structure.
     """
 
     logger.info("Starting ExpGA with all protected attributes")
@@ -134,7 +133,19 @@ def run_expga(dataset: DiscriminationData, threshold_rank: float,
     tot_inputs = set()
     all_discriminations = set()
 
-    results: List[Tuple[np.ndarray, np.ndarray, float, float]] = []
+    early_termination = False
+
+    def should_terminate() -> bool:
+        nonlocal early_termination
+        current_runtime = time.time() - start_time
+        max_runtime_seconds_exceeded = max_runtime_seconds is not None and current_runtime > max_runtime_seconds
+        tsn_threshold_reached = max_tsn is not None and len(tot_inputs) >= max_tsn
+
+        if max_runtime_seconds_exceeded or tsn_threshold_reached:
+            early_termination = True
+            return True
+        return False
+
     dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in dataset.protected_attributes}
     dsn_by_attr_value['total'] = 0
 
@@ -142,7 +153,7 @@ def run_expga(dataset: DiscriminationData, threshold_rank: float,
         """
         Evaluates a sample for discrimination across all protected attributes at once.
         """
-        if time_limit and time.time() - start_time > time_limit:
+        if should_terminate():
             return 0.0
 
         input_array = np.array(input_sample, dtype=float).flatten()
@@ -169,6 +180,9 @@ def run_expga(dataset: DiscriminationData, threshold_rank: float,
 
     # Create seeds for each protected attribute
     for p_attr in dataset.protected_attributes:
+        if should_terminate():
+            break
+
         sensitive_idx = dataset.sensitive_indices_dict[p_attr]
 
         # Generate samples focused on this attribute
@@ -200,9 +214,12 @@ def run_expga(dataset: DiscriminationData, threshold_rank: float,
         if len(seeds) >= 100:
             break
 
-    # Ensure we have at least some seeds
-    if not seeds:
+    # Ensure we have at least some seeds if we haven't terminated
+    if not seeds and not should_terminate():
         for _ in range(10):
+            if should_terminate():
+                break
+
             random_seed = np.array([float(random.randint(bounds[0], bounds[1]))
                                     for bounds in dataset.input_bounds])
             seeds.append(random_seed)
@@ -210,6 +227,9 @@ def run_expga(dataset: DiscriminationData, threshold_rank: float,
     # Format seeds for GA
     formatted_seeds = []
     for seed in seeds:
+        if should_terminate():
+            break
+
         try:
             seed_array = np.array(seed, dtype=float).flatten()
             if len(seed_array) == len(dataset.feature_names):
@@ -219,110 +239,35 @@ def run_expga(dataset: DiscriminationData, threshold_rank: float,
         except:
             continue
 
-    # Run genetic algorithm
-    ga = GA(
-        nums=formatted_seeds,
-        bound=dataset.input_bounds,
-        func=evaluate_local,
-        DNA_SIZE=len(dataset.input_bounds),
-        cross_rate=cross_rate,
-        mutation=mutation
-    )
+    # Run genetic algorithm only if we haven't terminated
+    if not should_terminate():
+        ga = GA(
+            nums=formatted_seeds,
+            bound=dataset.input_bounds,
+            func=evaluate_local,
+            DNA_SIZE=len(dataset.input_bounds),
+            cross_rate=cross_rate,
+            mutation=mutation
+        )
 
-    # Evolve population
-    for iteration in range(max_local):
-        if (max_tsn and len(tot_inputs) >= max_tsn) or (time_limit and time.time() - start_time > time_limit):
-            break
+        # Evolve population
+        for iteration in range(max_local):
+            if should_terminate():
+                break
 
-        ga.evolve()
+            ga.evolve()
 
-        # Log progress
-        if iteration % 10 == 0:
-            logger.info(f"Iteration {iteration}: TSN={len(tot_inputs)}, DSN={len(all_discriminations)}")
+            # Log progress
+            if iteration % 10 == 0:
+                logger.info(f"Iteration {iteration}: TSN={len(tot_inputs)}, DSN={len(all_discriminations)}")
 
     # Calculate final results
-    end_time = time.time()
-    total_time = end_time - start_time
+    res_df, metrics = make_final_metrics_and_dataframe(dataset, tot_inputs, all_discriminations, dsn_by_attr_value,
+                                                       start_time, logger=logger)
 
-    # Log final results
-    tsn = len(tot_inputs)  # Total Sample Number
-    dsn = len(all_discriminations)  # Discriminatory Sample Number
-    sur = dsn / tsn if tsn > 0 else 0  # Success Rate
-    dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
-
-    for k, v in dsn_by_attr_value.items():
-        if k != 'total':
-            dsn_by_attr_value[k]['SUR'] = dsn_by_attr_value[k]['DSN'] / dsn_by_attr_value[k]['TSN']
-            dsn_by_attr_value[k]['DSS'] = dss
-
-    # Log dsn_by_attr_value counts
-    logger.info("\nDiscrimination counts by protected attribute values:")
-    metrics = {
-        'TSN': tsn,
-        'DSN': dsn,
-        'SUR': sur,
-        'DSS': dss,
-        'total_time': total_time,
-        # 'time_limit_reached': time_limit_seconds is not None and total_time >= time_limit_seconds,
-        'max_tsn_reached': max_tsn is not None and tsn >= max_tsn,
-        'dsn_by_attr_value': dsn_by_attr_value
-    }
-
-    logger.info("\nFinal Results:")
-    logger.info(f"Total inputs tested: {tsn}")
-    logger.info(f"Global discriminatory inputs: {len(global_disc_inputs)}")
-    logger.info(f"Local discriminatory inputs: {len(local_disc_inputs)}")
-    logger.info(f"Total discriminatory pairs: {dsn}")
-    logger.info(f"Success rate (SUR): {sur:.4f}")
-    logger.info(f"Avg. search time per discriminatory sample (DSS): {dss:.4f} seconds")
-    logger.info(f"Discrimination by attribute value: {dsn_by_attr_value}")
-    logger.info(f"Total time: {total_time:.2f} seconds")
-
-    # Generate result dataframe
-    res_df = []
-    case_id = 0
-    for org, org_res, counter_org, counter_org_res in all_discriminations:
-        indv1 = pd.DataFrame([list(org)], columns=dataset.attr_columns)
-        indv2 = pd.DataFrame([list(counter_org)], columns=dataset.attr_columns)
-
-        indv_key1 = "|".join(str(x) for x in indv1[dataset.attr_columns].iloc[0])
-        indv_key2 = "|".join(str(x) for x in indv2[dataset.attr_columns].iloc[0])
-
-        # Add the additional columns
-        indv1['indv_key'] = indv_key1
-        indv1['outcome'] = org_res
-        indv2['indv_key'] = indv_key2
-        indv2['outcome'] = counter_org_res
-
-        # Create couple_key
-        couple_key = f"{indv_key1}-{indv_key2}"
-        diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
-
-        df_res = pd.concat([indv1, indv2])
-        df_res['couple_key'] = couple_key
-        df_res['diff_outcome'] = diff_outcome
-        df_res['case_id'] = case_id
-        res_df.append(df_res)
-        case_id += 1
-
-    if len(res_df) != 0:
-        res_df = pd.concat(res_df)
-    else:
-        res_df = pd.DataFrame([])
-
-    # Add metrics to result dataframe
-    res_df['TSN'] = tsn
-    res_df['DSN'] = dsn
-    res_df['SUR'] = sur
-    res_df['DSS'] = dss
-
-    if res_df.empty:
-        empty_df = pd.DataFrame(columns=['case_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'] +
-                                        list(dataset.feature_names))
-        return empty_df, metrics
-
-    # Process case IDs to be sequential
-    res_df['case_id'] = res_df['case_id'].replace({v: k for k, v in enumerate(res_df['case_id'].unique())})
+    # Log whether we terminated early
+    if early_termination:
+        logger.info("Early termination triggered: either max runtime or max TSN reached")
 
     return res_df, metrics
 

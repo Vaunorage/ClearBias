@@ -1,8 +1,11 @@
+import sqlite3
 import pandas as pd
 import numpy as np
+from path import HERE
+
+DB_PATH = HERE.joinpath("experiments/baseline_exp/exp.db")
 
 
-# Create lists to store the data
 def ref_data():
     reference_data = []
 
@@ -100,3 +103,188 @@ def ref_data():
 
     reference_data['SUR'] = reference_data['SUR'] / 100
     return reference_data
+
+
+def get_experiment_results():
+    conn = sqlite3.connect(DB_PATH)
+
+    quer1 = """
+SELECT
+    algorithm AS Algorithm,
+    ROUND(AVG(CAST(total_SUR AS REAL)), 4) AS "Average SUR"
+FROM
+    paper_reproduction_results
+GROUP BY
+    algorithm;
+    """
+
+    quer2 = """
+SELECT
+    algorithm AS Algorithm,
+    model AS Model,
+    ROUND(AVG(CAST(SUR AS REAL)), 4) AS "Average SUR"
+FROM
+    paper_reproduction_results
+GROUP BY
+    algorithm, model
+"""
+
+    res1 = pd.read_sql_query(quer1, conn)
+    res2 = pd.read_sql_query(quer2, conn)
+
+    conn.close()
+    return res1, res2
+
+
+def get_dsr_from_experiments():
+    """
+    Calculate DSR from the database and return results in the same format as main()
+    """
+    conn = sqlite3.connect(DB_PATH)
+
+    # Query for average DSR by algorithm
+    query_dsr_by_algo = """
+    SELECT
+        algorithm AS Algorithm,
+        ROUND(AVG(CAST(total_SUR AS REAL)), 4) AS "Average DSR"
+    FROM
+        paper_reproduction_results
+    GROUP BY
+        algorithm
+    ORDER BY
+        algorithm;
+    """
+
+    # Query for average DSR by algorithm and model
+    query_dsr_by_algo_model = """
+    SELECT
+        algorithm AS Algorithm,
+        model AS Model,
+        ROUND(AVG(CAST(total_SUR AS REAL)), 4) AS "Average DSR"
+    FROM
+        paper_reproduction_results
+    GROUP BY
+        algorithm, model
+    ORDER BY
+        algorithm, model;
+    """
+
+    # Execute queries
+    dsr_by_algo = pd.read_sql_query(query_dsr_by_algo, conn)
+    dsr_by_algo_model = pd.read_sql_query(query_dsr_by_algo_model, conn)
+
+    # Convert numeric values to strings with 4 decimal places (to match main function output)
+    dsr_by_algo['Average DSR'] = dsr_by_algo['Average DSR'].apply(lambda x: f"{x:.4f}")
+    dsr_by_algo_model['Average DSR'] = dsr_by_algo_model['Average DSR'].apply(lambda x: f"{x:.4f}")
+
+    # Filter out SVM models if needed (matching main function behavior)
+    dsr_by_algo_model_filtered = dsr_by_algo_model[dsr_by_algo_model['Model'] != 'SVM'].copy()
+    dsr_by_algo_model_filtered = dsr_by_algo_model_filtered.sort_values(by=['Average DSR'])
+
+    conn.close()
+    return dsr_by_algo, dsr_by_algo_model, dsr_by_algo_model_filtered
+
+
+def analyze_and_compare():
+    """
+    Analyze both reference data and experimental data, and print results for comparison
+    """
+    print("\n===== REFERENCE DATA ANALYSIS =====\n")
+    # Process reference data (similar to main function)
+    df = ref_data()
+    df['DSR'] = df['DSN'] / df['TSN']
+
+    # Reference data - Average DSR by algorithm
+    ref_avg_dsr = df.groupby('algorithm')['DSR'].mean().reset_index()
+    ref_avg_dsr['DSR'] = ref_avg_dsr['DSR'].apply(lambda x: f"{x:.4f}")
+    ref_avg_dsr = ref_avg_dsr.sort_values('algorithm')
+    ref_avg_dsr.columns = ['Algorithm', 'Average DSR']
+
+    # Reference data - Average DSR by algorithm and model
+    ref_avg_dsr_by_model = df.groupby(['algorithm', 'model'])['DSR'].mean().reset_index()
+    ref_avg_dsr_by_model['DSR'] = ref_avg_dsr_by_model['DSR'].apply(lambda x: f"{x:.4f}")
+    ref_avg_dsr_by_model.columns = ['Algorithm', 'Model', 'Average DSR']
+
+    # Filter out SVM models if needed (matching main function behavior)
+    ref_avg_dsr_by_model_filtered = ref_avg_dsr_by_model[ref_avg_dsr_by_model['Model'] != 'SVM'].copy()
+    ref_avg_dsr_by_model_filtered = ref_avg_dsr_by_model_filtered.sort_values(by=['Average DSR'])
+
+    # Print reference data results
+    print("\nReference Data - Average DSR by Algorithm:")
+    print("----------------------------------------")
+    print(ref_avg_dsr.to_string(index=False))
+
+    print("\nReference Data - Average DSR by Algorithm and Model:")
+    print("------------------------------------------------")
+    print(ref_avg_dsr_by_model.to_string(index=False))
+
+    print("\nReference Data - Average DSR by Algorithm and Model (excluding SVM, sorted by DSR):")
+    print("-------------------------------------------------------------------------------")
+    print(ref_avg_dsr_by_model_filtered.to_string(index=False))
+
+    print("\n\n===== EXPERIMENTAL DATA ANALYSIS =====\n")
+
+    # Get experimental data
+    exp_dsr_by_algo, exp_dsr_by_algo_model, exp_dsr_by_algo_model_filtered = get_dsr_from_experiments()
+
+    # Print experimental data results
+    print("\nExperimental Data - Average DSR by Algorithm:")
+    print("------------------------------------------")
+    print(exp_dsr_by_algo.to_string(index=False))
+
+    print("\nExperimental Data - Average DSR by Algorithm and Model:")
+    print("--------------------------------------------------")
+    print(exp_dsr_by_algo_model.to_string(index=False))
+
+    print("\nExperimental Data - Average DSR by Algorithm and Model (excluding SVM, sorted by DSR):")
+    print("-----------------------------------------------------------------------------------")
+    print(exp_dsr_by_algo_model_filtered.to_string(index=False))
+
+    print("\n\n===== ADDITIONAL EXPERIMENTAL DATA (SUR) =====\n")
+
+    # Get SUR data from experiments
+    sur_by_algo, sur_by_algo_model = get_experiment_results()
+
+    # Print SUR results
+    print("\nExperimental Data - Average SUR by Algorithm:")
+    print("------------------------------------------")
+    print(sur_by_algo.to_string(index=False))
+
+    print("\nExperimental Data - Average SUR by Algorithm and Model:")
+    print("--------------------------------------------------")
+    print(sur_by_algo_model.to_string(index=False))
+
+    # Calculate and display some comparison metrics
+    print("\n\n===== COMPARISON: REFERENCE vs EXPERIMENTAL =====\n")
+
+    # Merge reference and experimental data for comparison
+    merged_algo = pd.merge(ref_avg_dsr, exp_dsr_by_algo, on='Algorithm', how='outer',
+                           suffixes=(' (Ref)', ' (Exp)'))
+
+    merged_algo = pd.merge(ref_avg_dsr, exp_dsr_by_algo, on='Algorithm', how='outer',
+                           suffixes=(' (Ref)', ' (Exp)'))
+
+    # Convert DSR values to float for ranking (they might be strings)
+    if 'Average DSR (Ref)' in merged_algo.columns:
+        merged_algo['Average DSR (Ref)'] = pd.to_numeric(merged_algo['Average DSR (Ref)'], errors='coerce')
+    if 'Average DSR (Exp)' in merged_algo.columns:
+        merged_algo['Average DSR (Exp)'] = pd.to_numeric(merged_algo['Average DSR (Exp)'], errors='coerce')
+
+    # Add ranking columns (lower DSR is better, so ascending=True)
+    merged_algo['Rank (Ref)'] = merged_algo['Average DSR (Ref)'].rank(ascending=True).astype(int)
+    merged_algo['Rank (Exp)'] = merged_algo['Average DSR (Exp)'].rank(ascending=True).astype(int)
+
+    # Format DSR values back to strings with 4 decimal places for display
+    merged_algo['Average DSR (Ref)'] = merged_algo['Average DSR (Ref)'].apply(
+        lambda x: f"{x:.4f}" if pd.notnull(x) else "N/A")
+    merged_algo['Average DSR (Exp)'] = merged_algo['Average DSR (Exp)'].apply(
+        lambda x: f"{x:.4f}" if pd.notnull(x) else "N/A")
+
+    # Print the result
+    print("Average DSR by Algorithm - Reference vs Experimental (with Rankings):")
+    print("------------------------------------------------------------------")
+    print(merged_algo.to_string(index=False))
+
+
+if __name__ == "__main__":
+    analyze_and_compare()

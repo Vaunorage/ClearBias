@@ -1,13 +1,11 @@
 import numpy as np
 import random
 import time
-from itertools import product
-import pandas as pd
 from scipy.optimize import basinhopping
 import logging
 import sys
 from data_generator.main import get_real_data, DiscriminationData
-from methods.utils import train_sklearn_model, check_for_error_condition
+from methods.utils import train_sklearn_model, check_for_error_condition, make_final_metrics_and_dataframe
 from sklearnex import patch_sklearn
 
 patch_sklearn()
@@ -35,9 +33,11 @@ def get_input_bounds(discrimination_data):
 
 
 def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_global=500, max_local=2000,
-                 step_size=1.0, init_prob=0.5, random_seed=42, time_limit_seconds=3600,
+                 step_size=1.0, init_prob=0.5, random_seed=42, max_runtime_seconds=3600,
                  max_tsn=10000, param_probability_change_size=0.005, direction_probability_change_size=0.005,
                  one_attr_at_a_time=False):
+    early_termination = False
+
     if random_seed is not None:
         np.random.seed(random_seed)
         random.seed(random_seed)
@@ -78,8 +78,17 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     local_disc_inputs = set()
     tot_inputs = set()
     all_discriminations = set()
-    total_iterations = 0  # Track total iterations
-    last_log_time = start_time  # For periodic logging
+
+    def should_terminate() -> bool:
+        nonlocal early_termination
+        current_runtime = time.time() - start_time
+        time_limit_exceeded = current_runtime > max_runtime_seconds
+        tsn_threshold_reached = max_tsn is not None and len(tot_inputs) >= max_tsn
+
+        if time_limit_exceeded or tsn_threshold_reached:
+            early_termination = True
+            return True
+        return False
 
     class ImprovedLocalPerturbation:
         """
@@ -110,10 +119,8 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                 self.random_state = np.random.RandomState()
 
         def __call__(self, x):
-            # Check termination conditions
-            if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
-                return x
-            if max_tsn and len(tot_inputs) >= max_tsn:
+            # Check termination conditions using should_terminate function
+            if should_terminate():
                 return x
 
             # Increment call count and track iterations
@@ -152,6 +159,10 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
             found_new_input = False
 
             for attempt in range(max_attempts):
+                # Add termination check inside attempt loop
+                if should_terminate():
+                    return x
+
                 # ENHANCEMENT 3: Parameter choice strategy
                 # If we're stuck, try parameters we haven't changed recently
                 if consecutive_same_count > 2 and hasattr(self, 'recently_changed_params'):
@@ -246,6 +257,10 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                     found_new_input = True
                     break
 
+            # Add termination check after attempt loop
+            if should_terminate():
+                return x
+
             # ENHANCEMENT 8: If all attempts failed, force a larger jump
             if not found_new_input:
                 if consecutive_same_count > 10:
@@ -275,10 +290,6 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
             else:
                 self.consecutive_same_count = 0
 
-            # Debug print for tracking when stuck (uncomment if needed)
-            # if self.consecutive_same_count > 5 and self.call_count % 10 == 0:
-            #     print(f"WARNING: Stuck for {self.consecutive_same_count} iterations")
-
             # Check for discrimination
             rounded_x = np.round(x).astype(int)
             error_condition, discrimination_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=logger,
@@ -289,10 +300,6 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                                                                                                           tot_inputs=tot_inputs,
                                                                                                           all_discriminations=all_discriminations,
                                                                                                           one_attr_at_a_time=one_attr_at_a_time)
-            # error_condition, discrimination_df = check_for_error_condition(self.model, rounded_x, self.sensitive_params,
-            #                                                                self.input_bounds, tot_inputs,
-            #                                                                all_discriminations,
-            #                                                                one_attr_at_a_time=one_attr_at_a_time)
 
             # Update direction probabilities
             if (error_condition and direction_choice == -1) or (not error_condition and direction_choice == 1):
@@ -328,19 +335,14 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
     def evaluate_local(inp):
         """Local search evaluation function"""
-        # Check termination conditions
-        if time_limit_seconds and (time.time() - start_time) > time_limit_seconds:
-            return 0.0
-        if max_tsn and len(tot_inputs) >= max_tsn:
+        # Check termination conditions using should_terminate function
+        if should_terminate():
             return 0.0
 
         # Convert to integer for evaluation
         inp = np.round(inp).astype(int)
 
         # Check for discrimination
-        # error_condition, discrimination_df = check_for_error_condition(model, inp, sensitive_params, input_bounds,
-        #                                                                tot_inputs, all_discriminations,
-        #                                                                one_attr_at_a_time=one_attr_at_a_time)
         error_condition, discrimination_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=logger,
                                                                                                       discrimination_data=discrimination_data,
                                                                                                       model=model,
@@ -357,30 +359,16 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         if error_condition and temp not in global_disc_inputs and temp not in local_disc_inputs:
             local_disc_inputs.add(temp)
 
-        # Periodic logging (shares same mechanism with global search)
-        nonlocal last_log_time
-        current_time = time.time()
-        elapsed_time = current_time - start_time
-
-        if current_time - last_log_time >= 2:
-            sys.stdout.write('\r' + ' ' * 100 + '\r')
-            sys.stdout.write(
-                f"Time: {elapsed_time:.1f}s | "
-                f"Iterations: {total_iterations} | "
-                f"Tested: {len(tot_inputs)} | "
-                f"Found: {len(global_disc_inputs) + len(local_disc_inputs)} | "
-                f"Rate: {float(len(global_disc_inputs) + len(local_disc_inputs)) / max(1, len(tot_inputs)) * 100:.2f}%"
-            )
-            sys.stdout.flush()
-            last_log_time = current_time
-
         return float(not error_condition)
 
-    # GLOBAL DISCRIMINATION DISCOVERY :
-
+    # GLOBAL DISCRIMINATION DISCOVERY:
     global_inputs = discrimination_data.get_random_rows(max_global)
 
     for i, global_inp in global_inputs.iterrows():
+        # Add termination check inside global discovery loop
+        if should_terminate():
+            break
+
         result, discrimination_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=logger,
                                                                                              discrimination_data=discrimination_data,
                                                                                              model=model,
@@ -394,6 +382,9 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
     # LOCAL DISCOVERY
     for global_inp_i, global_inp in enumerate(global_disc_inputs):
+        # Add termination check before starting each local discovery
+        if should_terminate():
+            break
 
         try:
             local_minimizer = {"method": "L-BFGS-B"}
@@ -403,6 +394,10 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                 local_seed = random_seed + global_inp_i
                 np.random.seed(local_seed)
                 random.seed(local_seed)
+
+            # Create a basin-hopping callback that checks for termination
+            def basin_callback(x, f, accept):
+                return should_terminate()
 
             # Run local search
             basinhopping(
@@ -418,90 +413,17 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
                 minimizer_kwargs=local_minimizer,
                 niter=max_local,
                 seed=local_seed,
-                callback=lambda x, f, accept: (
-                        (time_limit_seconds and (time.time() - start_time) > time_limit_seconds) or
-                        (max_tsn and len(tot_inputs) >= max_tsn)
-                )
+                callback=basin_callback
             )
         except Exception as e:
             logger.error(f"Local search error: {e}")
 
-    # Calculate final results
-    end_time = time.time()
-    total_time = end_time - start_time
+        # Add termination check after each local search completes
+        if should_terminate():
+            break
 
-    # Log final results
-    tsn = len(tot_inputs)  # Total Sample Number
-    dsn = len(all_discriminations)  # Discriminatory Sample Number
-    sur = dsn / tsn if tsn > 0 else 0  # Success Rate
-    dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
-
-    for k, v in dsn_by_attr_value.items():
-        if k != 'total':
-            dsn_by_attr_value[k]['SUR'] = dsn_by_attr_value[k]['DSN'] / dsn_by_attr_value[k]['TSN']
-            dsn_by_attr_value[k]['DSS'] = dss
-
-    # Log dsn_by_attr_value counts
-    logger.info("\nDiscrimination counts by protected attribute values:")
-    metrics = {
-        'TSN': tsn,
-        'DSN': dsn,
-        'SUR': sur,
-        'DSS': dss,
-        'total_time': total_time,
-        'time_limit_reached': time_limit_seconds is not None and total_time >= time_limit_seconds,
-        'max_tsn_reached': max_tsn is not None and tsn >= max_tsn,
-        'dsn_by_attr_value': dsn_by_attr_value
-    }
-
-    logger.info("\nFinal Results:")
-    logger.info(f"Total inputs tested: {tsn}")
-    logger.info(f"Global discriminatory inputs: {len(global_disc_inputs)}")
-    logger.info(f"Local discriminatory inputs: {len(local_disc_inputs)}")
-    logger.info(f"Total discriminatory pairs: {dsn}")
-    logger.info(f"Success rate (SUR): {sur:.4f}")
-    logger.info(f"Avg. search time per discriminatory sample (DSS): {dss:.4f} seconds")
-    logger.info(f"Discrimination by attribute value: {dsn_by_attr_value}")
-    logger.info(f"Total time: {total_time:.2f} seconds")
-    logger.info(f"Total iterations: {total_iterations}")
-
-    # Generate result dataframe
-    res_df = []
-    case_id = 0
-    for org, org_res, counter_org, counter_org_res in all_discriminations:
-        indv1 = pd.DataFrame([list(org)], columns=discrimination_data.attr_columns)
-        indv2 = pd.DataFrame([list(counter_org)], columns=discrimination_data.attr_columns)
-
-        indv_key1 = "|".join(str(x) for x in indv1[discrimination_data.attr_columns].iloc[0])
-        indv_key2 = "|".join(str(x) for x in indv2[discrimination_data.attr_columns].iloc[0])
-
-        # Add the additional columns
-        indv1['indv_key'] = indv_key1
-        indv1['outcome'] = org_res
-        indv2['indv_key'] = indv_key2
-        indv2['outcome'] = counter_org_res
-
-        # Create couple_key
-        couple_key = f"{indv_key1}-{indv_key2}"
-        diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
-
-        df_res = pd.concat([indv1, indv2])
-        df_res['couple_key'] = couple_key
-        df_res['diff_outcome'] = diff_outcome
-        df_res['case_id'] = case_id
-        res_df.append(df_res)
-        case_id += 1
-
-    if len(res_df) != 0:
-        res_df = pd.concat(res_df)
-    else:
-        res_df = pd.DataFrame([])
-
-    # Add metrics to result dataframe
-    res_df['TSN'] = tsn
-    res_df['DSN'] = dsn
-    res_df['SUR'] = sur
-    res_df['DSS'] = dss
+    res_df, metrics = make_final_metrics_and_dataframe(discrimination_data, tot_inputs, all_discriminations,
+                                                       dsn_by_attr_value, start_time, logger=logger)
 
     return res_df, metrics
 
@@ -516,7 +438,7 @@ if __name__ == '__main__':
         discrimination_data=discrimination_data,
         model_type='rf', max_global=200,
         max_local=10000, step_size=1.0,
-        time_limit_seconds=3600, max_tsn=50000, one_attr_at_a_time=True
+        max_runtime_seconds=200, max_tsn=3300, one_attr_at_a_time=True
     )
 
     print(metrics)

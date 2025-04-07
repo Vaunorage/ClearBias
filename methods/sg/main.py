@@ -6,7 +6,7 @@ import pandas as pd
 from sklearn.cluster import KMeans
 import itertools
 from sklearn.tree import DecisionTreeClassifier
-from methods.utils import train_sklearn_model, check_for_error_condition
+from methods.utils import train_sklearn_model, check_for_error_condition, make_final_metrics_and_dataframe
 from queue import PriorityQueue, Queue
 
 from z3 import *
@@ -340,15 +340,26 @@ def gen_arguments(ge):
 
 
 def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=100, random_state=42,
-           time_limit=3900, one_attr_at_a_time=True):
+           max_runtime_seconds=3900, one_attr_at_a_time=True):
     # store the result of fairness testing
     global_disc_inputs = set()
     global_disc_inputs_list = []
     local_disc_inputs = set()
     local_disc_inputs_list = []
-    tot_inputs = []
     tot_inputs = set()
     all_discriminations = set()
+    early_termination = False
+
+    def should_terminate() -> bool:
+        nonlocal early_termination
+        current_runtime = time.time() - start_time
+        max_runtime_seconds_exceeded = current_runtime > max_runtime_seconds
+        tsn_threshold_reached = max_tsn is not None and len(tot_inputs) >= max_tsn
+
+        if max_runtime_seconds_exceeded or tsn_threshold_reached:
+            early_termination = True
+            return True
+        return False
 
     dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in ge.protected_attributes}
     dsn_by_attr_value['total'] = 0
@@ -369,7 +380,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
     ge_targets_queue = Queue()
     [ge_targets_queue.put(inp) for inp in all_inputs]
 
-    while len(tot_inputs) < max_tsn and (time.time() - start) <= time_limit and ge_targets_queue.qsize() != 0:
+    while not should_terminate() and ge_targets_queue.qsize() != 0:
 
         model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
             data=ge.training_dataframe,
@@ -415,15 +426,12 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
                     local_disc_inputs.add(input_key)
                     local_disc_inputs_list.append(input_key)
 
-        while len(tot_inputs) < max_tsn and (time.time() - start) <= time_limit and targets_queue.qsize() != 0:
-            dsn = len(all_discriminations)
-            sur = dsn / len(tot_inputs) if len(tot_inputs) > 0 else 0
-            # logger.info(f"TSN : {len(tot_inputs)} DSN: {dsn} DSR : {sur}")
+        while not should_terminate() and targets_queue.qsize() != 0:
 
             org_input = targets_queue.get()
             org_input_rank = org_input[0]
             org_input = np.array(org_input[1])
-            found, found_df, max_discr, org_df, tested_inp = check_for_error_condition(logger,
+            found, found_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=logger,
                                                                                        dsn_by_attr_value=dsn_by_attr_value,
                                                                                        discrimination_data=ge,
                                                                                        model=model,
@@ -454,6 +462,9 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
 
                 # local search
                 for decision_rule_index in range(len(decision_rules)):
+                    if should_terminate():
+                        break
+
                     path_constraint = copy.deepcopy(decision_rules)
                     c = path_constraint[decision_rule_index]
                     if c[0] in ge.sensitive_indices_dict.values():
@@ -466,11 +477,6 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
                         c[1] = "<="
                         c[3] = 1.0 - c[3]
 
-                    end = time.time()
-                    use_time = end - start
-
-                    if use_time >= time_limit:  # Check time limit after each local search
-                        break
                     if path_constraint not in visited_path:
                         visited_path.append(path_constraint)
                         input = local_solve(path_constraint, arguments, org_input, decision_rule_index, ge)
@@ -482,6 +488,9 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
             # global search
             prefix_pred = []
             for c in decision_rules:
+                if should_terminate():
+                    break
+
                 if c[0] in ge.sensitive_indices_dict.values():
                     continue
                 if c[3] < T1:
@@ -497,15 +506,14 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
                     n_c[3] = 1.0 - c[3]
                 path_constraint = prefix_pred + [n_c]
 
-                end = time.time()
-                use_time = end - start
-                if use_time >= count:
+                current_runtime = time.time() - start
+                if current_runtime >= count:
                     print("Percentage discriminatory inputs - " + str(
                         float(len(global_disc_inputs_list) + len(local_disc_inputs_list))
                         / float(len(tot_inputs)) * 100))
                     print("Number of discriminatory inputs are " + str(len(local_disc_inputs_list)))
                     print("Total Inputs are " + str(len(tot_inputs)))
-                    print('use time:' + str(end - start))
+                    print('use time:' + str(current_runtime))
 
                     count += 300
 
@@ -520,88 +528,8 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
 
                 prefix_pred = prefix_pred + [c]
 
-    end_time = time.time()
-    total_time = end_time - start_time
-
-    # Log final results
-    tsn = len(tot_inputs)  # Total Sample Number
-    dsn = len(all_discriminations)  # Discriminatory Sample Number
-    sur = dsn / tsn if tsn > 0 else 0  # Success Rate
-    dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
-
-    for k, v in dsn_by_attr_value.items():
-        if k != 'total':
-            dsn_by_attr_value[k]['SUR'] = dsn_by_attr_value[k]['DSN'] / dsn_by_attr_value[k]['TSN']
-            dsn_by_attr_value[k]['DSS'] = dss
-
-    # Log dsn_by_attr_value counts
-    logger.info("\nDiscrimination counts by protected attribute values:")
-    metrics = {
-        'TSN': tsn,
-        'DSN': dsn,
-        'SUR': sur,
-        'DSS': dss,
-        'total_time': total_time,
-        # 'time_limit_reached': time_limit_seconds is not None and total_time >= time_limit_seconds,
-        'max_tsn_reached': max_tsn is not None and tsn >= max_tsn,
-        'dsn_by_attr_value': dsn_by_attr_value
-    }
-
-    logger.info("\nFinal Results:")
-    logger.info(f"Total inputs tested: {tsn}")
-    logger.info(f"Global discriminatory inputs: {len(global_disc_inputs)}")
-    logger.info(f"Local discriminatory inputs: {len(local_disc_inputs)}")
-    logger.info(f"Total discriminatory pairs: {dsn}")
-    logger.info(f"Success rate (SUR): {sur:.4f}")
-    logger.info(f"Avg. search time per discriminatory sample (DSS): {dss:.4f} seconds")
-    logger.info(f"Discrimination by attribute value: {dsn_by_attr_value}")
-    logger.info(f"Total time: {total_time:.2f} seconds")
-
-    # Generate result dataframe
-    res_df = []
-    case_id = 0
-    for org, org_res, counter_org, counter_org_res in all_discriminations:
-        indv1 = pd.DataFrame([list(org)], columns=ge.attr_columns)
-        indv2 = pd.DataFrame([list(counter_org)], columns=ge.attr_columns)
-
-        indv_key1 = "|".join(str(x) for x in indv1[ge.attr_columns].iloc[0])
-        indv_key2 = "|".join(str(x) for x in indv2[ge.attr_columns].iloc[0])
-
-        # Add the additional columns
-        indv1['indv_key'] = indv_key1
-        indv1['outcome'] = org_res
-        indv2['indv_key'] = indv_key2
-        indv2['outcome'] = counter_org_res
-
-        # Create couple_key
-        couple_key = f"{indv_key1}-{indv_key2}"
-        diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
-
-        df_res = pd.concat([indv1, indv2])
-        df_res['couple_key'] = couple_key
-        df_res['diff_outcome'] = diff_outcome
-        df_res['case_id'] = case_id
-        res_df.append(df_res)
-        case_id += 1
-
-    if len(res_df) != 0:
-        res_df = pd.concat(res_df)
-    else:
-        res_df = pd.DataFrame([])
-
-    # Add metrics to result dataframe
-    res_df['TSN'] = tsn
-    res_df['DSN'] = dsn
-    res_df['SUR'] = sur
-    res_df['DSS'] = dss
-
-    if res_df.empty:
-        empty_df = pd.DataFrame(columns=['case_id', 'outcome', 'diff_outcome', 'indv_key', 'couple_key'] +
-                                        list(ge.feature_names))
-        return empty_df, metrics
-
-    # Process case IDs to be sequential
-    res_df['case_id'] = res_df['case_id'].replace({v: k for k, v in enumerate(res_df['case_id'].unique())})
+    res_df, metrics = make_final_metrics_and_dataframe(ge, tot_inputs, all_discriminations, dsn_by_attr_value,
+                                                       start_time, logger=logger)
 
     return res_df, metrics
 
@@ -609,15 +537,6 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
 if __name__ == '__main__':
     ge, ge_schema = get_real_data('adult', use_cache=True)
 
-    res_df, metrics = run_sg(ge, max_tsn=10000, cluster_num=50, time_limit=1000)
+    res_df, metrics = run_sg(ge, max_tsn=20000, cluster_num=50, max_runtime_seconds=1000)
     print(f"Results DataFrame shape: {res_df.shape}")
     print(f"Metrics: {metrics}")
-
-    # Print dsn_by_attr_value in a readable format
-    print("\nDiscriminatory samples by attribute value:")
-    for attr, value_counts in metrics['dsn_by_attr_value'].items():
-        if value_counts:
-            total = sum(value_counts.values())
-            print(f"  {attr} ({total} total):")
-            for value, count in sorted(value_counts.items()):
-                print(f"    Value {value}: {count} ({(count / total) * 100:.1f}%)")

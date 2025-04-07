@@ -1,4 +1,5 @@
 import itertools
+import time
 from typing import List
 
 import sklearn
@@ -326,7 +327,12 @@ def check_for_error_condition(dsn_by_attr_value, discrimination_data: Discrimina
                 new_instance = instance.copy()
                 new_instance[attr_name] = value
                 new_df.append(new_instance)
-                dsn_by_attr_value[attr_name]['TSN'] += 1
+
+                new_instance_key = tuple(new_instance.values.astype(int)[0])
+                # tot_inputs.add(tuple(instance.to_numpy().tolist()[0]))
+                if new_instance_key not in tot_inputs:
+                    tot_inputs.add(new_instance_key)
+                    dsn_by_attr_value[attr_name]['TSN'] += 1
     else:
         # Generate all possible combinations of protected attribute values
         protected_values = []
@@ -341,7 +347,10 @@ def check_for_error_condition(dsn_by_attr_value, discrimination_data: Discrimina
                 new_instance = instance.copy()
                 for i, attr in enumerate(discrimination_data.protected_attributes):
                     new_instance[attr] = values[i]
-                    dsn_by_attr_value[attr]['TSN'] += 1
+                    new_instance_key = tuple(new_instance.values.astype(int)[0])
+                    if new_instance_key not in tot_inputs:
+                        tot_inputs.add(new_instance_key)
+                        dsn_by_attr_value[attr]['TSN'] += 1
                 new_df.append(new_instance)
 
     if not new_df:  # If no combinations were found
@@ -352,9 +361,6 @@ def check_for_error_condition(dsn_by_attr_value, discrimination_data: Discrimina
     new_df['outcome'] = new_predictions
 
     # Add to total inputs
-    for row in new_df.to_numpy():
-        tot_inputs.add(tuple(row.astype(int)))
-    # tot_inputs.add(tuple(instance.to_numpy().tolist()[0]))
 
     # Find discriminatory instances (different outcome)
     discrimination_df = new_df[new_df['outcome'] != label]
@@ -392,3 +398,78 @@ def check_for_error_condition(dsn_by_attr_value, discrimination_data: Discrimina
     tested_inp = new_df[discrimination_data.attr_columns].to_numpy().tolist()
 
     return discrimination_df.shape[0] > 0, discrimination_df, max_discrimination, instance, tested_inp
+
+
+def make_final_metrics_and_dataframe(discrimination_data, tot_inputs, all_discriminations, dsn_by_attr_value,
+                                     start_time, logger=None):
+    end_time = time.time()
+    total_time = end_time - start_time
+
+    # Log final results
+    tsn = len(tot_inputs)  # Total Sample Number
+    dsn = len(all_discriminations)  # Discriminatory Sample Number
+    sur = dsn / tsn if tsn > 0 else 0  # Success Rate
+    dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
+
+    for k, v in dsn_by_attr_value.items():
+        if k != 'total':
+            dsn_by_attr_value[k]['SUR'] = dsn_by_attr_value[k]['DSN'] / dsn_by_attr_value[k]['TSN']
+            dsn_by_attr_value[k]['DSS'] = dss
+
+    # Log dsn_by_attr_value counts
+    metrics = {
+        'TSN': tsn,
+        'DSN': dsn,
+        'SUR': sur,
+        'DSS': dss,
+        'total_time': total_time,
+        'dsn_by_attr_value': dsn_by_attr_value
+    }
+
+    logger.info("\nFinal Results:")
+    logger.info(f"Total inputs tested: {tsn}")
+    logger.info(f"Total discriminatory pairs: {dsn}")
+    logger.info(f"Success rate (SUR): {sur:.4f}")
+    logger.info(f"Avg. search time per discriminatory sample (DSS): {dss:.4f} seconds")
+    logger.info(f"Discrimination by attribute value: {dsn_by_attr_value}")
+    logger.info(f"Total time: {total_time:.2f} seconds")
+
+    # Generate result dataframe
+    res_df = []
+    case_id = 0
+    for org, org_res, counter_org, counter_org_res in all_discriminations:
+        indv1 = pd.DataFrame([list(org)], columns=discrimination_data.attr_columns)
+        indv2 = pd.DataFrame([list(counter_org)], columns=discrimination_data.attr_columns)
+
+        indv_key1 = "|".join(str(x) for x in indv1[discrimination_data.attr_columns].iloc[0])
+        indv_key2 = "|".join(str(x) for x in indv2[discrimination_data.attr_columns].iloc[0])
+
+        # Add the additional columns
+        indv1['indv_key'] = indv_key1
+        indv1['outcome'] = org_res
+        indv2['indv_key'] = indv_key2
+        indv2['outcome'] = counter_org_res
+
+        # Create couple_key
+        couple_key = f"{indv_key1}-{indv_key2}"
+        diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
+
+        df_res = pd.concat([indv1, indv2])
+        df_res['couple_key'] = couple_key
+        df_res['diff_outcome'] = diff_outcome
+        df_res['case_id'] = case_id
+        res_df.append(df_res)
+        case_id += 1
+
+    if len(res_df) != 0:
+        res_df = pd.concat(res_df)
+    else:
+        res_df = pd.DataFrame([])
+
+    # Add metrics to result dataframe
+    res_df['TSN'] = tsn
+    res_df['DSN'] = dsn
+    res_df['SUR'] = sur
+    res_df['DSS'] = dss
+
+    return res_df, metrics

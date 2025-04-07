@@ -1,6 +1,7 @@
 import copy
 import datetime
 import hashlib
+import itertools
 import json
 import math
 import pickle
@@ -340,6 +341,193 @@ class DiscriminationData:
         return random_df
 
 
+class RobustGaussianCopulaSynthesizer(GaussianCopulaSynthesizer):
+    """Enhanced GaussianCopulaSynthesizer with improved handling for conditional sampling.
+
+    This class extends the standard GaussianCopulaSynthesizer to better handle conditional
+    sampling by ensuring all possible value combinations are represented in the training data.
+
+    Args:
+        metadata (sdv.metadata.Metadata):
+            Single table metadata representing the data that this synthesizer will be used for.
+        enforce_min_max_values (bool):
+            Whether to clip values to the min/max seen during fit. Defaults to True.
+        enforce_rounding (bool):
+            Whether to round values as in the original data. Defaults to True.
+        locales (list or str):
+            Default locale(s) for AnonymizedFaker transformers. Defaults to ['en_US'].
+        numerical_distributions (dict):
+            Dictionary mapping field names to distributions.
+        default_distribution (str):
+            Default distribution to use. Defaults to 'beta'.
+        max_combinations_to_fit (int):
+            Maximum number of attribute combinations to include in training data.
+            If there are more possible combinations than this, a sample will be used.
+            Defaults to 10000.
+    """
+
+    def __init__(
+            self,
+            metadata,
+            enforce_min_max_values=True,
+            enforce_rounding=True,
+            locales=['en_US'],
+            numerical_distributions=None,
+            default_distribution=None,
+            max_combinations_to_fit=10000
+    ):
+        super().__init__(
+            metadata,
+            enforce_min_max_values=enforce_min_max_values,
+            enforce_rounding=enforce_rounding,
+            locales=locales,
+            numerical_distributions=numerical_distributions,
+            default_distribution=default_distribution,
+        )
+        self.max_combinations_to_fit = max_combinations_to_fit
+
+    def _fit(self, processed_data):
+        """Enhanced fit method that ensures the model learns all possible value combinations.
+
+        Args:
+            processed_data (pandas.DataFrame):
+                Data to be learned.
+        """
+        # Get columns and their unique values
+        columns_to_consider = []
+        unique_values = {}
+
+        for column in processed_data.columns:
+            # Skip columns with too many unique values (likely numeric or IDs)
+            unique_vals = processed_data[column].dropna().unique()
+            if len(unique_vals) <= 20:  # Only include columns with reasonable cardinality
+                columns_to_consider.append(column)
+                unique_values[column] = unique_vals
+
+        # Calculate the number of possible combinations
+        total_combinations = 1
+        for column in columns_to_consider:
+            total_combinations *= len(unique_values[column])
+
+        # Generate combinations for training
+        combinations_data = None
+        if total_combinations <= self.max_combinations_to_fit and columns_to_consider:
+            print(f"Generating {total_combinations} combinations for robust training")
+
+            # Generate all combinations of column values
+            all_combinations = list(itertools.product(
+                *[unique_values[col] for col in columns_to_consider]
+            ))
+
+            # Convert combinations to DataFrame
+            combinations_dict = {
+                col: [combo[i] for combo in all_combinations]
+                for i, col in enumerate(columns_to_consider)
+            }
+            combinations_data = pd.DataFrame(combinations_dict)
+
+            # Add random values for non-included columns
+            for col in processed_data.columns:
+                if col not in columns_to_consider:
+                    if col in combinations_data:
+                        continue
+
+                    # Sample random values from the original column
+                    combinations_data[col] = np.random.choice(
+                        processed_data[col].dropna().values,
+                        size=len(combinations_data),
+                        replace=True
+                    )
+
+            # Combine with original data
+            combined_data = pd.concat([processed_data, combinations_data], ignore_index=True)
+
+            # Call the parent class _fit method with the enhanced data
+            super()._fit(combined_data)
+        else:
+            # If too many combinations, use the original data
+            if columns_to_consider:
+                warnings.warn(
+                    f"Too many possible combinations ({total_combinations}) to include all in training. "
+                    f"Using original data only. This may affect conditional sampling performance."
+                )
+            super()._fit(processed_data)
+
+    def sample_from_conditions(self, conditions, max_tries_per_batch=100, batch_size=None, output_file_path=None):
+        """Sample from conditions with improved error handling.
+
+        Args:
+            conditions (list[sdv.sampling.Condition]):
+                A list of conditions to sample from.
+            max_tries_per_batch (int):
+                Number of times to retry sampling. Defaults to 100.
+            batch_size (int):
+                Batch size for sampling. Defaults to None.
+            output_file_path (str):
+                Path to write samples to. Defaults to None.
+
+        Returns:
+            pandas.DataFrame:
+                Sampled data.
+        """
+        try:
+            # Try the standard sampling method first
+            return super().sample_from_conditions(
+                conditions,
+                max_tries_per_batch=max_tries_per_batch,
+                batch_size=batch_size,
+                output_file_path=output_file_path
+            )
+        except ValueError as e:
+            error_msg = str(e)
+            if "Unable to sample any rows for the given conditions" in error_msg:
+                print("Attempting fallback sampling method...")
+
+                # Fallback approach: Sample extra rows and filter them
+                sampled_rows = []
+                for condition in conditions:
+                    column_values = condition.get_column_values()
+                    num_rows = condition.get_num_rows()
+
+                    # Sample 10x the needed rows
+                    sample_size = min(num_rows * 10, 10000)
+                    sample = self.sample(sample_size)
+
+                    # Filter rows that match our condition
+                    for col, val in column_values.items():
+                        if col in sample.columns:
+                            # For numerical columns, allow some tolerance
+                            if pd.api.types.is_numeric_dtype(sample[col]):
+                                # 1% tolerance for numeric values
+                                tolerance = abs(val) * 0.01 if val != 0 else 0.01
+                                sample = sample[
+                                    (sample[col] >= val - tolerance) &
+                                    (sample[col] <= val + tolerance)
+                                    ]
+                            else:
+                                sample = sample[sample[col] == val]
+
+                    # Take the needed number of rows
+                    if len(sample) > 0:
+                        # Fix exact values for the condition columns
+                        for col, val in column_values.items():
+                            if col in sample.columns:
+                                sample[col] = val
+
+                        sampled_rows.append(sample.head(min(len(sample), num_rows)))
+                    else:
+                        print(f"Couldn't generate data for condition: {column_values}")
+
+                if sampled_rows:
+                    return pd.concat(sampled_rows, ignore_index=True)
+
+                # If fallback failed, raise the original error
+                raise e
+            else:
+                # If it's a different error, re-raise it
+                raise e
+
+
 def create_sdv_numerical_distributions(data_schema):
     """Create numerical distributions configuration for SDV GaussianCopulaSynthesizer."""
     numerical_distributions = {}
@@ -358,7 +546,7 @@ def create_sdv_numerical_distributions(data_schema):
 
 
 def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attributes,
-                         prop_protected_attr, fit_synthesizer=True, n_samples=1000) -> DataSchema:
+                         prop_protected_attr, fit_synthesizer=True, n_samples=10000) -> DataSchema:
     """Generate a data schema for synthetic data."""
     attr_categories = []
     attr_names = []
@@ -419,13 +607,13 @@ def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attrib
     # Add outcome column
     sdv_metadata.add_column('outcome', sdtype='categorical')
 
-    return DataSchema(attr_categories=attr_categories,
-                      protected_attr=protected_attr,
-                      attr_names=attr_names,
-                      categorical_distribution=categorical_distribution,
-                      correlation_matrix=correlation_matrix,
-                      gen_order=gen_order,
-                      sdv_metadata=sdv_metadata)
+    res = DataSchema(attr_categories=attr_categories,
+                     protected_attr=protected_attr,
+                     attr_names=attr_names,
+                     categorical_distribution=categorical_distribution,
+                     correlation_matrix=correlation_matrix,
+                     gen_order=gen_order,
+                     sdv_metadata=sdv_metadata)
 
     # Create and fit synthesizer if requested
     if fit_synthesizer:
@@ -453,13 +641,53 @@ def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attrib
         # Convert to DataFrame
         initial_df = pd.DataFrame(initial_data)
 
-        # Fit the synthesizer
+        # Add examples of all possible value combinations to ensure synthesizer can handle all requests
+        # First, create a list of all possible values for each attribute
+        all_possible_values = []
+        for i, attr_name in enumerate(attr_names):
+            # Skip the -1 value (missing), only include valid values
+            valid_values = [v for v in attr_categories[i] if v != -1]
+            all_possible_values.append(valid_values)
+
+        # Generate combinations in a memory-efficient way
+        # We'll generate a reasonable number of combinations if there are too many
+        max_combinations = 1000  # Limit to prevent memory issues
+
+        # Calculate total number of possible combinations
+        total_combinations = 1
+        for values in all_possible_values:
+            total_combinations *= len(values)
+
+        # If there are too many combinations, sample a subset
+        if total_combinations > max_combinations:
+            # Generate a diverse sample of combinations
+            combination_samples = []
+            for _ in range(max_combinations):
+                sample = [random.choice(values) for values in all_possible_values]
+                combination_samples.append(sample)
+        else:
+            # Generate all combinations if the number is manageable
+            import itertools
+            combination_samples = list(itertools.product(*all_possible_values))
+
+        # Create dataframe with combinations
+        combinations_data = {}
+        for i, attr_name in enumerate(attr_names):
+            combinations_data[attr_name] = [combo[i] for combo in combination_samples]
+
+        # Add random outcomes
+        combinations_df = pd.DataFrame(combinations_data)
+        combinations_df['outcome'] = random.choices([0, 1], k=len(combinations_df))
+
+        # Combine the random data with the combination data
+        combined_df = pd.concat([initial_df, combinations_df], ignore_index=True)
+
+        # Fit the synthesizer on the combined data
         print("Fitting initial GaussianCopulaSynthesizer...")
-        synthesizer.fit(initial_df)
+        synthesizer.fit(combined_df)
 
         # Add the synthesizer to the schema
         res.synthesizer = synthesizer
-
     return res
 
 
@@ -923,10 +1151,13 @@ def create_group(granularity, intersectionality,
 
     with suppress_stdout():
         col_values = {k: v for k, v in zip(data_schema.attr_names, subgroup2_vals) if v != -1}
-        subgroup2_individuals_df = data_schema.synthesizer.sample_from_conditions(conditions=[Condition(
-            num_rows=subgroup2_size,
-            column_values=col_values
-        )])
+        try:
+            subgroup2_individuals_df = data_schema.synthesizer.sample_from_conditions(conditions=[Condition(
+                num_rows=subgroup2_size,
+                column_values=col_values
+            )])
+        except Exception as e:
+            raise e
     subgroup2_individuals_df = fill_nan_values(subgroup2_individuals_df, data_schema)
 
     subgroup2_outcome, subgroup2_epistemic_uncertainty, subgroup2_aleatoric_uncertainty = generate_outcomes_with_uncertainty(
@@ -1143,7 +1374,7 @@ def generate_data(
             max_number_of_classes = int(min_number_of_classes * 1.5)
 
         data_schema = generate_data_schema(
-            min_number_of_classes, max_number_of_classes, nb_attributes, prop_protected_attr
+            min_number_of_classes, max_number_of_classes, nb_attributes, prop_protected_attr, fit_synthesizer=True
         )
         attr_categories, sets_attr, attr_names = data_schema.attr_categories, data_schema.protected_attr, data_schema.attr_names
 
@@ -1711,7 +1942,7 @@ def generate_schema_from_dataframe(
             default_params.update(synthesizer_params)
 
         # Create and fit the synthesizer
-        synthesizer = GaussianCopulaSynthesizer(sdv_metadata, **default_params)
+        synthesizer = RobustGaussianCopulaSynthesizer(sdv_metadata, **default_params)
         print("Fitting GaussianCopulaSynthesizer...")
         with suppress_stdout():
             synthesizer.fit(encoded_df)
@@ -1881,7 +2112,7 @@ def generate_from_real_data(dataset_name, use_cache=False, predefined_groups=Non
     numerical_distributions = create_sdv_numerical_distributions(schema)
 
     # Train an SDV synthesizer on the real data
-    synthesizer = GaussianCopulaSynthesizer(
+    synthesizer = RobustGaussianCopulaSynthesizer(
         metadata,
         enforce_min_max_values=True,
         enforce_rounding=True,
