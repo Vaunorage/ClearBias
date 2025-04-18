@@ -2234,6 +2234,10 @@ def get_real_data(
         for attr_name, categories in zip(schema.attr_names, schema.attr_categories)
     }
 
+    enc_df['indv_key'] = enc_df[schema.attr_names].apply(
+        lambda x: '|'.join(list(x.astype(str))), axis=1
+    )
+
     # Create DiscriminationData without generating synthetic data
     data = DiscriminationData(
         dataframe=enc_df,
@@ -2271,3 +2275,91 @@ def create_sdv_numerical_distributions(data_schema):
                 numerical_distributions[attr_name] = 'truncnorm'
 
     return numerical_distributions
+
+def save_discrimination_data(db_path: str, data_obj: 'DiscriminationData', analysis_id: str = None) -> str:
+    """
+    Save a DiscriminationData object to an SQLite database.
+    
+    Args:
+        db_path: Path to the SQLite database file
+        data_obj: DiscriminationData object to save
+        analysis_id: Optional analysis ID. If not provided, a new UUID will be generated
+        
+    Returns:
+        str: The analysis_id used to save the data
+    """
+    import sqlite3
+    import pickle
+    import uuid
+    from datetime import datetime
+    
+    if analysis_id is None:
+        analysis_id = f"data_{str(uuid.uuid4())}"
+    
+    # Create or connect to SQLite database
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    # Create table for discrimination data if it doesn't exist
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS discrimination_data (
+            analysis_id TEXT PRIMARY KEY,
+            data BLOB,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            nb_groups INTEGER,
+            nb_attributes INTEGER,
+            categorical_columns TEXT,
+            protected_attributes TEXT
+        )
+    ''')
+    
+    # Serialize the data object
+    data_binary = pickle.dumps(data_obj)
+    
+    # Extract metadata for easier querying
+    categorical_columns = ','.join(data_obj.categorical_columns)
+    protected_attributes = ','.join(data_obj.protected_attributes())
+    
+    # Save the data with metadata
+    cursor.execute('''
+        INSERT INTO discrimination_data 
+        (analysis_id, data, nb_groups, nb_attributes, categorical_columns, protected_attributes)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (
+        analysis_id,
+        data_binary,
+        data_obj.nb_groups,
+        len(data_obj.attributes),
+        categorical_columns,
+        protected_attributes
+    ))
+    
+    conn.commit()
+    conn.close()
+    
+    return analysis_id
+
+def load_discrimination_data(db_path: str, analysis_id: str) -> Optional['DiscriminationData']:
+    """
+    Load a DiscriminationData object from an SQLite database.
+    
+    Args:
+        db_path: Path to the SQLite database file
+        analysis_id: The analysis ID to load
+        
+    Returns:
+        Optional[DiscriminationData]: The loaded data object, or None if not found
+    """
+    import sqlite3
+    import pickle
+    
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT data FROM discrimination_data WHERE analysis_id = ?', (analysis_id,))
+    result = cursor.fetchone()
+    conn.close()
+    
+    if result:
+        return pickle.loads(result[0])
+    return None

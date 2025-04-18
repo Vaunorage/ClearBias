@@ -1,23 +1,28 @@
-import itertools
 import time
 from typing import List
-
+from tqdm import tqdm
+import sqlite3
+import pandas as pd
+import itertools
+import hashlib
+import pickle
+import os
+import numpy as np
 import sklearn
-from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
-import numpy as np
-import pandas as pd
-from tqdm import tqdm
+from sklearn.neural_network import MLPClassifier
+from sklearn.model_selection import train_test_split
+from pathlib import Path
 
 from data_generator.main import GroupDefinition, DataSchema, DiscriminationData
+from path import HERE
 
 
 def train_sklearn_model(data, model_type='rf', model_params=None, target_col='class', sensitive_attrs=None,
-                        test_size=0.2, random_state=42):
+                        test_size=0.2, random_state=42, use_cache=False, cache_dir=HERE.joinpath('.cache/model_cache')):
     # Default parameters for each model type
     np.random.seed(random_state)
     sklearn.utils.check_random_state(random_state)
@@ -61,14 +66,60 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
     feature_names = list(X.columns)  # Store feature names
     y = data[target_col]
 
-    # Split the data
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state
-    )
+    # Generate a hash based on function arguments and data
+    args_hash = hashlib.md5(str({
+        'model_type': model_type,
+        'model_params': str(params),
+        'target_col': target_col,
+        'sensitive_attrs': sensitive_attrs,
+        'test_size': test_size,
+        'random_state': random_state
+    }).encode()).hexdigest()
 
-    # Create and train model
-    model = model_map[model_type](**params)
-    model.fit(X_train, y_train)
+    # Add a hash of the dataset (using first and last few rows to avoid memory issues with large datasets)
+    data_sample = pd.concat([data.head(5), data.tail(5)]) if len(data) > 10 else data
+    data_hash = hashlib.md5(pd.util.hash_pandas_object(data_sample).values.tobytes()).hexdigest()
+
+    # Combine both hashes for the final model ID
+    model_id = f"{args_hash}_{data_hash}"
+    cache_path = os.path.join(cache_dir, f"{model_id}.pkl")
+
+    if use_cache and os.path.exists(cache_path):
+        # Load cached model and data
+        print(f"Loading cached model: {model_id}")
+        with open(cache_path, 'rb') as f:
+            cached_data = pickle.load(f)
+            model = cached_data['model']
+            X_train = cached_data['X_train']
+            X_test = cached_data['X_test']
+            y_train = cached_data['y_train']
+            y_test = cached_data['y_test']
+            feature_names = cached_data['feature_names']
+    else:
+        # Split the data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=random_state
+        )
+
+        # Create and train model
+        model = model_map[model_type](**params)
+        model.fit(X_train, y_train)
+
+        # Save model to cache if requested
+        if use_cache:
+            print(f"Saving model to cache: {model_id}")
+            # Create cache directory if it doesn't exist
+            os.makedirs(cache_dir, exist_ok=True)
+            # Save model and data
+            with open(cache_path, 'wb') as f:
+                pickle.dump({
+                    'model': model,
+                    'X_train': X_train,
+                    'X_test': X_test,
+                    'y_train': y_train,
+                    'y_test': y_test,
+                    'feature_names': feature_names
+                }, f)
 
     return model, X_train, X_test, y_train, y_test, feature_names
 
@@ -294,8 +345,37 @@ def get_groups(results_df_origin, data_obj, schema):
     return predefined_groups_origin, nb_elements
 
 
+def init_discrimination_db(db_path, table_name):
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+
+    # Sanitize table name to prevent SQL injection
+    safe_table_name = ''.join(c for c in table_name if c.isalnum() or c == '_')
+    if not safe_table_name:
+        raise ValueError("Table name must contain at least one alphanumeric character")
+
+    c.execute(f'''CREATE TABLE IF NOT EXISTS {safe_table_name}
+                 (original_instance TEXT,
+                  original_label INTEGER,
+                  variant_instance TEXT,
+                  variant_label INTEGER)''')
+    conn.commit()
+    conn.close()
+    return safe_table_name
+
+
 def check_for_error_condition(dsn_by_attr_value, discrimination_data: DiscriminationData, model, instance,
-                              tot_inputs, all_discriminations, one_attr_at_a_time=False, logger=None):
+                              tot_inputs, all_discriminations, analysis_id=None, db_path=None, one_attr_at_a_time=False,
+                              logger=None):
+    # Initialize SQLite database if not exists and get safe table name
+    if db_path is not None:
+        if analysis_id is None:
+            raise ValueError("Analysis ID must be provided")
+
+        conn = sqlite3.connect(db_path)
+        c = conn.cursor()
+
     # Ensure instance is integer and within bounds
     instance = np.round(instance).astype(int)
     for i, (low, high) in enumerate(discrimination_data.input_bounds):
@@ -308,6 +388,9 @@ def check_for_error_condition(dsn_by_attr_value, discrimination_data: Discrimina
     label = model.predict(instance)[0]
 
     new_df = []
+
+    for attr in discrimination_data.protected_attributes:
+        dsn_by_attr_value[attr]['TSN'] += 1
 
     if one_attr_at_a_time:
         # Vary one attribute at a time
@@ -328,11 +411,7 @@ def check_for_error_condition(dsn_by_attr_value, discrimination_data: Discrimina
                 new_instance[attr_name] = value
                 new_df.append(new_instance)
 
-                new_instance_key = tuple(new_instance.values.astype(int)[0])
-                # tot_inputs.add(tuple(instance.to_numpy().tolist()[0]))
-                if new_instance_key not in tot_inputs:
-                    tot_inputs.add(new_instance_key)
-                    dsn_by_attr_value[attr_name]['TSN'] += 1
+                dsn_by_attr_value[attr_name]['TSN'] += 1  # Count each pair tested
     else:
         # Generate all possible combinations of protected attribute values
         protected_values = []
@@ -347,27 +426,48 @@ def check_for_error_condition(dsn_by_attr_value, discrimination_data: Discrimina
                 new_instance = instance.copy()
                 for i, attr in enumerate(discrimination_data.protected_attributes):
                     new_instance[attr] = values[i]
-                    new_instance_key = tuple(new_instance.values.astype(int)[0])
-                    if new_instance_key not in tot_inputs:
-                        tot_inputs.add(new_instance_key)
-                        dsn_by_attr_value[attr]['TSN'] += 1
+
+                # Count each test in TSN counters
+                for attr in discrimination_data.protected_attributes:
+                    dsn_by_attr_value[attr]['TSN'] += 1
+
                 new_df.append(new_instance)
 
     if not new_df:  # If no combinations were found
+        if db_path is not None:
+            conn.close()
         return False
 
     new_df = pd.concat(new_df)
     new_predictions = model.predict(new_df)
     new_df['outcome'] = new_predictions
 
-    # Add to total inputs
+    if db_path is not None:
+        tres = []
+        for _, row in new_df.iterrows():
+            res1 = instance.copy()
+            indv_key1 = "|".join(map(str, res1.to_numpy().tolist()[0]))
+            res1['outcome'] = int(label)
+            res1['indv_key'] = indv_key1
+
+            res2 = row[discrimination_data.attr_columns].copy()
+            indv_key2 = "|".join(map(str, res2.to_numpy().tolist()))
+            res2['outcome'] = int(row['outcome'])
+            res2['indv_key'] = indv_key2
+
+            res = pd.concat([res1, res2.to_frame().T])
+            res['couple_key'] = f"{indv_key1}-{indv_key2}"
+            tres.append(res)
+
+        tres = pd.concat(tres)
+        tres.to_sql(analysis_id, con=conn, if_exists='append', index=False)
 
     # Find discriminatory instances (different outcome)
-    discrimination_df = new_df[new_df['outcome'] != label]
+    new_df['discrimination'] = new_df['outcome'] != label
 
     max_discrimination = 0
-    if not discrimination_df.empty:
-        max_discrimination = max(abs(discrimination_df['outcome'] - label))
+    if new_df['discrimination'].any():
+        max_discrimination = max(abs(new_df['outcome'] - label))
 
     tsn = len(tot_inputs)
     dsn = len(all_discriminations)
@@ -377,13 +477,16 @@ def check_for_error_condition(dsn_by_attr_value, discrimination_data: Discrimina
         logger.info(f"Current Metrics - TSN: {tsn}, DSN: {dsn}, SUR: {sur:.4f}")
 
     # Record discriminatory pairs and update attribute value counts
-    for _, row in discrimination_df.iterrows():
+    for _, row in new_df.iterrows():
         # Create the discrimination pair tuple
         disc_pair = (tuple(instance.values[0].astype(int)), int(label),
                      tuple(row[discrimination_data.attr_columns].astype(int)), int(row['outcome']))
 
+        if disc_pair not in tot_inputs:
+            tot_inputs.add(disc_pair)
+
         # Only count if this is a new discrimination
-        if disc_pair not in all_discriminations:
+        if row['discrimination'] and disc_pair not in all_discriminations:
             all_discriminations.add(disc_pair)
 
             n_inp = pd.DataFrame(np.expand_dims(disc_pair[0], 0), columns=discrimination_data.attr_columns)
@@ -397,11 +500,14 @@ def check_for_error_condition(dsn_by_attr_value, discrimination_data: Discrimina
 
     tested_inp = new_df[discrimination_data.attr_columns].to_numpy().tolist()
 
-    return discrimination_df.shape[0] > 0, discrimination_df, max_discrimination, instance, tested_inp
+    if db_path is not None:
+        conn.close()
+
+    return new_df['discrimination'].any(), new_df[new_df['discrimination']], max_discrimination, instance, tested_inp
 
 
-def make_final_metrics_and_dataframe(discrimination_data, tot_inputs, all_discriminations, dsn_by_attr_value,
-                                     start_time, logger=None):
+def make_final_metrics_and_dataframe(discrimination_data, tot_inputs, all_discriminations,
+                                     dsn_by_attr_value, start_time, logger=None):
     end_time = time.time()
     total_time = end_time - start_time
 

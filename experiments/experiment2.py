@@ -165,17 +165,13 @@ def run_algorithm(algorithm, dataset, **kwargs):
     if algorithm == 'MLCheck':
         return run_mlcheck(dataset, iteration_no=1, **kwargs)
     elif algorithm == 'Aequitas':
-        return run_aequitas(dataset.training_dataframe, col_to_be_predicted=dataset.outcome_column,
-                            sensitive_param_name_list=dataset.protected_attributes,
-                            perturbation_unit=1, model_type="DecisionTree", threshold=0,
-                            global_iteration_limit=100, local_iteration_limit=10, **kwargs)
+        return run_aequitas(dataset.training_dataframe, model_type="DecisionTree", **kwargs)
     elif algorithm == 'BiasScan':
         return run_bias_scan(dataset, test_size=0.3, random_state=42, n_estimators=200,
                              bias_scan_num_iters=100, bias_scan_scoring='Poisson',
                              bias_scan_favorable_value='high', bias_scan_mode='ordinal', **kwargs)
     elif algorithm == 'ExpGA':
-        return run_expga(dataset, threshold=0.5, threshold_rank=0.5,
-                         max_global=50, max_local=50, **kwargs)
+        return run_expga(dataset, threshold_rank=0.5, max_global=50, max_local=50, threshold=0.5, **kwargs)
     else:
         raise ValueError(f"Unknown algorithm: {algorithm}")
 

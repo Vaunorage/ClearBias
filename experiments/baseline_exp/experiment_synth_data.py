@@ -208,20 +208,11 @@ def run_experiment(dataset_name='adult', method='adf', db=None, params={}):
             **params
         )
     elif method == 'aequitas':
-        results_df_origin, metrics_origin = run_aequitas(
-            discrimination_data=data_obj,
-            **params
-        )
+        results_df_origin, metrics_origin = run_aequitas(data=data_obj, **params)
     elif method == 'expga':
-        results_df_origin, metrics_origin = run_expga(
-            dataset=data_obj,
-            **params
-        )
+        results_df_origin, metrics_origin = run_expga(data=data_obj, **params)
     elif method == 'sg':
-        results_df_origin, metrics_origin = run_sg(
-            ge=data_obj,
-            **params
-        )
+        results_df_origin, metrics_origin = run_sg(data=data_obj, **params)
     else:
         raise ValueError(f"Unknown method: {method}")
 
@@ -239,11 +230,11 @@ def run_experiment(dataset_name='adult', method='adf', db=None, params={}):
     if method == 'adf':
         results_df_synth, metrics_synth = adf_fairness_testing(data_obj_synth, **params)
     elif method == 'aequitas':
-        results_df_synth, metrics_synth = run_aequitas(discrimination_data=data_obj_synth, **params)
+        results_df_synth, metrics_synth = run_aequitas(data=data_obj_synth, **params)
     elif method == 'expga':
-        results_df_synth, metrics_synth = run_expga(dataset=data_obj_synth, **params)
+        results_df_synth, metrics_synth = run_expga(data=data_obj_synth, **params)
     elif method == 'sg':
-        results_df_synth, metrics_synth = run_sg(ge=data_obj_synth, **params)
+        results_df_synth, metrics_synth = run_sg(data=data_obj_synth, **params)
 
     # Extract discriminatory groups from synthetic data
     predefined_groups_synth = get_groups(results_df_synth, data_obj, schema)

@@ -2,9 +2,7 @@ import logging
 import warnings
 
 import numpy as np
-import pandas as pd
 from sklearn.cluster import KMeans
-import itertools
 from sklearn.tree import DecisionTreeClassifier
 from methods.utils import train_sklearn_model, check_for_error_condition, make_final_metrics_and_dataframe
 from queue import PriorityQueue, Queue
@@ -154,91 +152,6 @@ def extract_lime_decision_constraints(ge, model, input, random_state=42):
     return path
 
 
-# def check_for_discrimination_case(ge, model, t, sensitive_indices, dsn_by_attr_value, one_attr_at_a_time=False):
-#     """
-#     Check whether the test case is an individual discriminatory instance
-#
-#     Args:
-#         ge: DiscriminationData object
-#         model: the model's symbolic output
-#         t: test case
-#         sensitive_indices: dictionary of sensitive attribute names and their indices
-#         one_attr_at_a_time: if True, vary only one sensitive attribute at a time
-#
-#     Returns:
-#         whether it is an individual discriminatory instance, original dataframe,
-#         discriminations dataframe, and tested inputs
-#     """
-#
-#     # Get original prediction
-#     org_df = pd.DataFrame([t], columns=ge.attr_columns)
-#     label = model.predict(org_df)
-#     org_df['outcome'] = label
-#
-#     new_targets = []
-#
-#     if one_attr_at_a_time:
-#         # Vary one attribute at a time
-#         for sens_name, sens_idx in sensitive_indices.items():
-#             # Get all possible values for this attribute
-#             values = np.unique(ge.xdf.iloc[:, sens_idx]).tolist()
-#
-#             # Current value for this attribute
-#             current_value = t[sens_idx]
-#             dsn_by_attr_value[sens_name]['TSN'] += 1
-#
-#             # Create new test cases with different values for this attribute only
-#             for value in values:
-#                 if current_value == value:
-#                     continue
-#
-#                 tnew = pd.DataFrame([t], columns=ge.attr_columns)
-#                 tnew[sens_name] = value
-#                 new_targets.append(tnew)
-#     else:
-#         # Get all possible values for each sensitive attribute
-#         sensitive_values = {}
-#         for sens_name, sens_idx in sensitive_indices.items():
-#             sensitive_values[sens_name] = np.unique(ge.xdf.iloc[:, sens_idx]).tolist()
-#             dsn_by_attr_value[sens_name]['TSN'] += 1
-#
-#         # Generate all possible combinations of sensitive attribute values
-#         sensitive_names = list(sensitive_indices.keys())
-#         value_combinations = list(itertools.product(*[sensitive_values[name] for name in sensitive_names]))
-#
-#         # Create new test cases with all combinations
-#         for values in value_combinations:
-#             # Skip if combination is identical to original
-#             if all(t[sensitive_indices[name]] == value for name, value in zip(sensitive_names, values)):
-#                 continue
-#
-#             tnew = pd.DataFrame([t], columns=ge.attr_columns)
-#             for name, value in zip(sensitive_names, values):
-#                 tnew[name] = value
-#             new_targets.append(tnew)
-#
-#     if not new_targets:  # If no new combinations were generated
-#         return False, org_df, pd.DataFrame(), []
-#
-#     new_targets = pd.concat(new_targets)
-#     new_targets['outcome'] = model.predict(new_targets)
-#
-#     # Check if any combination leads to a different prediction
-#     discriminations = new_targets[new_targets['outcome'] != label[0]]
-#
-#     if discriminations.shape[0] > 0:
-#         for el in discriminations.to_numpy():
-#             for attr in ge.protected_attributes:
-#                 n_el = pd.DataFrame([el], columns=org_df.columns)
-#                 if n_el[attr].iloc[0] != org_df[attr].iloc[0]:
-#                     dsn_by_attr_value[attr]['DSN'] += 1
-#                     dsn_by_attr_value['total'] += 1
-#
-#     tested_inp = new_targets[ge.attr_columns].to_numpy().tolist()
-#
-#     return discriminations.shape[0] > 0, org_df, discriminations, tested_inp
-
-
 def remove_sensitive_attributes(input_vector, sensitive_indices):
     """
     Remove multiple sensitive attributes from the input vector
@@ -339,8 +252,8 @@ def gen_arguments(ge):
     return arguments
 
 
-def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=100, random_state=42,
-           max_runtime_seconds=3900, one_attr_at_a_time=True):
+def run_sg(data: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=100, random_state=42,
+           max_runtime_seconds=3900, one_attr_at_a_time=True, db_path=None, analysis_id=None):
     # store the result of fairness testing
     global_disc_inputs = set()
     global_disc_inputs_list = []
@@ -348,6 +261,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
     local_disc_inputs_list = []
     tot_inputs = set()
     all_discriminations = set()
+    all_tot_inputs = []
     early_termination = False
 
     def should_terminate() -> bool:
@@ -361,7 +275,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
             return True
         return False
 
-    dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in ge.protected_attributes}
+    dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in data.protected_attributes}
     dsn_by_attr_value['total'] = 0
 
     start_time = time.time()
@@ -370,12 +284,12 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
     random.seed(random_state)
 
     if not cluster_num:
-        cluster_num = len(ge.ydf.unique())
+        cluster_num = len(data.ydf.unique())
 
     start = time.time()
     f_results = []
 
-    all_inputs = seed_test_input(ge.xdf, cluster_num)
+    all_inputs = seed_test_input(data.xdf, cluster_num)
 
     ge_targets_queue = Queue()
     [ge_targets_queue.put(inp) for inp in all_inputs]
@@ -383,10 +297,10 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
     while not should_terminate() and ge_targets_queue.qsize() != 0:
 
         model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
-            data=ge.training_dataframe,
+            data=data.training_dataframe,
             model_type=model_type,
-            sensitive_attrs=ge.protected_attributes,
-            target_col=ge.outcome_column,
+            sensitive_attrs=data.protected_attributes,
+            target_col=data.outcome_column,
             random_state=random_state,
         )
 
@@ -400,8 +314,8 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
         inputs = ge_targets_queue.get()
 
         # Get all input data at once and convert to numpy for faster processing
-        input_data = copy.deepcopy(ge.xdf.iloc[inputs])
-        input_data['key'] = input_data[ge.non_protected_attributes].apply(lambda x: ''.join(x.astype(str)), axis=1)
+        input_data = copy.deepcopy(data.xdf.iloc[inputs])
+        input_data['key'] = input_data[data.non_protected_attributes].apply(lambda x: ''.join(x.astype(str)), axis=1)
         input_data = input_data.drop_duplicates(subset=['key'])
         input_data.drop(columns=['key'], inplace=True)
 
@@ -415,7 +329,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
         count = 300
 
         # Generate arguments for Z3 solver
-        arguments = gen_arguments(ge)
+        arguments = gen_arguments(data)
 
         def add_inputs(input_key):
             if (input_key not in global_disc_inputs) and (input_key not in local_disc_inputs):
@@ -433,17 +347,19 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
             org_input = np.array(org_input[1])
             found, found_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=logger,
                                                                                        dsn_by_attr_value=dsn_by_attr_value,
-                                                                                       discrimination_data=ge,
+                                                                                       discrimination_data=data,
                                                                                        model=model,
                                                                                        instance=org_input,
                                                                                        tot_inputs=tot_inputs,
                                                                                        all_discriminations=all_discriminations,
-                                                                                       one_attr_at_a_time=one_attr_at_a_time)
+                                                                                       one_attr_at_a_time=one_attr_at_a_time,
+                                                                                       db_path=db_path,
+                                                                                       analysis_id=analysis_id)
 
-            decision_rules = extract_lime_decision_constraints(ge, model, org_input, random_state)
+            decision_rules = extract_lime_decision_constraints(data, model, org_input, random_state)
 
             # Create a version of the input without any sensitive parameters
-            input_without_sensitive = remove_sensitive_attributes(org_input.tolist(), ge.sensitive_indices_dict)
+            input_without_sensitive = remove_sensitive_attributes(org_input.tolist(), data.sensitive_indices_dict)
             input_key = tuple(input_without_sensitive)
 
             # Track unique inputs and check for discrimination
@@ -453,11 +369,11 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
                 # Update dsn_by_attr_value for each discriminatory case
                 for el in found_df.iterrows():
                     f_results.append((org_df, el[1].to_frame().T))
-                    add_inputs(tuple(remove_sensitive_attributes(el[1].tolist(), ge.sensitive_indices_dict)))
+                    add_inputs(tuple(remove_sensitive_attributes(el[1].tolist(), data.sensitive_indices_dict)))
 
                     # Record the protected attribute values in the original input that led to discrimination
-                    for attr_name in ge.protected_attributes:
-                        attr_idx = ge.sensitive_indices_dict[attr_name]
+                    for attr_name in data.protected_attributes:
+                        attr_idx = data.sensitive_indices_dict[attr_name]
                         attr_value = int(org_input[attr_idx])
 
                 # local search
@@ -467,7 +383,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
 
                     path_constraint = copy.deepcopy(decision_rules)
                     c = path_constraint[decision_rule_index]
-                    if c[0] in ge.sensitive_indices_dict.values():
+                    if c[0] in data.sensitive_indices_dict.values():
                         continue
 
                     if c[1] == "<=":
@@ -479,7 +395,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
 
                     if path_constraint not in visited_path:
                         visited_path.append(path_constraint)
-                        input = local_solve(path_constraint, arguments, org_input, decision_rule_index, ge)
+                        input = local_solve(path_constraint, arguments, org_input, decision_rule_index, data)
                         l_count += 1
                         if input != None:
                             r = average_confidence(path_constraint)
@@ -491,7 +407,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
                 if should_terminate():
                     break
 
-                if c[0] in ge.sensitive_indices_dict.values():
+                if c[0] in data.sensitive_indices_dict.values():
                     continue
                 if c[3] < T1:
                     break
@@ -520,7 +436,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
                 # filter out the path_constraint already solved before
                 if path_constraint not in visited_path:
                     visited_path.append(path_constraint)
-                    input = global_solve(path_constraint, arguments, org_input, ge)
+                    input = global_solve(path_constraint, arguments, org_input, data)
                     g_count += 1
                     if input != None:
                         r = average_confidence(path_constraint)
@@ -528,7 +444,7 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
 
                 prefix_pred = prefix_pred + [c]
 
-    res_df, metrics = make_final_metrics_and_dataframe(ge, tot_inputs, all_discriminations, dsn_by_attr_value,
+    res_df, metrics = make_final_metrics_and_dataframe(data, tot_inputs, all_discriminations, dsn_by_attr_value,
                                                        start_time, logger=logger)
 
     return res_df, metrics
@@ -537,6 +453,6 @@ def run_sg(ge: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=10
 if __name__ == '__main__':
     ge, ge_schema = get_real_data('adult', use_cache=True)
 
-    res_df, metrics = run_sg(ge, max_tsn=20000, cluster_num=50, max_runtime_seconds=1000)
+    res_df, metrics = run_sg(ge, cluster_num=50, max_tsn=20000, max_runtime_seconds=1000)
     print(f"Results DataFrame shape: {res_df.shape}")
     print(f"Metrics: {metrics}")

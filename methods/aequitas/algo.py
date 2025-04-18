@@ -32,10 +32,10 @@ def get_input_bounds(discrimination_data):
     return bounds
 
 
-def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_global=500, max_local=2000,
-                 step_size=1.0, init_prob=0.5, random_seed=42, max_runtime_seconds=3600,
-                 max_tsn=10000, param_probability_change_size=0.005, direction_probability_change_size=0.005,
-                 one_attr_at_a_time=False):
+def run_aequitas(data: DiscriminationData, model_type='rf', max_global=500, max_local=2000, step_size=1.0,
+                 init_prob=0.5, random_seed=42, max_runtime_seconds=3600, max_tsn=10000,
+                 param_probability_change_size=0.005, direction_probability_change_size=0.005, one_attr_at_a_time=False,
+                 db_path=None, analysis_id=None):
     early_termination = False
 
     if random_seed is not None:
@@ -47,26 +47,26 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     # Train model using provided training function
     logger.info("Training the model...")
     model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
-        data=discrimination_data.training_dataframe,
+        data=data.training_dataframe,
         model_type=model_type,
-        sensitive_attrs=discrimination_data.protected_attributes,
-        target_col=discrimination_data.outcome_column,
+        sensitive_attrs=data.protected_attributes,
+        target_col=data.outcome_column,
         random_state=random_seed
     )
     logger.info(f"Model trained. Features: {feature_names}")
 
-    dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in discrimination_data.protected_attributes}
+    dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in data.protected_attributes}
     dsn_by_attr_value['total'] = 0
 
     # Get input bounds and number of parameters
-    input_bounds = get_input_bounds(discrimination_data)
+    input_bounds = get_input_bounds(data)
     params = len(input_bounds)
     logger.info(f"Total parameters: {params}")
     logger.info(f"Input bounds: {input_bounds}")
 
     # Get sensitive parameter indices for all protected attributes
-    sensitive_params = [discrimination_data.attr_columns.index(attr) for attr in
-                        discrimination_data.protected_attributes]
+    sensitive_params = [data.attr_columns.index(attr) for attr in
+                        data.protected_attributes]
     logger.info(f"Protected attribute indices: {sensitive_params}")
 
     # Initialize probabilities with higher change rates for faster adaptation
@@ -78,6 +78,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
     local_disc_inputs = set()
     tot_inputs = set()
     all_discriminations = set()
+    all_tot_inputs = []
 
     def should_terminate() -> bool:
         nonlocal early_termination
@@ -293,13 +294,15 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
             # Check for discrimination
             rounded_x = np.round(x).astype(int)
             error_condition, discrimination_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=logger,
-                                                                                                          discrimination_data=discrimination_data,
+                                                                                                          discrimination_data=data,
                                                                                                           model=self.model,
                                                                                                           dsn_by_attr_value=dsn_by_attr_value,
                                                                                                           instance=rounded_x,
                                                                                                           tot_inputs=tot_inputs,
                                                                                                           all_discriminations=all_discriminations,
-                                                                                                          one_attr_at_a_time=one_attr_at_a_time)
+                                                                                                          one_attr_at_a_time=one_attr_at_a_time,
+                                                                                                          db_path=db_path,
+                                                                                                          analysis_id=analysis_id)
 
             # Update direction probabilities
             if (error_condition and direction_choice == -1) or (not error_condition and direction_choice == 1):
@@ -344,13 +347,15 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
 
         # Check for discrimination
         error_condition, discrimination_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=logger,
-                                                                                                      discrimination_data=discrimination_data,
+                                                                                                      discrimination_data=data,
                                                                                                       model=model,
                                                                                                       dsn_by_attr_value=dsn_by_attr_value,
                                                                                                       instance=inp,
                                                                                                       tot_inputs=tot_inputs,
                                                                                                       all_discriminations=all_discriminations,
-                                                                                                      one_attr_at_a_time=one_attr_at_a_time)
+                                                                                                      one_attr_at_a_time=one_attr_at_a_time,
+                                                                                                      db_path=db_path,
+                                                                                                      analysis_id=analysis_id)
 
         # Track inputs
         temp = tuple(inp.tolist())
@@ -362,7 +367,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         return float(not error_condition)
 
     # GLOBAL DISCRIMINATION DISCOVERY:
-    global_inputs = discrimination_data.get_random_rows(max_global)
+    global_inputs = data.get_random_rows(max_global)
 
     for i, global_inp in global_inputs.iterrows():
         # Add termination check inside global discovery loop
@@ -370,13 +375,15 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
             break
 
         result, discrimination_df, max_discr, org_df, tested_inp = check_for_error_condition(logger=logger,
-                                                                                             discrimination_data=discrimination_data,
+                                                                                             discrimination_data=data,
                                                                                              model=model,
                                                                                              dsn_by_attr_value=dsn_by_attr_value,
                                                                                              instance=global_inp.to_numpy(),
                                                                                              tot_inputs=tot_inputs,
                                                                                              all_discriminations=all_discriminations,
-                                                                                             one_attr_at_a_time=one_attr_at_a_time)
+                                                                                             one_attr_at_a_time=one_attr_at_a_time,
+                                                                                             db_path=db_path,
+                                                                                             analysis_id=analysis_id)
         if result:
             global_disc_inputs.add(tuple(global_inp.to_numpy()))
 
@@ -422,7 +429,7 @@ def run_aequitas(discrimination_data: DiscriminationData, model_type='rf', max_g
         if should_terminate():
             break
 
-    res_df, metrics = make_final_metrics_and_dataframe(discrimination_data, tot_inputs, all_discriminations,
+    res_df, metrics = make_final_metrics_and_dataframe(data, tot_inputs, all_discriminations,
                                                        dsn_by_attr_value, start_time, logger=logger)
 
     return res_df, metrics
@@ -434,11 +441,7 @@ if __name__ == '__main__':
     # discrimination_data, schema = generate_from_real_data(data_generator)
 
     # For the adult dataset with max_tsn parameter
-    results, metrics = run_aequitas(
-        discrimination_data=discrimination_data,
-        model_type='rf', max_global=200,
-        max_local=10000, step_size=1.0,
-        max_runtime_seconds=200, max_tsn=3300, one_attr_at_a_time=True
-    )
+    results, metrics = run_aequitas(data=discrimination_data, model_type='rf', max_global=200, max_local=10000,
+                                    step_size=1.0, max_runtime_seconds=200, max_tsn=3300, one_attr_at_a_time=True)
 
     print(metrics)

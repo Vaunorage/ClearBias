@@ -29,17 +29,11 @@ def run_single_experiment(
             data_obj, **real_params
         )
     elif algorithm == 'aequitas':
-        results_df_origin, metrics_origin = run_aequitas(
-            discrimination_data=data_obj, **real_params
-        )
+        results_df_origin, metrics_origin = run_aequitas(data=data_obj, **real_params)
     elif algorithm == 'expga':
-        results_df_origin, metrics_origin = run_expga(
-            dataset=data_obj, **real_params
-        )
+        results_df_origin, metrics_origin = run_expga(data=data_obj, **real_params)
     elif algorithm == 'sg':
-        results_df_origin, metrics_origin = run_sg(
-            ge=data_obj, **real_params
-        )
+        results_df_origin, metrics_origin = run_sg(data=data_obj, **real_params)
     else:
         raise ValueError(f"Unknown algorithm: {algorithm}")
 
@@ -73,17 +67,11 @@ def run_single_experiment(
             data_obj_synth, **synth_params
         )
     elif algorithm == 'aequitas':
-        results_df_synth, metrics_synth = run_aequitas(
-            discrimination_data=data_obj_synth, **synth_params
-        )
+        results_df_synth, metrics_synth = run_aequitas(data=data_obj_synth, **synth_params)
     elif algorithm == 'expga':
-        results_df_synth, metrics_synth = run_expga(
-            dataset=data_obj_synth, **synth_params
-        )
+        results_df_synth, metrics_synth = run_expga(data=data_obj_synth, **synth_params)
     elif algorithm == 'sg':
-        results_df_synth, metrics_synth = run_sg(
-            ge=data_obj_synth, **synth_params
-        )
+        results_df_synth, metrics_synth = run_sg(data=data_obj_synth, **synth_params)
 
     # Get discriminatory groups from synthetic data
     predefined_groups_synth = reformat_discrimination_results(

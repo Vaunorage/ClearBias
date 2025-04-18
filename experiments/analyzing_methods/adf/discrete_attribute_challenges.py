@@ -77,6 +77,7 @@ def random_search_fairness_testing(
     tot_inputs = set()
     all_discriminations = set()
     disc_inputs = set()
+    total_all_inputs = []
 
     # Get the input bounds for each attribute
     input_bounds = discrimination_data.input_bounds
@@ -119,6 +120,7 @@ def random_search_fairness_testing(
             discrimination_data=discrimination_data,
             tot_inputs=tot_inputs,
             all_discriminations=all_discriminations,
+            total_all_inputs=total_all_inputs,
             one_attr_at_a_time=one_attr_at_a_time
         )
 
@@ -254,16 +256,10 @@ def run_comparison_experiment():
                 # Run ADF
                 logger.info("Running ADF...")
                 start_time = time.time()
-                _, adf_metrics = adf_fairness_testing(
-                    discrimination_data=discrimination_data,
-                    max_global=200,
-                    max_local=200,
-                    cluster_num=20,
-                    random_seed=seed,
-                    max_runtime_seconds=max_runtime_seconds,
-                    max_tsn=max_tsn,
-                    step_size=1.0  # Standard step size
-                )
+                _, adf_metrics = adf_fairness_testing(data=discrimination_data, max_global=200, max_local=200,
+                                                      cluster_num=20, random_seed=seed,
+                                                      max_runtime_seconds=max_runtime_seconds, max_tsn=max_tsn,
+                                                      step_size=1.0)
                 adf_runtime = time.time() - start_time
 
                 # Run Random Search

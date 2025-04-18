@@ -38,17 +38,9 @@ def run_experiment_for_model(model_type: str, dataset_name: str, sensitive_featu
         print("MAX TSN", 20000)
 
         start_time = time.time()
-        expga_results, expga_metrics = run_expga(
-            dataset=data_obj,
-            model_type=model_type.lower(),
-            threshold=0.5,
-            threshold_rank=0.5,
-            max_global=5000,
-            max_local=2000,
-            max_tsn=20000,
-            time_limit=1000,
-            one_attr_at_a_time=True
-        )
+        expga_results, expga_metrics = run_expga(data=data_obj, threshold_rank=0.5, max_global=5000, max_local=2000,
+                                                 model_type=model_type.lower(), max_tsn=20000, one_attr_at_a_time=True,
+                                                 threshold=0.5, time_limit=1000)
         execution_time = time.time() - start_time
         print("EXPGA METRICS", expga_metrics)
 
@@ -85,14 +77,8 @@ def run_experiment_for_model(model_type: str, dataset_name: str, sensitive_featu
         print("MAX TSN", 20000)
 
         start_time = time.time()
-        sg_results, sg_metrics = run_sg(
-            ge=data_obj,
-            model_type=model_type.lower(),
-            cluster_num=50,
-            max_tsn=20000,
-            time_limit=10000,
-            one_attr_at_a_time=True
-        )
+        sg_results, sg_metrics = run_sg(data=data_obj, model_type=model_type.lower(), cluster_num=50, max_tsn=20000,
+                                        one_attr_at_a_time=True)
         execution_time = time.time() - start_time
         print("SG METRICS", sg_metrics)
 
@@ -128,17 +114,9 @@ def run_experiment_for_model(model_type: str, dataset_name: str, sensitive_featu
 
         start_time = time.time()
         print("MAX TSN", 20000)
-        aequitas_results, aequitas_metrics = run_aequitas(
-            discrimination_data=data_obj,
-            model_type=model_type.lower(),
-            max_global=5000,
-            max_local=2000,
-            step_size=1.0,
-            random_seed=42,
-            max_tsn=20000,
-            time_limit_seconds=10000,
-            one_attr_at_a_time=True
-        )
+        aequitas_results, aequitas_metrics = run_aequitas(data=data_obj, model_type=model_type.lower(), max_global=5000,
+                                                          max_local=2000, step_size=1.0, random_seed=42, max_tsn=20000,
+                                                          one_attr_at_a_time=True)
         execution_time = time.time() - start_time
         print("AEQUITAS METRICS", aequitas_metrics)
 
@@ -175,16 +153,9 @@ def run_experiment_for_model(model_type: str, dataset_name: str, sensitive_featu
         print("MAX TSN", 20000)
 
         start_time = time.time()
-        adf_results, adf_metrics = adf_fairness_testing(
-            data_obj,
-            max_global=2000,
-            max_local=100,
-            cluster_num=100,
-            random_seed=42,
-            max_tsn=9000,
-            max_runtime_seconds=1000,
-            one_attr_at_a_time=True
-        )
+        adf_results, adf_metrics = adf_fairness_testing(data_obj, max_global=2000, max_local=100, cluster_num=100,
+                                                        random_seed=42, max_runtime_seconds=1000, max_tsn=9000,
+                                                        one_attr_at_a_time=True)
         execution_time = time.time() - start_time
         print("ADF METRICS", adf_metrics)
 

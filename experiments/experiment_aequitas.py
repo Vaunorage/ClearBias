@@ -37,11 +37,7 @@ def run_experiment(model_type, min_number_of_classes=2, max_number_of_classes=6,
                        nb_categories_outcome=nb_categories_outcome)
 
     dff = ge.dataframe[list(ge.attributes.keys()) + [ge.outcome_column]]
-    results_df, model_scores = run_aequitas(dff, col_to_be_predicted=ge.outcome_column,
-                                            sensitive_param_name_list=ge.protected_attributes,
-                                            perturbation_unit=1, model_type=model_type, threshold=0,
-                                            global_iteration_limit=global_iteration_limit,
-                                            local_iteration_limit=local_iteration_limit)
+    results_df, model_scores = run_aequitas(dff, model_type=model_type)
 
     print("Merge results")
     df_true_pos = ge.dataframe.drop(columns=list(protected_attr)).merge(results_df.drop(columns=list(protected_attr)),

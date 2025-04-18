@@ -287,21 +287,13 @@ class LocalPerturbation:
         return x_new
 
 
-def adf_fairness_testing(
-        discrimination_data: DiscriminationData,
-        max_global: int = 2000,
-        max_local: int = 2000,
-        cluster_num: int = 10,
-        random_seed: int = 42,
-        max_runtime_seconds: int = 3600,  # Default 1 hour time limit
-        max_tsn: int = None,  # New parameter for TSN threshold
-        step_size: float = 0.4,
-        one_attr_at_a_time: bool = False
-) -> Tuple[pd.DataFrame, Dict[str, float]]:
+def adf_fairness_testing(data: DiscriminationData, max_global: int = 2000, max_local: int = 2000, cluster_num: int = 10,
+                         random_seed: int = 42, max_runtime_seconds: int = 3600, max_tsn: int = None,
+                         step_size: float = 0.4, one_attr_at_a_time: bool = False, db_path=None, analysis_id=None) -> Tuple[pd.DataFrame, Dict[str, float]]:
     """Implementation of ADF fairness testing.
 
     Args:
-        discrimination_data: Data object containing dataset and metadata
+        data: Data object containing dataset and metadata
         max_global: Maximum samples for global search
         max_local: Maximum samples for local search
         max_iter: Maximum iterations for global perturbation
@@ -322,13 +314,13 @@ def adf_fairness_testing(
 
     start_time = time.time()
 
-    dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in discrimination_data.protected_attributes}
+    dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in data.protected_attributes}
     dsn_by_attr_value['total'] = 0
 
-    data = discrimination_data.training_dataframe.copy()
+    data = data.training_dataframe.copy()
 
     logger.info(f"Dataset shape: {data.shape}")
-    logger.info(f"Protected attributes: {discrimination_data.protected_attributes}")
+    logger.info(f"Protected attributes: {data.protected_attributes}")
     logger.info(f"Time limit: {max_runtime_seconds} seconds")
     if max_tsn:
         logger.info(f"Target TSN: {max_tsn}")
@@ -336,9 +328,10 @@ def adf_fairness_testing(
     model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
         data=data,
         model_type='mlp',
-        target_col=discrimination_data.outcome_column,
-        sensitive_attrs=list(discrimination_data.protected_attributes),
-        random_state=random_seed
+        target_col=data.outcome_column,
+        sensitive_attrs=list(data.protected_attributes),
+        random_state=random_seed,
+        use_cache=True
     )
 
     train_score = model.score(X_train, y_train)
@@ -346,13 +339,15 @@ def adf_fairness_testing(
     logger.info(f"Model training score: {train_score:.4f}")
     logger.info(f"Model test score: {test_score:.4f}")
 
-    X = discrimination_data.xdf.to_numpy()
+    X = data.xdf.to_numpy()
 
     logger.info(f"Testing data shape: {X.shape}")
 
     global_disc_inputs = set()
     local_disc_inputs = set()
+
     tot_inputs = set()
+    all_tot_inputs = []
     all_discriminations = set()
 
     # Early termination flag - will be used to break out of the local search
@@ -396,10 +391,12 @@ def adf_fairness_testing(
                 model=model,
                 instance=instance,
                 dsn_by_attr_value=dsn_by_attr_value,
-                discrimination_data=discrimination_data,
+                discrimination_data=data,
                 tot_inputs=tot_inputs,
                 all_discriminations=all_discriminations,
-                one_attr_at_a_time=one_attr_at_a_time
+                one_attr_at_a_time=one_attr_at_a_time,
+                db_path=db_path,
+                analysis_id=analysis_id
             )
 
             if should_terminate():
@@ -412,8 +409,8 @@ def adf_fairness_testing(
                 instance = global_perturbation(
                     model,
                     instance,
-                    discrimination_data.sensitive_indices,
-                    discrimination_data.input_bounds,
+                    data.sensitive_indices,
+                    data.input_bounds,
                     step_size=step_size
                 )
 
@@ -440,10 +437,12 @@ def adf_fairness_testing(
             model=model,
             instance=inp,
             dsn_by_attr_value=dsn_by_attr_value,
-            discrimination_data=discrimination_data,
+            discrimination_data=data,
             tot_inputs=tot_inputs,
             all_discriminations=all_discriminations,
-            one_attr_at_a_time=one_attr_at_a_time
+            one_attr_at_a_time=one_attr_at_a_time,
+            db_path=db_path,
+            analysis_id=analysis_id
         )
 
         if is_discriminatory:
@@ -458,8 +457,8 @@ def adf_fairness_testing(
 
         local_perturbation = LocalPerturbation(
             model,
-            discrimination_data.sensitive_indices,
-            discrimination_data.input_bounds,
+            data.sensitive_indices,
+            data.input_bounds,
             step_size=step_size
         )
 
@@ -482,9 +481,9 @@ def adf_fairness_testing(
         if callback.should_stop or early_termination:
             logger.info("Early termination triggered during local search")
             break
-    res_df, metrics = make_final_metrics_and_dataframe(discrimination_data, tot_inputs, all_discriminations,
-                                                       dsn_by_attr_value,
-                                                       start_time, logger=logger)
+
+    res_df, metrics = make_final_metrics_and_dataframe(data, tot_inputs, all_discriminations,
+                                                       dsn_by_attr_value, start_time, logger=logger)
     return res_df, metrics
 
 
@@ -493,15 +492,7 @@ if __name__ == "__main__":
 
     data_obj, schema = get_real_data('adult', use_cache=True)
 
-    results_df, metrics = adf_fairness_testing(
-        data_obj,
-        max_global=100,
-        max_local=100,
-        cluster_num=50,
-        max_runtime_seconds=3600,
-        max_tsn=20000,
-        step_size=0.1,
-        # one_attr_at_a_time=True
-    )
+    results_df, metrics = adf_fairness_testing(data_obj, max_global=100, max_local=100, cluster_num=50,
+                                               max_runtime_seconds=60, max_tsn=20000, step_size=0.1)
 
     print(f"\nTesting Metrics: {metrics}")

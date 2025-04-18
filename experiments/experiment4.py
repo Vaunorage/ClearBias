@@ -654,16 +654,7 @@ class ExperimentRunner:
             if hasattr(signal, 'SIGALRM'):
                 with timeout(timeout_seconds):
                     if method == Method.AEQUITAS:
-                        results_df, metrics = run_aequitas(
-                            ge.training_dataframe,
-                            col_to_be_predicted=ge.outcome_column,
-                            sensitive_param_name_list=ge.protected_attributes,
-                            perturbation_unit=config.aequitas_perturbation_unit,
-                            model_type=config.aequitas_model_type,
-                            threshold=config.aequitas_threshold,
-                            global_iteration_limit=config.aequitas_global_iteration_limit,
-                            local_iteration_limit=config.aequitas_local_iteration_limit
-                        )
+                        results_df, metrics = run_aequitas(ge.training_dataframe, model_type=config.aequitas_model_type)
                     elif method == Method.BIASSCAN:
                         results_df, metrics = run_bias_scan(
                             ge,
@@ -676,13 +667,10 @@ class ExperimentRunner:
                             bias_scan_mode=config.bias_scan_mode
                         )
                     elif method == Method.EXPGA:
-                        results_df, metrics = run_expga(
-                            ge,
-                            threshold=config.expga_threshold,
-                            threshold_rank=config.expga_threshold_rank,
-                            max_global=config.expga_max_global,
-                            max_local=config.expga_max_local
-                        )
+                        results_df, metrics = run_expga(ge, threshold_rank=config.expga_threshold_rank,
+                                                        max_global=config.expga_max_global,
+                                                        max_local=config.expga_max_local,
+                                                        threshold=config.expga_threshold)
                     elif method == Method.MLCHECK:
                         results_df, metrics = run_mlcheck(
                             ge,
@@ -691,16 +679,7 @@ class ExperimentRunner:
             else:
                 # On Windows or systems without SIGALRM, run without timeout
                 if method == Method.AEQUITAS:
-                    results_df, metrics = run_aequitas(
-                        ge.training_dataframe,
-                        col_to_be_predicted=ge.outcome_column,
-                        sensitive_param_name_list=ge.protected_attributes,
-                        perturbation_unit=config.aequitas_perturbation_unit,
-                        model_type=config.aequitas_model_type,
-                        threshold=config.aequitas_threshold,
-                        global_iteration_limit=config.aequitas_global_iteration_limit,
-                        local_iteration_limit=config.aequitas_local_iteration_limit
-                    )
+                    results_df, metrics = run_aequitas(ge.training_dataframe, model_type=config.aequitas_model_type)
                 elif method == Method.BIASSCAN:
                     results_df, metrics = run_bias_scan(
                         ge,
@@ -713,13 +692,9 @@ class ExperimentRunner:
                         bias_scan_mode=config.bias_scan_mode
                     )
                 elif method == Method.EXPGA:
-                    results_df, metrics = run_expga(
-                        ge,
-                        threshold=config.expga_threshold,
-                        threshold_rank=config.expga_threshold_rank,
-                        max_global=config.expga_max_global,
-                        max_local=config.expga_max_local
-                    )
+                    results_df, metrics = run_expga(ge, threshold_rank=config.expga_threshold_rank,
+                                                    max_global=config.expga_max_global,
+                                                    max_local=config.expga_max_local, threshold=config.expga_threshold)
                 elif method == Method.MLCHECK:
                     results_df, metrics = run_mlcheck(
                         ge,

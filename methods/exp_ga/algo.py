@@ -109,10 +109,9 @@ class GlobalDiscovery:
         return samples
 
 
-def run_expga(dataset: DiscriminationData, threshold_rank: float,
-              max_global: int, max_local: int, model_type: str = 'rf', cross_rate=0.9, mutation=0.1,
-              max_runtime_seconds: float = None, max_tsn: int = None, nb_seed=100, one_attr_at_a_time=False,
-              **model_kwargs) -> Tuple[pd.DataFrame, Metrics]:
+def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, max_local: int, model_type: str = 'rf',
+              cross_rate=0.9, mutation=0.1, max_runtime_seconds: float = None, max_tsn: int = None, nb_seed=100,
+              one_attr_at_a_time=False, db_path=None, analysis_id=None, **model_kwargs) -> Tuple[pd.DataFrame, Metrics]:
     """
     XAI fairness testing that works on all protected attributes simultaneously.
     Uses a centralized termination check to improve code structure.
@@ -123,7 +122,7 @@ def run_expga(dataset: DiscriminationData, threshold_rank: float,
     start_time = time.time()
     disc_times: List[float] = []
 
-    X, Y = dataset.xdf, dataset.ydf
+    X, Y = data.xdf, data.ydf
     model = get_model(model_type, **model_kwargs)
     model.fit(X, Y)
 
@@ -132,6 +131,7 @@ def run_expga(dataset: DiscriminationData, threshold_rank: float,
     total_inputs: Set[Tuple[float, ...]] = set()
     tot_inputs = set()
     all_discriminations = set()
+    all_tot_inputs = []
 
     early_termination = False
 
@@ -146,7 +146,7 @@ def run_expga(dataset: DiscriminationData, threshold_rank: float,
             return True
         return False
 
-    dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in dataset.protected_attributes}
+    dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in data.protected_attributes}
     dsn_by_attr_value['total'] = 0
 
     def evaluate_local(input_sample) -> float:
@@ -159,12 +159,13 @@ def run_expga(dataset: DiscriminationData, threshold_rank: float,
         input_array = np.array(input_sample, dtype=float).flatten()
 
         result, results_df, max_diff, org_df, tested_inp = check_for_error_condition(logger=logger,
-                                                                                     discrimination_data=dataset,
+                                                                                     discrimination_data=data,
                                                                                      dsn_by_attr_value=dsn_by_attr_value,
                                                                                      model=model, instance=input_sample,
                                                                                      tot_inputs=tot_inputs,
                                                                                      all_discriminations=all_discriminations,
-                                                                                     one_attr_at_a_time=one_attr_at_a_time)
+                                                                                     one_attr_at_a_time=one_attr_at_a_time,
+                                                                                     db_path=db_path, analysis_id=analysis_id)
 
         if result and tuple(input_array) not in global_disc_inputs.union(local_disc_inputs):
             local_disc_inputs.add(tuple(input_array))
@@ -179,31 +180,31 @@ def run_expga(dataset: DiscriminationData, threshold_rank: float,
     global_discovery = GlobalDiscovery()
 
     # Create seeds for each protected attribute
-    for p_attr in dataset.protected_attributes:
+    for p_attr in data.protected_attributes:
         if should_terminate():
             break
 
-        sensitive_idx = dataset.sensitive_indices_dict[p_attr]
+        sensitive_idx = data.sensitive_indices_dict[p_attr]
 
         # Generate samples focused on this attribute
         attr_samples = global_discovery(
-            max_global // len(dataset.protected_attributes),
-            len(dataset.feature_names),
-            dataset.input_bounds,
+            max_global // len(data.protected_attributes),
+            len(data.feature_names),
+            data.input_bounds,
             sensitive_idx
         )
 
         # Initialize explainer if needed
-        explainer = construct_explainer(X.values, dataset.feature_names, dataset.outcome_column)
+        explainer = construct_explainer(X.values, data.feature_names, data.outcome_column)
 
         # Find promising seeds
         attr_seeds = search_seed(
             model,
-            dataset.feature_names,
+            data.feature_names,
             p_attr,
             explainer,
             np.array(attr_samples),
-            len(dataset.feature_names),
+            len(data.feature_names),
             threshold_rank,
             nb_seed
         )
@@ -221,7 +222,7 @@ def run_expga(dataset: DiscriminationData, threshold_rank: float,
                 break
 
             random_seed = np.array([float(random.randint(bounds[0], bounds[1]))
-                                    for bounds in dataset.input_bounds])
+                                    for bounds in data.input_bounds])
             seeds.append(random_seed)
 
     # Format seeds for GA
@@ -232,7 +233,7 @@ def run_expga(dataset: DiscriminationData, threshold_rank: float,
 
         try:
             seed_array = np.array(seed, dtype=float).flatten()
-            if len(seed_array) == len(dataset.feature_names):
+            if len(seed_array) == len(data.feature_names):
                 formatted_seeds.append(seed_array)
                 global_disc_inputs.add(tuple(seed_array))
                 total_inputs.add(tuple(seed_array))
@@ -243,9 +244,9 @@ def run_expga(dataset: DiscriminationData, threshold_rank: float,
     if not should_terminate():
         ga = GA(
             nums=formatted_seeds,
-            bound=dataset.input_bounds,
+            bound=data.input_bounds,
             func=evaluate_local,
-            DNA_SIZE=len(dataset.input_bounds),
+            DNA_SIZE=len(data.input_bounds),
             cross_rate=cross_rate,
             mutation=mutation
         )
@@ -262,7 +263,7 @@ def run_expga(dataset: DiscriminationData, threshold_rank: float,
                 logger.info(f"Iteration {iteration}: TSN={len(tot_inputs)}, DSN={len(all_discriminations)}")
 
     # Calculate final results
-    res_df, metrics = make_final_metrics_and_dataframe(dataset, tot_inputs, all_discriminations, dsn_by_attr_value,
+    res_df, metrics = make_final_metrics_and_dataframe(data, tot_inputs, all_discriminations, dsn_by_attr_value,
                                                        start_time, logger=logger)
 
     # Log whether we terminated early
@@ -277,16 +278,8 @@ if __name__ == "__main__":
 
     data_obj, schema = get_real_data('adult', use_cache=True)
 
-    results_df, metrics = run_expga(
-        data_obj,
-        threshold_rank=0.5,
-        max_global=20000,
-        max_local=100,
-        cluster_num=50,
-        max_runtime_seconds=3600,
-        max_tsn=20000,
-        step_size=0.05,
-        one_attr_at_a_time=True
-    )
+    results_df, metrics = run_expga(data_obj, threshold_rank=0.5, max_global=20000, max_local=100,
+                                    max_runtime_seconds=3600, max_tsn=20000, one_attr_at_a_time=True, cluster_num=50,
+                                    step_size=0.05)
 
     print(f"\nTesting Metrics: {metrics}")
