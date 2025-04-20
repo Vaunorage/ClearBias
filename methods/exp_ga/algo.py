@@ -1,8 +1,6 @@
 import time
-from itertools import product
 from typing import TypedDict, List, Tuple, Dict, Any, Union, Set
 import math
-import uuid
 import warnings
 import numpy as np
 import random
@@ -18,7 +16,7 @@ from lime.lime_tabular import LimeTabularExplainer
 
 from data_generator.main import DiscriminationData
 from methods.exp_ga.genetic_algorithm import GA
-from methods.utils import check_for_error_condition, make_final_metrics_and_dataframe
+from methods.utils import check_for_error_condition, make_final_metrics_and_dataframe, train_sklearn_model
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -123,8 +121,16 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
     disc_times: List[float] = []
 
     X, Y = data.xdf, data.ydf
-    model = get_model(model_type, **model_kwargs)
-    model.fit(X, Y)
+
+    model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
+        data=data.dataframe,
+        model_type=model_type,
+        target_col=data.outcome_column,
+        sensitive_attrs=list(data.protected_attributes),
+        random_state=nb_seed,
+        use_cache=True
+    )
+
 
     global_disc_inputs: Set[Tuple[float, ...]] = set()
     local_disc_inputs: Set[Tuple[float, ...]] = set()

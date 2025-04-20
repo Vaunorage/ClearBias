@@ -15,6 +15,11 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.model_selection import train_test_split
+import cudf
+from cuml.ensemble import RandomForestClassifier as cuRFC
+from cuml.svm import SVC as cuSVC
+from cuml.linear_model import LogisticRegression as cuLR
+from cuml import DecisionTreeClassifier as cuDTC
 from pathlib import Path
 
 from data_generator.main import GroupDefinition, DataSchema, DiscriminationData
@@ -22,7 +27,14 @@ from path import HERE
 
 
 def train_sklearn_model(data, model_type='rf', model_params=None, target_col='class', sensitive_attrs=None,
-                        test_size=0.2, random_state=42, use_cache=False, cache_dir=HERE.joinpath('.cache/model_cache')):
+                        test_size=0.2, random_state=42, use_cache=False, cache_dir=HERE.joinpath('.cache/model_cache'),
+                        use_gpu=True):
+    """
+    Train a model using either scikit-learn (CPU) or cuML (GPU) based on the use_gpu flag.
+
+    Args:
+        use_gpu: Whether to use GPU acceleration (default: True)
+    """
     # Default parameters for each model type
     np.random.seed(random_state)
     sklearn.utils.check_random_state(random_state)
@@ -32,7 +44,7 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
         'rf': {
             'n_estimators': 100,
             'random_state': random_state,
-            'n_jobs': 1  # Add this to ensure deterministic behavior
+            'n_jobs': 1  # Add this to ensure deterministic behavior for CPU version
         },
         'svm': {'kernel': 'rbf', 'random_state': random_state},
         'lr': {'max_iter': 1000, 'random_state': random_state},
@@ -48,14 +60,24 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
     # Select model parameters
     params = model_params if model_params is not None else default_params[model_type]
 
-    # Initialize model based on type
-    model_map = {
-        'rf': RandomForestClassifier,
-        'svm': SVC,
-        'lr': LogisticRegression,
-        'dt': DecisionTreeClassifier,
-        'mlp': MLPClassifier
-    }
+    # Initialize model maps based on use_gpu flag
+    if use_gpu:
+        # Note: cuML doesn't have MLP classifier, so we'll use sklearn for that
+        model_map = {
+            'rf': cuRFC,
+            'svm': cuSVC,
+            'lr': cuLR,
+            'dt': cuDTC,
+            'mlp': MLPClassifier  # Fallback to sklearn for MLP
+        }
+    else:
+        model_map = {
+            'rf': RandomForestClassifier,
+            'svm': SVC,
+            'lr': LogisticRegression,
+            'dt': DecisionTreeClassifier,
+            'mlp': MLPClassifier
+        }
 
     if model_type not in model_map:
         raise ValueError(f"Unsupported model type: {model_type}. Supported types are: {list(model_map.keys())}")
@@ -73,7 +95,8 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
         'target_col': target_col,
         'sensitive_attrs': sensitive_attrs,
         'test_size': test_size,
-        'random_state': random_state
+        'random_state': random_state,
+        'use_gpu': use_gpu
     }).encode()).hexdigest()
 
     # Add a hash of the dataset (using first and last few rows to avoid memory issues with large datasets)
@@ -101,9 +124,30 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
             X, y, test_size=test_size, random_state=random_state
         )
 
-        # Create and train model
-        model = model_map[model_type](**params)
-        model.fit(X_train, y_train)
+        if use_gpu:
+            # Convert to cuDF DataFrames for GPU processing if not MLP
+            if model_type != 'mlp':
+                try:
+                    X_train_gpu = cudf.DataFrame.from_pandas(X_train)
+                    X_test_gpu = cudf.DataFrame.from_pandas(X_test)
+                    y_train_gpu = cudf.Series(y_train.values)
+                    y_test_gpu = cudf.Series(y_test.values)
+
+                    # Create and train model on GPU
+                    model = model_map[model_type](**params)
+                    model.fit(X_train_gpu, y_train_gpu)
+                except Exception as e:
+                    print(f"Error using GPU: {e}. Falling back to CPU.")
+                    model = getattr(sklearn, model_type.split('.')[-1])(**params)
+                    model.fit(X_train, y_train)
+            else:
+                # For MLP, use CPU version since there's no cuML equivalent
+                model = model_map[model_type](**params)
+                model.fit(X_train, y_train)
+        else:
+            # Create and train model on CPU
+            model = model_map[model_type](**params)
+            model.fit(X_train, y_train)
 
         # Save model to cache if requested
         if use_cache:
@@ -122,7 +166,6 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
                 }, f)
 
     return model, X_train, X_test, y_train, y_test, feature_names
-
 
 def reformat_discrimination_results(non_float_df, original_df) -> List[GroupDefinition]:
     protected_attrs = [col for col in non_float_df.columns if col.endswith('_T')]
