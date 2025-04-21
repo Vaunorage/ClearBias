@@ -15,11 +15,6 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.model_selection import train_test_split
-import cudf
-from cuml.ensemble import RandomForestClassifier as cuRFC
-from cuml.svm import SVC as cuSVC
-from cuml.linear_model import LogisticRegression as cuLR
-from cuml import DecisionTreeClassifier as cuDTC
 from pathlib import Path
 
 from data_generator.main import GroupDefinition, DataSchema, DiscriminationData
@@ -29,6 +24,12 @@ from path import HERE
 def train_sklearn_model(data, model_type='rf', model_params=None, target_col='class', sensitive_attrs=None,
                         test_size=0.2, random_state=42, use_cache=False, cache_dir=HERE.joinpath('.cache/model_cache'),
                         use_gpu=True):
+    if use_gpu:
+        import cudf
+        from cuml.ensemble import RandomForestClassifier as cuRFC
+        from cuml.svm import SVC as cuSVC
+        from cuml.linear_model import LogisticRegression as cuLR
+        from cuml import DecisionTreeClassifier as cuDTC
     """
     Train a model using either scikit-learn (CPU) or cuML (GPU) based on the use_gpu flag.
 
