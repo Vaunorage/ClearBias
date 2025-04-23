@@ -1,3 +1,4 @@
+import logging
 import time
 from typing import List
 from tqdm import tqdm
@@ -8,7 +9,6 @@ import hashlib
 import pickle
 import os
 import numpy as np
-import sklearn
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.linear_model import LogisticRegression
@@ -20,32 +20,40 @@ from pathlib import Path
 from data_generator.main import GroupDefinition, DataSchema, DiscriminationData
 from path import HERE
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 def train_sklearn_model(data, model_type='rf', model_params=None, target_col='class', sensitive_attrs=None,
                         test_size=0.2, random_state=42, use_cache=False, cache_dir=HERE.joinpath('.cache/model_cache'),
-                        use_gpu=True):
-    if use_gpu:
-        import cudf
-        from cuml.ensemble import RandomForestClassifier as cuRFC
-        from cuml.svm import SVC as cuSVC
-        from cuml.linear_model import LogisticRegression as cuLR
-        from cuml import DecisionTreeClassifier as cuDTC
+                        use_gpu=False):
     """
     Train a model using either scikit-learn (CPU) or cuML (GPU) based on the use_gpu flag.
-
-    Args:
-        use_gpu: Whether to use GPU acceleration (default: True)
     """
-    # Default parameters for each model type
-    np.random.seed(random_state)
-    sklearn.utils.check_random_state(random_state)
+    # Import GPU libraries if requested
+    if use_gpu:
+        try:
+            import cudf
+            import cupy as cp
+            from cuml.ensemble import RandomForestClassifier as cuRFC
+            from cuml.svm import SVC as cuSVC
+            from cuml.linear_model import LogisticRegression as cuLR
+            from cuml.tree import DecisionTreeClassifier as cuDTC
+            gpu_available = True
+        except ImportError:
+            logger.warning("GPU libraries not available. Falling back to CPU.")
+            use_gpu = False
+            gpu_available = False
 
-    # If using parallel processing (especially for RandomForest), set n_jobs=1
+    # Set random seeds
+    np.random.seed(random_state)
+
+    # Default parameters for each model type
     default_params = {
         'rf': {
             'n_estimators': 100,
             'random_state': random_state,
-            'n_jobs': 1  # Add this to ensure deterministic behavior for CPU version
+            'n_jobs': 1 if not use_gpu else None  # n_jobs is not used in cuML
         },
         'svm': {'kernel': 'rbf', 'random_state': random_state},
         'lr': {'max_iter': 1000, 'random_state': random_state},
@@ -58,12 +66,12 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
             'random_state': random_state
         }
     }
+
     # Select model parameters
     params = model_params if model_params is not None else default_params[model_type]
 
     # Initialize model maps based on use_gpu flag
-    if use_gpu:
-        # Note: cuML doesn't have MLP classifier, so we'll use sklearn for that
+    if use_gpu and gpu_available:
         model_map = {
             'rf': cuRFC,
             'svm': cuSVC,
@@ -85,6 +93,10 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
 
     # Prepare features and target
     drop_cols = [target_col]
+    if sensitive_attrs:
+        # Keep sensitive attributes in features unless explicitly specified to drop
+        pass
+
     X = data.drop(drop_cols, axis=1)
     feature_names = list(X.columns)  # Store feature names
     y = data[target_col]
@@ -106,11 +118,12 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
 
     # Combine both hashes for the final model ID
     model_id = f"{args_hash}_{data_hash}"
+    os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, f"{model_id}.pkl")
 
     if use_cache and os.path.exists(cache_path):
         # Load cached model and data
-        print(f"Loading cached model: {model_id}")
+        logger.info(f"Loading cached model: {model_id}")
         with open(cache_path, 'rb') as f:
             cached_data = pickle.load(f)
             model = cached_data['model']
@@ -125,7 +138,7 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
             X, y, test_size=test_size, random_state=random_state
         )
 
-        if use_gpu:
+        if use_gpu and gpu_available:
             # Convert to cuDF DataFrames for GPU processing if not MLP
             if model_type != 'mlp':
                 try:
@@ -137,36 +150,55 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
                     # Create and train model on GPU
                     model = model_map[model_type](**params)
                     model.fit(X_train_gpu, y_train_gpu)
+
+                    # Store original pandas dataframes for compatibility
+                    X_train_return = X_train
+                    X_test_return = X_test
+                    y_train_return = y_train
+                    y_test_return = y_test
                 except Exception as e:
-                    print(f"Error using GPU: {e}. Falling back to CPU.")
-                    model = getattr(sklearn, model_type.split('.')[-1])(**params)
+                    logger.warning(f"Error using GPU: {e}. Falling back to CPU.")
+                    model = model_map[model_type](**params)
                     model.fit(X_train, y_train)
+                    X_train_return = X_train
+                    X_test_return = X_test
+                    y_train_return = y_train
+                    y_test_return = y_test
             else:
                 # For MLP, use CPU version since there's no cuML equivalent
                 model = model_map[model_type](**params)
                 model.fit(X_train, y_train)
+                X_train_return = X_train
+                X_test_return = X_test
+                y_train_return = y_train
+                y_test_return = y_test
         else:
             # Create and train model on CPU
             model = model_map[model_type](**params)
             model.fit(X_train, y_train)
+            X_train_return = X_train
+            X_test_return = X_test
+            y_train_return = y_train
+            y_test_return = y_test
 
         # Save model to cache if requested
         if use_cache:
-            print(f"Saving model to cache: {model_id}")
+            logger.info(f"Saving model to cache: {model_id}")
             # Create cache directory if it doesn't exist
             os.makedirs(cache_dir, exist_ok=True)
             # Save model and data
             with open(cache_path, 'wb') as f:
                 pickle.dump({
                     'model': model,
-                    'X_train': X_train,
-                    'X_test': X_test,
-                    'y_train': y_train,
-                    'y_test': y_test,
+                    'X_train': X_train_return,
+                    'X_test': X_test_return,
+                    'y_train': y_train_return,
+                    'y_test': y_test_return,
                     'feature_names': feature_names
                 }, f)
 
     return model, X_train, X_test, y_train, y_test, feature_names
+
 
 def reformat_discrimination_results(non_float_df, original_df) -> List[GroupDefinition]:
     protected_attrs = [col for col in non_float_df.columns if col.endswith('_T')]

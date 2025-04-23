@@ -1,34 +1,20 @@
 import time
-from itertools import product
-from typing import TypedDict, List, Tuple, Dict, Any, Union, Set
+from typing import TypedDict, List, Tuple, Set
 import math
-import uuid
 import warnings
 import numpy as np
 import random
 import logging
 import pandas as pd
 from pandas import DataFrame
-import torch
-from torch import cuda
-from cuml.ensemble import RandomForestClassifier
-from cuml.svm import SVC
-from cuml import DecisionTreeClassifier
-import cudf
-from cuml.metrics import accuracy_score
-import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+from sklearn.base import BaseEstimator
 from lime.lime_tabular import LimeTabularExplainer
 
 from data_generator.main import DiscriminationData
-from methods.exp_ga.genetic_algorithm import GA
-from methods.utils import check_for_error_condition, make_final_metrics_and_dataframe
+from methods.utils import (check_for_error_condition, make_final_metrics_and_dataframe,
+                           train_sklearn_model)
 
-# Check GPU availability
-device = torch.device('cuda' if cuda.is_available() else 'cpu')
-use_gpu = cuda.is_available()
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -36,151 +22,206 @@ warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 
 class Metrics(TypedDict):
-    TSN: int  # Total Sample Number
-    DSN: int  # Discriminatory Sample Number
-    DSS: float  # Discriminatory Sample Search (avg time)
-    SUR: float  # Success Rate
+    TSN: int
+    DSN: int
+    DSS: float
+    SUR: float
 
 
 ExpGAResultDF = DataFrame
 
 
-# GPU-accelerated MLP model using PyTorch
-class TorchMLPClassifier(nn.Module):
-    def __init__(self, input_size, hidden_sizes=(100,), output_size=2, random_state=42):
-        super(TorchMLPClassifier, self).__init__()
-        torch.manual_seed(random_state)
+class GA:
+    """
+    GPU-accelerated Genetic Algorithm implementation using CuPy when available
+    """
 
-        layers = []
-        prev_size = input_size
+    def __init__(self, nums, bound, func, DNA_SIZE=None, cross_rate=0.8, mutation=0.003, use_gpu=True):
+        self.use_gpu = use_gpu
 
-        for h_size in hidden_sizes:
-            layers.append(nn.Linear(prev_size, h_size))
-            layers.append(nn.ReLU())
-            prev_size = h_size
+        try:
+            if self.use_gpu:
+                import cupy as cp
+                self.xp = cp
+                # Convert input nums to proper CuPy array shape
+                self.nums = cp.array(nums, dtype=cp.int32)
+                if len(self.nums.shape) == 2:
+                    self.nums = self.nums.reshape(len(nums), -1)
 
-        layers.append(nn.Linear(prev_size, output_size))
-        layers.append(nn.Softmax(dim=1))
+                self.bound = cp.array(bound)
+            else:
+                self.xp = np
+                # Use NumPy arrays
+                self.nums = np.array(nums, dtype=np.int32)
+                if len(self.nums.shape) == 2:
+                    self.nums = self.nums.reshape(len(nums), -1)
 
-        self.model = nn.Sequential(*layers)
-        self.device = device
-        self.to(device)
+                self.bound = np.array(bound)
+        except ImportError:
+            logger.warning("CuPy not available. Using NumPy instead.")
+            self.use_gpu = False
+            self.xp = np
+            # Use NumPy arrays
+            self.nums = np.array(nums, dtype=np.int32)
+            if len(self.nums.shape) == 2:
+                self.nums = self.nums.reshape(len(nums), -1)
 
-    def forward(self, x):
-        return self.model(x)
+            self.bound = np.array(bound)
 
-    def fit(self, X, y, batch_size=64, epochs=100, lr=0.001):
-        X_tensor = torch.FloatTensor(X).to(self.device)
-        # Convert y to one-hot if needed
-        if len(y.shape) == 1:
-            num_classes = len(np.unique(y))
-            y_one_hot = np.zeros((len(y), num_classes))
-            y_one_hot[np.arange(len(y)), y] = 1
-            y_tensor = torch.FloatTensor(y_one_hot).to(self.device)
+        self.func = func
+        self.cross_rate = cross_rate
+        self.mutation = mutation
+
+        self.min_nums, self.max_nums = self.bound[:, 0], self.bound[:, 1]
+        self.var_len = self.max_nums - self.min_nums
+
+        if DNA_SIZE is None:
+            self.DNA_SIZE = int(np.ceil(np.max(np.log2(self.var_len + 1))))
         else:
-            y_tensor = torch.FloatTensor(y).to(self.device)
+            self.DNA_SIZE = DNA_SIZE
 
-        dataset = TensorDataset(X_tensor, y_tensor)
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        self.POP_SIZE = len(nums)
+        self.POP = self.nums.copy()
+        self.copy_POP = self.nums.copy()
 
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-        criterion = nn.CrossEntropyLoss()
+        # Ensure POP has correct shape
+        if len(self.POP.shape) == 1:
+            self.POP = self.POP.reshape(self.POP_SIZE, -1)
+            self.copy_POP = self.copy_POP.reshape(self.POP_SIZE, -1)
 
-        self.train()
-        for epoch in range(epochs):
-            total_loss = 0
-            for batch_X, batch_y in dataloader:
-                optimizer.zero_grad()
-                outputs = self(batch_X)
-                loss = criterion(outputs, torch.argmax(batch_y, dim=1))
-                loss.backward()
-                optimizer.step()
-                total_loss += loss.item()
+    def get_fitness(self, non_negative=False):
+        # Move data to CPU for evaluation if using GPU
+        if self.use_gpu:
+            import cupy as cp
+            try:
+                pop_cpu = cp.asnumpy(self.POP)
+                result = np.array([self.func(individual) for individual in pop_cpu])
+                result = cp.array(result)
 
-            if (epoch + 1) % 10 == 0:
-                logger.info(f'Epoch {epoch + 1}, Loss: {total_loss / len(dataloader):.4f}')
+                if non_negative:
+                    result = result - cp.min(result)
+                return result
+            except Exception as e:
+                logger.warning(f"Error in GPU fitness calculation: {e}. Using CPU.")
+                result = np.array([self.func(individual) for individual in cp.asnumpy(self.POP)])
+                if non_negative:
+                    result = result - np.min(result)
+                return result
+        else:
+            result = np.array([self.func(individual) for individual in self.POP])
+            if non_negative:
+                result = result - np.min(result)
+            return result
 
-        return self
+    def select(self):
+        fitness = self.get_fitness()
 
-    def predict(self, X):
-        self.eval()
-        with torch.no_grad():
-            X_tensor = torch.FloatTensor(X).to(self.device)
-            outputs = self(X_tensor)
-            _, predicted = torch.max(outputs, 1)
-            return predicted.cpu().numpy()
+        if len(fitness) == 0:
+            raise ValueError("Fitness array is empty.")
 
-    def predict_proba(self, X):
-        self.eval()
-        with torch.no_grad():
-            X_tensor = torch.FloatTensor(X).to(self.device)
-            probs = self(X_tensor)
-            return probs.cpu().numpy()
+        total_fitness = self.xp.sum(fitness)
+        if total_fitness == 0:
+            probabilities = self.xp.ones(len(fitness)) / len(fitness)
+        else:
+            probabilities = fitness / total_fitness
 
+        probabilities = probabilities.squeeze()
+        if probabilities.ndim == 0:
+            probabilities = self.xp.array([probabilities])
 
-def get_model(model_type: str, **kwargs) -> Any:
-    """
-    Factory function to create different types of GPU-accelerated models with specified parameters.
+        probabilities = probabilities / self.xp.sum(probabilities)
 
-    Args:
-        model_type: One of 'rf' (Random Forest), 'dt' (Decision Tree),
-                   'mlp' (Multi-layer Perceptron), or 'svm' (Support Vector Machine)
-        **kwargs: Model-specific parameters
-    """
-    if not use_gpu:
-        # Fallback to CPU models if GPU is not available
-        from sklearn.ensemble import RandomForestClassifier as CPURandomForestClassifier
-        from sklearn.tree import DecisionTreeClassifier as CPUDecisionTreeClassifier
-        from sklearn.neural_network import MLPClassifier as CPUMLPClassifier
-        from sklearn.svm import SVC as CPUSVCClassifier
-
-        models = {
-            'rf': CPURandomForestClassifier(
-                n_estimators=kwargs.get('n_estimators', 10),
-                random_state=kwargs.get('random_state', 42)
-            ),
-            'dt': CPUDecisionTreeClassifier(
-                random_state=kwargs.get('random_state', 42)
-            ),
-            'mlp': CPUMLPClassifier(
-                hidden_layer_sizes=kwargs.get('hidden_layer_sizes', (100,)),
-                max_iter=kwargs.get('max_iter', 1000),
-                random_state=kwargs.get('random_state', 42)
-            ),
-            'svm': CPUSVCClassifier(
-                kernel=kwargs.get('kernel', 'rbf'),
-                probability=True,  # Required for LIME
-                random_state=kwargs.get('random_state', 42)
+        # Handle GPU/CPU selection
+        if self.use_gpu:
+            import cupy as cp
+            try:
+                selected_indices = cp.random.choice(
+                    cp.arange(self.POP_SIZE),
+                    size=self.POP_SIZE,
+                    replace=True,
+                    p=probabilities
+                )
+                self.POP = self.POP[selected_indices]
+            except Exception as e:
+                logger.warning(f"Error in GPU selection: {e}. Using CPU.")
+                # Fall back to CPU
+                selected_indices = np.random.choice(
+                    np.arange(self.POP_SIZE),
+                    size=self.POP_SIZE,
+                    replace=True,
+                    p=cp.asnumpy(probabilities)
+                )
+                self.POP = self.POP[cp.array(selected_indices)]
+        else:
+            selected_indices = np.random.choice(
+                np.arange(self.POP_SIZE),
+                size=self.POP_SIZE,
+                replace=True,
+                p=probabilities
             )
-        }
-    else:
-        # GPU-accelerated models
-        models = {
-            'rf': RandomForestClassifier(
-                n_estimators=kwargs.get('n_estimators', 10),
-                random_state=kwargs.get('random_state', 42)
-            ),
-            'dt': DecisionTreeClassifier(
-                random_state=kwargs.get('random_state', 42)
-            ),
-            'mlp': TorchMLPClassifier(
-                input_size=kwargs.get('input_size', 10),
-                hidden_sizes=kwargs.get('hidden_layer_sizes', (100,)),
-                output_size=kwargs.get('output_size', 2),
-                random_state=kwargs.get('random_state', 42)
-            ),
-            'svm': SVC(
-                kernel=kwargs.get('kernel', 'rbf'),
-                probability=True,  # Required for LIME
-                random_state=kwargs.get('random_state', 42)
-            )
-        }
+            self.POP = self.POP[selected_indices]
 
-    if model_type not in models:
-        raise ValueError(f"Model type '{model_type}' not supported. Choose from: {list(models.keys())}")
+    def crossover(self):
+        for i in range(self.POP_SIZE):
+            if self.xp.random.rand() < self.cross_rate:
+                partner_idx = self.xp.random.randint(0, self.POP_SIZE)
 
-    return models[model_type]
+                # Ensure proper array shapes for crossover
+                if len(self.POP[i].shape) == 1 and len(self.POP[partner_idx].shape) == 1:
+                    cross_points = self.xp.random.randint(0, self.POP[i].size)
+                    end_points = self.xp.random.randint(cross_points + 1, self.POP[i].size + 1)
 
+                    # Create copies to avoid modifying original arrays
+                    temp = self.POP[i].copy()
+                    temp[cross_points:end_points] = self.POP[partner_idx][cross_points:end_points]
+                    self.POP[i] = temp
+
+    def mutate(self):
+        for i in range(len(self.POP)):
+            individual = self.POP[i].flatten()  # Ensure 1D array for mutation
+
+            for gene_idx in range(individual.size):
+                if self.xp.random.rand() < self.mutation:
+                    if gene_idx < len(self.bound):  # Check if we have bounds for this gene
+                        low = int(self.bound[gene_idx][0])
+                        high = int(self.bound[gene_idx][1])
+
+                        if high > low:
+                            if self.use_gpu:
+                                import cupy as cp
+                                new_value = cp.random.randint(low, high + 1)
+                            else:
+                                new_value = np.random.randint(low, high + 1)
+                            individual[gene_idx] = new_value
+
+            # Reshape back if necessary and update population
+            self.POP[i] = individual.reshape(self.POP[i].shape)
+
+    def evolve(self):
+        self.select()
+        self.crossover()
+        self.mutate()
+
+    def reset(self):
+        self.POP = self.copy_POP.copy()
+
+    def log(self):
+        fitness = self.get_fitness()
+
+        # Convert to CPU for logging if using GPU
+        if self.use_gpu:
+            import cupy as cp
+            try:
+                population_log = [ind.get().flatten().tolist() for ind in self.POP]
+                fitness_log = fitness.get().tolist()
+            except:
+                population_log = [cp.asnumpy(ind).flatten().tolist() for ind in self.POP]
+                fitness_log = cp.asnumpy(fitness).tolist()
+        else:
+            population_log = [ind.flatten().tolist() for ind in self.POP]
+            fitness_log = fitness.tolist()
+
+        return population_log, fitness_log
 
 def construct_explainer(train_vectors: np.ndarray, feature_names: List[str],
                         class_names: List[str]) -> LimeTabularExplainer:
@@ -189,165 +230,162 @@ def construct_explainer(train_vectors: np.ndarray, feature_names: List[str],
     )
 
 
-def search_seed(model: Any, feature_names: List[str], sens_name: str,
+def search_seed(model: BaseEstimator, feature_names: List[str], sens_name: str,
                 explainer: LimeTabularExplainer, train_vectors: np.ndarray, num: int,
-                threshold_l: float, nb_seed=100) -> List[np.ndarray]:
+                threshold_l: float, nb_seed=100, use_gpu=False) -> List[np.ndarray]:
+    """
+    Search for seed data points with significant influence from sensitive attributes
+    """
     seed: List[np.ndarray] = []
 
-    # Process in batches for GPU efficiency
-    batch_size = 32
-    total_samples = len(train_vectors)
+    # Use GPU acceleration for model predictions if available
+    if use_gpu:
+        try:
+            import cupy as cp
+            import cudf
 
-    for batch_start in range(0, total_samples, batch_size):
+            # Process batches for efficiency
+            batch_size = min(100, len(train_vectors))
+            for i in range(0, len(train_vectors), batch_size):
+                batch_end = min(i + batch_size, len(train_vectors))
+                batch = train_vectors[i:batch_end]
+
+                for j, x in enumerate(batch):
+                    exp = explainer.explain_instance(x, model.predict_proba, num_features=num)
+                    exp_result = exp.as_list(label=exp.available_labels()[0])
+                    rank = [item[0] for item in exp_result]
+
+                    try:
+                        loc = rank.index(sens_name)
+                        if loc < math.ceil(len(exp_result) * threshold_l):
+                            seed.append(x)
+                    except ValueError:
+                        # sens_name not in rank
+                        continue
+
+                    if len(seed) >= nb_seed:
+                        return seed
+        except (ImportError, Exception) as e:
+            logger.warning(f"Error using GPU for seed search: {e}. Using CPU.")
+            # Fall back to CPU processing
+
+    # CPU processing
+    for i, x in enumerate(train_vectors):
+        exp = explainer.explain_instance(x, model.predict_proba, num_features=num)
+        exp_result = exp.as_list(label=exp.available_labels()[0])
+        rank = [item[0] for item in exp_result]
+
+        try:
+            loc = rank.index(sens_name)
+            if loc < math.ceil(len(exp_result) * threshold_l):
+                seed.append(x)
+        except ValueError:
+            # sens_name not in rank
+            continue
+
         if len(seed) >= nb_seed:
             break
-
-        batch_end = min(batch_start + batch_size, total_samples)
-        batch = train_vectors[batch_start:batch_end]
-
-        for x in batch:
-            exp = explainer.explain_instance(x, model.predict_proba, num_features=num)
-            exp_result = exp.as_list(label=exp.available_labels()[0])
-            rank = [item[0] for item in exp_result]
-
-            try:
-                loc = rank.index(sens_name)
-                if loc < math.ceil(len(exp_result) * threshold_l):
-                    seed.append(x)
-                if len(seed) >= nb_seed:
-                    break
-            except ValueError:
-                # sens_name not in the rank list, skip this sample
-                continue
 
     return seed
 
 
-# GPU-accelerated GlobalDiscovery
-class GlobalDiscovery:
-    def __init__(self, step_size: int = 1):
+class GPUGlobalDiscovery:
+    """
+    GPU-accelerated global discovery for input samples
+    """
+
+    def __init__(self, step_size: int = 1, use_gpu: bool = True):
         self.step_size = step_size
-        self.device = device
+        self.use_gpu = use_gpu
+
+        # Initialize GPU if requested
+        if self.use_gpu:
+            try:
+                import cupy as cp
+                self.xp = cp
+            except ImportError:
+                logger.warning("CuPy not available. Using NumPy instead.")
+                self.use_gpu = False
+                self.xp = np
+        else:
+            self.xp = np
 
     def __call__(self, iteration: int, params: int, input_bounds: List[Tuple[int, int]],
                  sensitive_param: int) -> List[np.ndarray]:
-        if use_gpu:
-            # GPU-accelerated sample generation
-            samples = []
+        samples = []
+
+        # Generate samples using GPU if available
+        if self.use_gpu:
+            try:
+                import cupy as cp
+
+                # Generate all samples at once using GPU
+                shape = (iteration, params)
+
+                # Create random samples within bounds
+                random_samples = cp.zeros(shape, dtype=cp.int32)
+
+                for param_idx in range(params):
+                    low, high = input_bounds[param_idx]
+                    random_samples[:, param_idx] = cp.random.randint(low, high + 1, size=iteration)
+
+                # Set sensitive parameter to 0
+                random_samples[:, sensitive_param - 1] = 0
+
+                # Convert to numpy arrays for return
+                samples = [np.array(sample) for sample in cp.asnumpy(random_samples)]
+
+            except Exception as e:
+                logger.warning(f"Error using GPU for global discovery: {e}. Using CPU.")
+                # Fall back to CPU implementation
+                for _ in range(iteration):
+                    sample = [random.randint(bounds[0], bounds[1]) for bounds in input_bounds]
+                    sample[sensitive_param - 1] = 0
+                    samples.append(np.array(sample))
+        else:
+            # CPU implementation
             for _ in range(iteration):
-                # Generate random samples on GPU
                 sample = [random.randint(bounds[0], bounds[1]) for bounds in input_bounds]
                 sample[sensitive_param - 1] = 0
                 samples.append(np.array(sample))
-            return samples
-        else:
-            # CPU fallback
-            samples = []
-            for _ in range(iteration):
-                sample = [random.randint(bounds[0], bounds[1]) for bounds in input_bounds]
-                sample[sensitive_param - 1] = 0
-                samples.append(np.array(sample))
-            return samples
 
-
-# GPU-accelerated GA implementation
-class GPUGA(GA):
-    def __init__(self, nums, bound, func, DNA_SIZE, cross_rate=0.9, mutation=0.1):
-        super().__init__(nums, bound, func, DNA_SIZE, cross_rate, mutation)
-
-        # Move population to GPU if available
-        if use_gpu:
-            # Convert numpy arrays to torch tensors
-            self.pop = torch.FloatTensor(self.pop).to(device)
-            self.bound = [(float(min_val), float(max_val)) for min_val, max_val in bound]
-
-    def select(self):
-        if use_gpu and isinstance(self.pop, torch.Tensor):
-            # GPU accelerated selection
-            fitness = self.get_fitness()
-            fitness = torch.FloatTensor(fitness).to(device)
-            idx = torch.multinomial(fitness, self.pop.shape[0], replacement=True)
-            return self.pop[idx]
-        else:
-            # Fall back to CPU implementation
-            return super().select()
-
-    def crossover(self, parent, pop):
-        if use_gpu and isinstance(self.pop, torch.Tensor):
-            # GPU accelerated crossover
-            if torch.rand(1).item() < self.cross_rate:
-                # Select another individual from pop
-                i = torch.randint(0, self.pop.shape[0], (1,)).item()
-                # Choose crossover points
-                cross_points = torch.rand(self.DNA_SIZE) < 0.5
-                # Apply crossover
-                parent_copy = parent.clone()
-                parent_copy[cross_points] = pop[i, cross_points]
-                return parent_copy
-            return parent
-        else:
-            # Fall back to CPU implementation
-            return super().crossover(parent, pop)
-
-    def mutate(self, child):
-        if use_gpu and isinstance(self.pop, torch.Tensor):
-            # GPU accelerated mutation
-            for point in range(self.DNA_SIZE):
-                if torch.rand(1).item() < self.mutation:
-                    min_val, max_val = self.bound[point]
-                    child[point] = torch.rand(1).item() * (max_val - min_val) + min_val
-            return child
-        else:
-            # Fall back to CPU implementation
-            return super().mutate(child)
-
-    def evolve(self):
-        if use_gpu and isinstance(self.pop, torch.Tensor):
-            # Create new population
-            pop = self.select()
-            pop_copy = pop.clone()
-
-            # Apply crossover and mutation
-            for parent in pop:
-                child = self.crossover(parent, pop_copy)
-                child = self.mutate(child)
-                parent[:] = child
-
-            # Move back to numpy for fitness evaluation
-            self.pop = pop.cpu().numpy() if hasattr(pop, 'cpu') else np.array(pop)
-
-            # Calculate fitness - convert back to GPU if necessary
-            self.fitness = self.get_fitness()
-
-            # Move back to GPU
-            self.pop = torch.FloatTensor(self.pop).to(device)
-        else:
-            # Fall back to CPU implementation
-            super().evolve()
+        return samples
 
 
 def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, max_local: int, model_type: str = 'rf',
               cross_rate=0.9, mutation=0.1, max_runtime_seconds: float = None, max_tsn: int = None, nb_seed=100,
-              one_attr_at_a_time=False, db_path=None, analysis_id=None, **model_kwargs) -> Tuple[pd.DataFrame, Metrics]:
+              one_attr_at_a_time=False, db_path=None, analysis_id=None, use_gpu=True, **model_kwargs) -> Tuple[
+    pd.DataFrame, Metrics]:
     """
     GPU-accelerated XAI fairness testing that works on all protected attributes simultaneously.
-    Uses a centralized termination check to improve code structure.
     """
-
-    logger.info(f"Starting GPU-accelerated ExpGA with all protected attributes (GPU available: {use_gpu})")
+    logger.info(f"Starting ExpGA with all protected attributes (GPU: {'enabled' if use_gpu else 'disabled'})")
 
     start_time = time.time()
     disc_times: List[float] = []
 
     X, Y = data.xdf, data.ydf
 
-    # Add feature dimensions to model kwargs if using MLP
-    if model_type == 'mlp':
-        model_kwargs['input_size'] = X.shape[1]
-        model_kwargs['output_size'] = len(np.unique(Y))
+    # Initialize GPU acceleration if requested
+    if use_gpu:
+        try:
+            import cupy as cp
+            import cudf
+            gpu_available = True
+        except ImportError:
+            logger.warning("GPU libraries not available. Falling back to CPU.")
+            use_gpu = False
+            gpu_available = False
 
-    model = get_model(model_type, **model_kwargs)
-    model.fit(X, Y)
+    model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
+        data=data.dataframe,
+        model_type=model_type,
+        target_col=data.outcome_column,
+        sensitive_attrs=list(data.protected_attributes),
+        random_state=nb_seed,
+        use_cache=True,
+        use_gpu=use_gpu
+    )
 
     global_disc_inputs: Set[Tuple[float, ...]] = set()
     local_disc_inputs: Set[Tuple[float, ...]] = set()
@@ -379,21 +417,19 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
         if should_terminate():
             return 0.0
 
-        # Convert to appropriate type for GPU/CPU
-        if use_gpu and isinstance(input_sample, torch.Tensor):
-            input_array = input_sample.cpu().numpy().flatten()
-        else:
-            input_array = np.array(input_sample, dtype=float).flatten()
+        input_array = np.array(input_sample, dtype=float).flatten()
 
-        result, results_df, max_diff, org_df, tested_inp = check_for_error_condition(logger=logger,
-                                                                                     discrimination_data=data,
-                                                                                     dsn_by_attr_value=dsn_by_attr_value,
-                                                                                     model=model, instance=input_sample,
-                                                                                     tot_inputs=tot_inputs,
-                                                                                     all_discriminations=all_discriminations,
-                                                                                     one_attr_at_a_time=one_attr_at_a_time,
-                                                                                     db_path=db_path,
-                                                                                     analysis_id=analysis_id)
+        result, results_df, max_diff, org_df, tested_inp = check_for_error_condition(
+            logger=logger,
+            discrimination_data=data,
+            dsn_by_attr_value=dsn_by_attr_value,
+            model=model, instance=input_sample,
+            tot_inputs=tot_inputs,
+            all_discriminations=all_discriminations,
+            one_attr_at_a_time=one_attr_at_a_time,
+            db_path=db_path,
+            analysis_id=analysis_id
+        )
 
         if result and tuple(input_array) not in global_disc_inputs.union(local_disc_inputs):
             local_disc_inputs.add(tuple(input_array))
@@ -404,8 +440,8 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
     # Generate seeds for each protected attribute
     seeds = []
 
-    # Use the GPU-accelerated global discovery approach
-    global_discovery = GlobalDiscovery()
+    # Use the GPU-optimized global discovery approach
+    global_discovery = GPUGlobalDiscovery(use_gpu=use_gpu)
 
     # Create seeds for each protected attribute
     for p_attr in data.protected_attributes:
@@ -423,7 +459,7 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
         )
 
         # Initialize explainer if needed
-        explainer = construct_explainer(X.values, data.feature_names, data.outcome_column)
+        explainer = construct_explainer(X.values, data.feature_names, [data.outcome_column])
 
         # Find promising seeds
         attr_seeds = search_seed(
@@ -434,7 +470,8 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
             np.array(attr_samples),
             len(data.feature_names),
             threshold_rank,
-            nb_seed
+            nb_seed,
+            use_gpu=use_gpu
         )
 
         seeds.extend(attr_seeds)
@@ -468,15 +505,17 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
         except:
             continue
 
-    # Run GPU-accelerated genetic algorithm only if we haven't terminated
+    # Run genetic algorithm only if we haven't terminated
     if not should_terminate():
-        ga = GPUGA(
+        # Use GPU-accelerated GA if available
+        ga = CudaGA(
             nums=formatted_seeds,
             bound=data.input_bounds,
             func=evaluate_local,
             DNA_SIZE=len(data.input_bounds),
             cross_rate=cross_rate,
-            mutation=mutation
+            mutation=mutation,
+            use_gpu=use_gpu
         )
 
         # Evolve population
@@ -491,16 +530,14 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
                 logger.info(f"Iteration {iteration}: TSN={len(tot_inputs)}, DSN={len(all_discriminations)}")
 
     # Calculate final results
-    res_df, metrics = make_final_metrics_and_dataframe(data, tot_inputs, all_discriminations, dsn_by_attr_value,
-                                                       start_time, logger=logger)
+    res_df, metrics = make_final_metrics_and_dataframe(
+        data, tot_inputs, all_discriminations, dsn_by_attr_value,
+        start_time, logger=logger
+    )
 
     # Log whether we terminated early
     if early_termination:
         logger.info("Early termination triggered: either max runtime or max TSN reached")
-
-    # Clean up GPU memory if needed
-    if use_gpu:
-        torch.cuda.empty_cache()
 
     return res_df, metrics
 
@@ -515,4 +552,3 @@ if __name__ == "__main__":
                                     step_size=0.05)
 
     print(f"\nTesting Metrics: {metrics}")
-    print(f"Used GPU: {use_gpu}")

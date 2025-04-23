@@ -1,5 +1,5 @@
 import time
-from typing import TypedDict, List, Tuple, Dict, Any, Union, Set
+from typing import TypedDict, List, Tuple, Set
 import math
 import warnings
 import numpy as np
@@ -7,18 +7,14 @@ import random
 import logging
 import pandas as pd
 from pandas import DataFrame
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.neural_network import MLPClassifier
-from sklearn.svm import SVC
 from sklearn.base import BaseEstimator
 from lime.lime_tabular import LimeTabularExplainer
 
 from data_generator.main import DiscriminationData
-from methods.exp_ga.genetic_algorithm import GA
-from methods.utils import check_for_error_condition, make_final_metrics_and_dataframe, train_sklearn_model
+from methods.utils import (check_for_error_condition, make_final_metrics_and_dataframe,
+                           train_sklearn_model)
 
-# Configure logging
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -26,48 +22,115 @@ warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
 
 
 class Metrics(TypedDict):
-    TSN: int  # Total Sample Number
-    DSN: int  # Discriminatory Sample Number
-    DSS: float  # Discriminatory Sample Search (avg time)
-    SUR: float  # Success Rate
+    TSN: int
+    DSN: int
+    DSS: float
+    SUR: float
 
 
 ExpGAResultDF = DataFrame
 
 
-def get_model(model_type: str, **kwargs) -> BaseEstimator:
-    """
-    Factory function to create different types of models with specified parameters.
+class GA:
+    def __init__(self, nums, bound, func, DNA_SIZE=None, cross_rate=0.8, mutation=0.003):
+        # Convert input nums to proper numpy array shape
+        self.nums = np.array(nums, dtype=np.int32)
+        if len(self.nums.shape) == 2:
+            self.nums = self.nums.reshape(len(nums), -1)
 
-    Args:
-        model_type: One of 'rf' (Random Forest), 'dt' (Decision Tree),
-                   'mlp' (Multi-layer Perceptron), or 'svm' (Support Vector Machine)
-        **kwargs: Model-specific parameters
-    """
-    models = {
-        'rf': RandomForestClassifier(
-            n_estimators=kwargs.get('n_estimators', 10),
-            random_state=kwargs.get('random_state', 42)
-        ),
-        'dt': DecisionTreeClassifier(
-            random_state=kwargs.get('random_state', 42)
-        ),
-        'mlp': MLPClassifier(
-            hidden_layer_sizes=kwargs.get('hidden_layer_sizes', (100,)),
-            max_iter=kwargs.get('max_iter', 1000),
-            random_state=kwargs.get('random_state', 42)
-        ),
-        'svm': SVC(
-            kernel=kwargs.get('kernel', 'rbf'),
-            probability=True,  # Required for LIME
-            random_state=kwargs.get('random_state', 42)
-        )
-    }
+        self.bound = np.array(bound)
+        self.func = func
+        self.cross_rate = cross_rate
+        self.mutation = mutation
 
-    if model_type not in models:
-        raise ValueError(f"Model type '{model_type}' not supported. Choose from: {list(models.keys())}")
+        self.min_nums, self.max_nums = self.bound[:, 0], self.bound[:, 1]
+        self.var_len = self.max_nums - self.min_nums
 
-    return models[model_type]
+        if DNA_SIZE is None:
+            self.DNA_SIZE = int(np.ceil(np.max(np.log2(self.var_len + 1))))
+        else:
+            self.DNA_SIZE = DNA_SIZE
+
+        self.POP_SIZE = len(nums)
+        self.POP = self.nums.copy()
+        self.copy_POP = self.nums.copy()
+
+        # Ensure POP has correct shape
+        if len(self.POP.shape) == 1:
+            self.POP = self.POP.reshape(self.POP_SIZE, -1)
+            self.copy_POP = self.copy_POP.reshape(self.POP_SIZE, -1)
+
+    def get_fitness(self, non_negative=False):
+        result = np.array([self.func(individual) for individual in self.POP])
+        if non_negative:
+            result = result - np.min(result)
+        return result
+
+    def select(self):
+        fitness = self.get_fitness()
+
+        if len(fitness) == 0:
+            raise ValueError("Fitness array is empty.")
+
+        total_fitness = np.sum(fitness)
+        if total_fitness == 0:
+            probabilities = np.ones(len(fitness)) / len(fitness)
+        else:
+            probabilities = fitness / total_fitness
+
+        probabilities = probabilities.squeeze()
+        if probabilities.ndim == 0:
+            probabilities = np.array([probabilities])
+
+        probabilities = probabilities / np.sum(probabilities)
+
+        selected_indices = np.random.choice(np.arange(self.POP_SIZE), size=self.POP_SIZE, replace=True, p=probabilities)
+        self.POP = self.POP[selected_indices]
+
+    def crossover(self):
+        for i in range(self.POP_SIZE):
+            if np.random.rand() < self.cross_rate:
+                partner_idx = np.random.randint(0, self.POP_SIZE)
+
+                # Ensure proper array shapes for crossover
+                if len(self.POP[i].shape) == 1 and len(self.POP[partner_idx].shape) == 1:
+                    cross_points = np.random.randint(0, self.POP[i].size)
+                    end_points = np.random.randint(cross_points + 1, self.POP[i].size + 1)
+
+                    # Create copies to avoid modifying original arrays
+                    temp = self.POP[i].copy()
+                    temp[cross_points:end_points] = self.POP[partner_idx][cross_points:end_points]
+                    self.POP[i] = temp
+
+    def mutate(self):
+        for i in range(len(self.POP)):
+            individual = self.POP[i].flatten()  # Ensure 1D array for mutation
+
+            for gene_idx in range(individual.size):
+                if np.random.rand() < self.mutation:
+                    if gene_idx < len(self.bound):  # Check if we have bounds for this gene
+                        low = int(self.bound[gene_idx][0])
+                        high = int(self.bound[gene_idx][1])
+
+                        if high > low:
+                            new_value = np.random.randint(low, high + 1)
+                            individual[gene_idx] = new_value
+
+            # Reshape back if necessary and update population
+            self.POP[i] = individual.reshape(self.POP[i].shape)
+
+    def evolve(self):
+        self.select()
+        self.crossover()
+        self.mutate()
+
+    def reset(self):
+        self.POP = self.copy_POP.copy()
+
+    def log(self):
+        fitness = self.get_fitness()
+        population_log = [ind.flatten().tolist() for ind in self.POP]
+        return population_log, fitness.tolist()
 
 
 def construct_explainer(train_vectors: np.ndarray, feature_names: List[str],
@@ -109,7 +172,7 @@ class GlobalDiscovery:
 
 def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, max_local: int, model_type: str = 'rf',
               cross_rate=0.9, mutation=0.1, max_runtime_seconds: float = None, max_tsn: int = None, nb_seed=100,
-              one_attr_at_a_time=False, db_path=None, analysis_id=None, **model_kwargs) -> Tuple[pd.DataFrame, Metrics]:
+              one_attr_at_a_time=False, db_path=None, analysis_id=None, use_gpu=False, **model_kwargs) -> Tuple[pd.DataFrame, Metrics]:
     """
     XAI fairness testing that works on all protected attributes simultaneously.
     Uses a centralized termination check to improve code structure.
@@ -128,9 +191,9 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
         target_col=data.outcome_column,
         sensitive_attrs=list(data.protected_attributes),
         random_state=nb_seed,
-        use_cache=True
+        use_cache=True,
+        use_gpu=use_gpu
     )
-
 
     global_disc_inputs: Set[Tuple[float, ...]] = set()
     local_disc_inputs: Set[Tuple[float, ...]] = set()
@@ -171,7 +234,8 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
                                                                                      tot_inputs=tot_inputs,
                                                                                      all_discriminations=all_discriminations,
                                                                                      one_attr_at_a_time=one_attr_at_a_time,
-                                                                                     db_path=db_path, analysis_id=analysis_id)
+                                                                                     db_path=db_path,
+                                                                                     analysis_id=analysis_id)
 
         if result and tuple(input_array) not in global_disc_inputs.union(local_disc_inputs):
             local_disc_inputs.add(tuple(input_array))
@@ -201,7 +265,7 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
         )
 
         # Initialize explainer if needed
-        explainer = construct_explainer(X.values, data.feature_names, data.outcome_column)
+        explainer = construct_explainer(X.values, data.feature_names, [data.outcome_column])
 
         # Find promising seeds
         attr_seeds = search_seed(
