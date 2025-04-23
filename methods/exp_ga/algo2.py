@@ -378,7 +378,7 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
             gpu_available = False
 
     model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
-        data=data.dataframe,
+        data=data.training_dataframe.copy(),
         model_type=model_type,
         target_col=data.outcome_column,
         sensitive_attrs=list(data.protected_attributes),
@@ -508,7 +508,7 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
     # Run genetic algorithm only if we haven't terminated
     if not should_terminate():
         # Use GPU-accelerated GA if available
-        ga = CudaGA(
+        ga = GA(
             nums=formatted_seeds,
             bound=data.input_bounds,
             func=evaluate_local,
@@ -545,7 +545,7 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
 if __name__ == "__main__":
     from data_generator.main import get_real_data, DiscriminationData
 
-    data_obj, schema = get_real_data('adult', use_cache=True)
+    data_obj, schema = get_real_data('adult', use_cache=False)
 
     results_df, metrics = run_expga(data_obj, threshold_rank=0.5, max_global=20000, max_local=100,
                                     max_runtime_seconds=3600, max_tsn=20000, one_attr_at_a_time=True, cluster_num=50,
