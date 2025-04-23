@@ -38,7 +38,6 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
             from cuml.ensemble import RandomForestClassifier as cuRFC
             from cuml.svm import SVC as cuSVC
             from cuml.linear_model import LogisticRegression as cuLR
-            from cuml.tree import DecisionTreeClassifier as cuDTC
             gpu_available = True
         except ImportError:
             logger.warning("GPU libraries not available. Falling back to CPU.")
@@ -76,7 +75,7 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
             'rf': cuRFC,
             'svm': cuSVC,
             'lr': cuLR,
-            'dt': cuDTC,
+            'dt': DecisionTreeClassifier,
             'mlp': MLPClassifier  # Fallback to sklearn for MLP
         }
     else:
