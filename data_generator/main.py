@@ -274,6 +274,7 @@ class DiscriminationData:
     outcome_column: str = 'outcome'
     relevance_metrics: pd.DataFrame = field(default_factory=pd.DataFrame)
     attr_possible_values: Dict[str, List[int]] = field(default_factory=dict)
+    generation_arguments: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def attr_columns(self) -> List[str]:
@@ -1589,7 +1590,36 @@ def generate_data(
         hiddenlayers_depth=W.shape[0],
         outcome_column=outcome_column,
         attr_possible_values=attr_possible_values,
-        schema=data_schema
+        schema=data_schema,
+        generation_arguments={'gen_order': gen_order,
+                              'nb_groups': nb_groups,
+                              'nb_attributes': nb_attributes,
+                              'min_number_of_classes': min_number_of_classes,
+                              'max_number_of_classes': max_number_of_classes,
+                              'prop_protected_attr': prop_protected_attr,
+                              'min_group_size': min_group_size,
+                              'max_group_size': max_group_size,
+                              'min_similarity': min_similarity,
+                              'max_similarity': max_similarity,
+                              'min_alea_uncertainty': min_alea_uncertainty,
+                              'max_alea_uncertainty': max_alea_uncertainty,
+                              'min_epis_uncertainty': min_epis_uncertainty,
+                              'max_epis_uncertainty': max_epis_uncertainty,
+                              'min_frequency': min_frequency,
+                              'max_frequency': max_frequency,
+                              'min_diff_subgroup_size': min_diff_subgroup_size,
+                              'max_diff_subgroup_size': max_diff_subgroup_size,
+                              'min_granularity': min_granularity,
+                              'max_granularity': max_granularity,
+                              'min_intersectionality': min_intersectionality,
+                              'max_intersectionality': max_intersectionality,
+                              'categorical_outcome': categorical_outcome,
+                              'nb_categories_outcome': nb_categories_outcome,
+                              'corr_matrix_randomness': corr_matrix_randomness,
+                              'categorical_distribution': categorical_distribution,
+                              'categorical_influence': categorical_influence,
+                              'real_dataset': None
+                              }
     )
 
     # Calculate additional metrics
@@ -1904,7 +1934,6 @@ def generate_schema_from_dataframe(
     # Add outcome column to metadata
     sdv_metadata.add_column('outcome', sdtype='categorical')
 
-    # Create DataSchema object (without synthesizer initially)
     schema = DataSchema(
         attr_categories=attr_categories,
         protected_attr=[col in protected_columns for col in attr_columns],
@@ -2145,6 +2174,7 @@ def generate_from_real_data(dataset_name, use_cache=False, predefined_groups=Non
 
     # Store schema with the data for convenience
     data.schema = schema
+    data.generation_arguments = {'real_dataset': dataset_name}
 
     # Cache the result if requested
     if use_cache:
@@ -2276,6 +2306,7 @@ def create_sdv_numerical_distributions(data_schema):
 
     return numerical_distributions
 
+
 def save_discrimination_data(db_path: str, data_obj: 'DiscriminationData', analysis_id: str = None) -> str:
     """
     Save a DiscriminationData object to an SQLite database.
@@ -2292,14 +2323,14 @@ def save_discrimination_data(db_path: str, data_obj: 'DiscriminationData', analy
     import pickle
     import uuid
     from datetime import datetime
-    
+
     if analysis_id is None:
         analysis_id = f"data_{str(uuid.uuid4())}"
-    
+
     # Create or connect to SQLite database
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
+
     # Create table for discrimination data if it doesn't exist
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS discrimination_data (
@@ -2312,14 +2343,14 @@ def save_discrimination_data(db_path: str, data_obj: 'DiscriminationData', analy
             protected_attributes TEXT
         )
     ''')
-    
+
     # Serialize the data object
     data_binary = pickle.dumps(data_obj)
-    
+
     # Extract metadata for easier querying
     categorical_columns = ','.join(data_obj.categorical_columns)
     protected_attributes = ','.join(data_obj.protected_attributes())
-    
+
     # Save the data with metadata
     cursor.execute('''
         INSERT INTO discrimination_data 
@@ -2333,11 +2364,12 @@ def save_discrimination_data(db_path: str, data_obj: 'DiscriminationData', analy
         categorical_columns,
         protected_attributes
     ))
-    
+
     conn.commit()
     conn.close()
-    
+
     return analysis_id
+
 
 def load_discrimination_data(db_path: str, analysis_id: str) -> Optional['DiscriminationData']:
     """
@@ -2352,14 +2384,14 @@ def load_discrimination_data(db_path: str, analysis_id: str) -> Optional['Discri
     """
     import sqlite3
     import pickle
-    
+
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
+
     cursor.execute('SELECT data FROM discrimination_data WHERE analysis_id = ?', (analysis_id,))
     result = cursor.fetchone()
     conn.close()
-    
+
     if result:
         return pickle.loads(result[0])
     return None

@@ -287,9 +287,10 @@ class LocalPerturbation:
         return x_new
 
 
-def adf_fairness_testing(data: DiscriminationData, max_global: int = 2000, max_local: int = 2000, cluster_num: int = 10,
-                         random_seed: int = 42, max_runtime_seconds: int = 3600, max_tsn: int = None,
-                         step_size: float = 0.4, one_attr_at_a_time: bool = False, db_path=None, analysis_id=None) -> Tuple[pd.DataFrame, Dict[str, float]]:
+def run_adf(data: DiscriminationData, max_global: int = 2000, max_local: int = 2000, cluster_num: int = 10,
+            random_seed: int = 42, max_runtime_seconds: int = 3600, max_tsn: int = None,
+            step_size: float = 0.4, one_attr_at_a_time: bool = False, db_path=None, analysis_id=None, use_cache=True) -> \
+        Tuple[pd.DataFrame, Dict[str, float]]:
     """Implementation of ADF fairness testing.
 
     Args:
@@ -317,21 +318,19 @@ def adf_fairness_testing(data: DiscriminationData, max_global: int = 2000, max_l
     dsn_by_attr_value = {e: {'TSN': 0, 'DSN': 0} for e in data.protected_attributes}
     dsn_by_attr_value['total'] = 0
 
-    data = data.training_dataframe.copy()
-
-    logger.info(f"Dataset shape: {data.shape}")
+    logger.info(f"Dataset shape: {data.dataframe.shape}")
     logger.info(f"Protected attributes: {data.protected_attributes}")
     logger.info(f"Time limit: {max_runtime_seconds} seconds")
     if max_tsn:
         logger.info(f"Target TSN: {max_tsn}")
 
     model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
-        data=data,
+        data=data.training_dataframe.copy(),
         model_type='mlp',
         target_col=data.outcome_column,
         sensitive_attrs=list(data.protected_attributes),
         random_state=random_seed,
-        use_cache=True
+        use_cache=use_cache
     )
 
     train_score = model.score(X_train, y_train)
@@ -492,7 +491,7 @@ if __name__ == "__main__":
 
     data_obj, schema = get_real_data('adult', use_cache=True)
 
-    results_df, metrics = adf_fairness_testing(data_obj, max_global=100, max_local=100, cluster_num=50,
-                                               max_runtime_seconds=60, max_tsn=20000, step_size=0.1)
+    results_df, metrics = run_adf(data_obj, max_global=100, max_local=100, cluster_num=50,
+                                  max_runtime_seconds=60, max_tsn=20000, step_size=0.1)
 
     print(f"\nTesting Metrics: {metrics}")

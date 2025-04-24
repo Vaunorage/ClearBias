@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from data_generator.main import get_real_data
 from experiments.baseline_exp.reproduce_paper.reference_exp import ref_data
-from methods.adf.main import adf_fairness_testing
+from methods.adf.main import run_adf
 from methods.sg.main import run_sg
 from methods.exp_ga.algo import run_expga
 from methods.aequitas.algo import run_aequitas
@@ -153,9 +153,9 @@ def run_experiment_for_model(model_type: str, dataset_name: str, sensitive_featu
         print("MAX TSN", 20000)
 
         start_time = time.time()
-        adf_results, adf_metrics = adf_fairness_testing(data_obj, max_global=2000, max_local=100, cluster_num=100,
-                                                        random_seed=42, max_runtime_seconds=1000, max_tsn=9000,
-                                                        one_attr_at_a_time=True)
+        adf_results, adf_metrics = run_adf(data_obj, max_global=2000, max_local=100, cluster_num=100,
+                                           random_seed=42, max_runtime_seconds=1000, max_tsn=9000,
+                                           one_attr_at_a_time=True)
         execution_time = time.time() - start_time
         print("ADF METRICS", adf_metrics)
 

@@ -14,7 +14,6 @@ from data_generator.main import DiscriminationData
 from methods.utils import (check_for_error_condition, make_final_metrics_and_dataframe,
                            train_sklearn_model)
 
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -142,17 +141,57 @@ def construct_explainer(train_vectors: np.ndarray, feature_names: List[str],
 
 def search_seed(model: BaseEstimator, feature_names: List[str], sens_name: str,
                 explainer: LimeTabularExplainer, train_vectors: np.ndarray, num: int,
-                threshold_l: float, nb_seed=100) -> List[np.ndarray]:
+                threshold_l: float, nb_seed=100, start_time=None, max_runtime_seconds=None) -> List[np.ndarray]:
+    """
+    Searches for seed instances where the sensitive attribute is influential in model prediction.
+
+    Args:
+        model: The trained model
+        feature_names: List of feature names
+        sens_name: Name of the sensitive attribute
+        explainer: LIME explainer instance
+        train_vectors: Training data vectors
+        num: Number of features for LIME explanation
+        threshold_l: Threshold for considering a feature influential
+        nb_seed: Maximum number of seeds to find
+        start_time: Start time of the entire process (for time limit checking)
+        max_runtime_seconds: Maximum runtime allowed in seconds
+
+    Returns:
+        List of seed instances
+    """
+    logger.info(f"Starting search for seeds with sensitive attribute: {sens_name}")
+
     seed: List[np.ndarray] = []
+
     for i, x in enumerate(train_vectors):
+        # Check time limit if applicable
+        if start_time is not None and max_runtime_seconds is not None:
+            current_runtime = time.time() - start_time
+            if current_runtime > max_runtime_seconds:
+                logger.info(f"Time limit of {max_runtime_seconds} seconds reached during seed search. "
+                            f"Found {len(seed)} seeds so far.")
+                break
+
+        # Log progress periodically (every 100 instances)
+        if i > 0 and i % 100 == 0:
+            logger.info(f"Processed {i}/{len(train_vectors)} instances, found {len(seed)}/{nb_seed} seeds")
+
         exp = explainer.explain_instance(x, model.predict_proba, num_features=num)
         exp_result = exp.as_list(label=exp.available_labels()[0])
         rank = [item[0] for item in exp_result]
-        loc = rank.index(sens_name)
-        if loc < math.ceil(len(exp_result) * threshold_l):
-            seed.append(x)
+
+        if sens_name in rank:
+            loc = rank.index(sens_name)
+            if loc < math.ceil(len(exp_result) * threshold_l):
+                seed.append(x)
+
         if len(seed) >= nb_seed:
+            logger.info(f"Found all {nb_seed} seeds required. Search complete.")
             break
+
+    logger.info(f"Search complete: Found {len(seed)}/{nb_seed} seeds after examining {i + 1} instances")
+
     return seed
 
 
@@ -171,8 +210,9 @@ class GlobalDiscovery:
 
 
 def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, max_local: int, model_type: str = 'rf',
-              cross_rate=0.9, mutation=0.1, max_runtime_seconds: float = None, max_tsn: int = None, nb_seed=100,
-              one_attr_at_a_time=False, db_path=None, analysis_id=None, use_gpu=False, **model_kwargs) -> Tuple[pd.DataFrame, Metrics]:
+              cross_rate=0.9, mutation=0.1, max_runtime_seconds: float = None, max_tsn: int = None, random_seed=100,
+              one_attr_at_a_time=False, db_path=None, analysis_id=None, use_gpu=False,
+              **model_kwargs) -> Tuple[pd.DataFrame, Metrics]:
     """
     XAI fairness testing that works on all protected attributes simultaneously.
     Uses a centralized termination check to improve code structure.
@@ -186,11 +226,11 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
     X, Y = data.xdf, data.ydf
 
     model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
-        data=data.dataframe,
+        data=data.training_dataframe.copy(),
         model_type=model_type,
         target_col=data.outcome_column,
         sensitive_attrs=list(data.protected_attributes),
-        random_state=nb_seed,
+        random_state=random_seed,
         use_cache=True,
         use_gpu=use_gpu
     )
@@ -276,7 +316,9 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
             np.array(attr_samples),
             len(data.feature_names),
             threshold_rank,
-            nb_seed
+            random_seed,
+            start_time=start_time,
+            max_runtime_seconds=max_runtime_seconds
         )
 
         seeds.extend(attr_seeds)
@@ -349,7 +391,7 @@ if __name__ == "__main__":
     data_obj, schema = get_real_data('adult', use_cache=True)
 
     results_df, metrics = run_expga(data_obj, threshold_rank=0.5, max_global=20000, max_local=100,
-                                    max_runtime_seconds=3600, max_tsn=20000, one_attr_at_a_time=True, cluster_num=50,
+                                    max_runtime_seconds=1500, max_tsn=20000, one_attr_at_a_time=True, cluster_num=50,
                                     step_size=0.05)
 
     print(f"\nTesting Metrics: {metrics}")

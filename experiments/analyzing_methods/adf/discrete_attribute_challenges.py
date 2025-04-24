@@ -8,7 +8,7 @@ import logging
 
 # Import the functions we need from the provided code
 from data_generator.main import generate_data
-from methods.adf.main import adf_fairness_testing
+from methods.adf.main import run_adf
 from methods.utils import train_sklearn_model, check_for_error_condition
 
 # Configure logging
@@ -256,10 +256,10 @@ def run_comparison_experiment():
                 # Run ADF
                 logger.info("Running ADF...")
                 start_time = time.time()
-                _, adf_metrics = adf_fairness_testing(data=discrimination_data, max_global=200, max_local=200,
-                                                      cluster_num=20, random_seed=seed,
-                                                      max_runtime_seconds=max_runtime_seconds, max_tsn=max_tsn,
-                                                      step_size=1.0)
+                _, adf_metrics = run_adf(data=discrimination_data, max_global=200, max_local=200,
+                                         cluster_num=20, random_seed=seed,
+                                         max_runtime_seconds=max_runtime_seconds, max_tsn=max_tsn,
+                                         step_size=1.0)
                 adf_runtime = time.time() - start_time
 
                 # Run Random Search

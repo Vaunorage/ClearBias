@@ -52,9 +52,9 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
         'rf': {
             'n_estimators': 100,
             'random_state': random_state,
-            'n_jobs': 1 if not use_gpu else None  # n_jobs is not used in cuML
+            'n_jobs': 1 if not use_gpu else None
         },
-        'svm': {'kernel': 'rbf', 'random_state': random_state},
+        'svm': {'kernel': 'rbf', 'random_state': random_state, 'probability': True},  # Added probability=True
         'lr': {'max_iter': 1000, 'random_state': random_state},
         'dt': {'random_state': random_state},
         'mlp': {
@@ -181,7 +181,7 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
             y_test_return = y_test
 
         # Save model to cache if requested
-        if use_cache:
+        if use_cache and not os.path.exists(cache_path):
             logger.info(f"Saving model to cache: {model_id}")
             # Create cache directory if it doesn't exist
             os.makedirs(cache_dir, exist_ok=True)
@@ -594,7 +594,8 @@ def make_final_metrics_and_dataframe(discrimination_data, tot_inputs, all_discri
 
     for k, v in dsn_by_attr_value.items():
         if k != 'total':
-            dsn_by_attr_value[k]['SUR'] = dsn_by_attr_value[k]['DSN'] / dsn_by_attr_value[k]['TSN']
+            dsn_by_attr_value[k]['SUR'] = dsn_by_attr_value[k]['DSN'] / dsn_by_attr_value[k]['TSN'] if \
+            dsn_by_attr_value[k]['TSN'] != 0 else 0
             dsn_by_attr_value[k]['DSS'] = dss
 
     # Log dsn_by_attr_value counts

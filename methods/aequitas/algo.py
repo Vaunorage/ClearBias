@@ -35,7 +35,7 @@ def get_input_bounds(discrimination_data):
 def run_aequitas(data: DiscriminationData, model_type='rf', max_global=500, max_local=2000, step_size=1.0,
                  init_prob=0.5, random_seed=42, max_runtime_seconds=3600, max_tsn=10000,
                  param_probability_change_size=0.005, direction_probability_change_size=0.005, one_attr_at_a_time=False,
-                 db_path=None, analysis_id=None):
+                 db_path=None, analysis_id=None, use_cache=True):
     early_termination = False
 
     if random_seed is not None:
@@ -51,7 +51,8 @@ def run_aequitas(data: DiscriminationData, model_type='rf', max_global=500, max_
         model_type=model_type,
         sensitive_attrs=data.protected_attributes,
         target_col=data.outcome_column,
-        random_state=random_seed
+        random_state=random_seed,
+        use_cache=use_cache
     )
     logger.info(f"Model trained. Features: {feature_names}")
 

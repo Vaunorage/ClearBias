@@ -1,6 +1,6 @@
 import sqlite3
 from data_generator.main import get_real_data, generate_from_real_data
-from methods.adf.main import adf_fairness_testing
+from methods.adf.main import run_adf
 from methods.aequitas.algo import run_aequitas
 from methods.exp_ga.algo import run_expga
 from methods.sg.main import run_sg
@@ -15,10 +15,10 @@ def run_experiment(method, dataset_name, conn):
 
     # Run fairness testing on original data
     if method == 'adf':
-        results_df_origin, metrics_origin = adf_fairness_testing(data_obj, max_global=20000, max_local=100,
-                                                                 cluster_num=50, random_seed=42,
-                                                                 max_runtime_seconds=400, max_tsn=3000, step_size=0.05,
-                                                                 one_attr_at_a_time=True)
+        results_df_origin, metrics_origin = run_adf(data_obj, max_global=20000, max_local=100,
+                                                    cluster_num=50, random_seed=42,
+                                                    max_runtime_seconds=400, max_tsn=3000, step_size=0.05,
+                                                    one_attr_at_a_time=True)
 
     if method == 'aequitas':
         results_df_origin, metrics_origin = run_aequitas(data=data_obj, model_type='rf', max_global=100, max_local=1000,
@@ -46,9 +46,9 @@ def run_experiment(method, dataset_name, conn):
 
     # Run fairness testing on synthetic data
     if method == 'adf':
-        results_df_synth, metrics_synth = adf_fairness_testing(data_obj_synth, max_global=20000, max_local=100,
-                                                               cluster_num=50, random_seed=42, max_runtime_seconds=600,
-                                                               max_tsn=3000, step_size=0.05, one_attr_at_a_time=True)
+        results_df_synth, metrics_synth = run_adf(data_obj_synth, max_global=20000, max_local=100,
+                                                  cluster_num=50, random_seed=42, max_runtime_seconds=600,
+                                                  max_tsn=3000, step_size=0.05, one_attr_at_a_time=True)
 
     if method == 'aequitas':
         results_df_synth, metrics_synth = run_aequitas(data=data_obj_synth, model_type='rf', max_global=100,

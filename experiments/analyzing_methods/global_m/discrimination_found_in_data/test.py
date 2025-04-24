@@ -3,7 +3,7 @@ import sqlite3
 import optuna
 from typing import Tuple, Optional, Dict, Any
 from data_generator.main import generate_data
-from methods.adf.main import adf_fairness_testing
+from methods.adf.main import run_adf
 from methods.aequitas.algo import run_aequitas
 from methods.exp_ga.algo import run_expga
 from methods.sg.main import run_sg
@@ -295,7 +295,7 @@ def create_objective_function(method: str, model_type: str, dataset_attr: dict):
                 return metrics.get('discrimination_found', 0)
 
             elif method == 'adf' and model_type == 'mlp':
-                _, metrics = adf_fairness_testing(**args)
+                _, metrics = run_adf(**args)
                 # Higher discrimination found is better
                 return metrics.get('discrimination_found', 0)
 
@@ -444,7 +444,7 @@ def run_experiment_for_model(method: str, model_type: str, tracker: ExperimentTr
 
         elif method == 'adf' and model_type == 'mlp':
             print(f"Running ADF for {model_type} with params: {args}")
-            adf_results, adf_metrics = adf_fairness_testing(**args)
+            adf_results, adf_metrics = run_adf(**args)
             print("ADF METRICS", adf_metrics)
 
     except Exception as e:

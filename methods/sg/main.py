@@ -252,8 +252,8 @@ def gen_arguments(ge):
     return arguments
 
 
-def run_sg(data: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=100, random_state=42,
-           max_runtime_seconds=3900, one_attr_at_a_time=True, db_path=None, analysis_id=None):
+def run_sg(data: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=100, random_seed=42,
+           max_runtime_seconds=3900, one_attr_at_a_time=True, db_path=None, analysis_id=None, use_cache=True):
     # store the result of fairness testing
     global_disc_inputs = set()
     global_disc_inputs_list = []
@@ -280,8 +280,8 @@ def run_sg(data: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=
 
     start_time = time.time()
 
-    np.random.seed(random_state)
-    random.seed(random_state)
+    np.random.seed(random_seed)
+    random.seed(random_seed)
 
     if not cluster_num:
         cluster_num = len(data.ydf.unique())
@@ -301,7 +301,8 @@ def run_sg(data: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=
             model_type=model_type,
             sensitive_attrs=data.protected_attributes,
             target_col=data.outcome_column,
-            random_state=random_state,
+            random_state=random_seed,
+            use_cache=use_cache
         )
 
         # the rank for priority queue, rank1 is for seed inputs, rank2 for local, rank3 for global
@@ -356,7 +357,7 @@ def run_sg(data: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=
                                                                                        db_path=db_path,
                                                                                        analysis_id=analysis_id)
 
-            decision_rules = extract_lime_decision_constraints(data, model, org_input, random_state)
+            decision_rules = extract_lime_decision_constraints(data, model, org_input, random_seed)
 
             # Create a version of the input without any sensitive parameters
             input_without_sensitive = remove_sensitive_attributes(org_input.tolist(), data.sensitive_indices_dict)

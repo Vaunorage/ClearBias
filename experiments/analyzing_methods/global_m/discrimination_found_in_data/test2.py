@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 from data_generator.main import generate_data
-from methods.adf.main import adf_fairness_testing
+from methods.adf.main import run_adf
 from methods.aequitas.algo import run_aequitas
 from methods.exp_ga.algo import run_expga
 from methods.sg.main import run_sg
@@ -557,7 +557,7 @@ def run_meta_optimization(method: str, model_type: str, dataset_attr: dict, trac
 
             elif method == 'adf' and model_type == 'mlp':
                 print(f"Running ADF trial {trial.number} for {model_type}...")
-                adf_results, adf_metrics = adf_fairness_testing(**args)
+                adf_results, adf_metrics = run_adf(**args)
                 print("ADF METRICS", adf_metrics)
 
             # Load the results
@@ -702,7 +702,7 @@ def run_experiment_with_meta_learning(method: str, model_type: str, dataset_attr
 
         elif method == 'adf' and model_type == 'mlp':
             print(f"Running ADF with meta-optimized params for {model_type}...")
-            adf_results, adf_metrics = adf_fairness_testing(**args)
+            adf_results, adf_metrics = run_adf(**args)
             print("ADF METRICS", adf_metrics)
 
         # Load the results and calculate metrics
