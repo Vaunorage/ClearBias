@@ -395,37 +395,41 @@ def optimize_fairness_testing(
 
 
 if __name__ == "__main__":
-    from data_generator.main import get_real_data
-    for dataset in ['credit', 'bank']:
+    from data_generator.main import get_real_data, generate_from_real_data
+
+    datasets_functions = [('real', get_real_data), ('synthetic', generate_from_real_data)]
+
+    for dataset in ['adult', 'credit', 'bank']:
         for algorithm in ['sg', 'expga', 'adf', 'aequitas']:
-            # Get data
-            data_obj, schema = get_real_data(dataset, use_cache=True)
+            for gen_data in datasets_functions:
+                # Get data
+                data_obj, schema = gen_data[1](dataset, use_cache=True)
 
-            # Fixed parameters that we don't want to optimize
-            fixed_params = {
-                "db_path": None,
-                "analysis_id": None,
-            }
+                # Fixed parameters that we don't want to optimize
+                fixed_params = {
+                    "db_path": None,
+                    "analysis_id": None,
+                }
 
-            # Additional information to save with each trial
-            extra_trial_data = {'dataset': dataset}
+                # Additional information to save with each trial
+                extra_trial_data = {'dataset': dataset}
 
-            # Run optimization for ExpGA for 10 minutes (600 seconds)
-            best_params, results_df, best_metrics = optimize_fairness_testing(
-                study_name=f"{dataset}_{algorithm}",
-                data=data_obj,
-                method=algorithm,  # Choose method: 'expga', 'sg', 'aequitas', 'adf'
-                total_timeout=2000,
-                n_trials=5,
-                fixed_params=fixed_params,
-                max_tsn=20000,
-                verbose=True,
-                random_seed=42,
-                extra_trial_data=extra_trial_data  # Pass the extra data dictionary
-            )
+                # Run optimization for ExpGA for 10 minutes (600 seconds)
+                best_params, results_df, best_metrics = optimize_fairness_testing(
+                    study_name=f"{gen_data[0]}_{dataset}_{algorithm}",
+                    data=data_obj,
+                    method=algorithm,
+                    total_timeout=2000,
+                    n_trials=5,
+                    fixed_params=fixed_params,
+                    max_tsn=20000,
+                    verbose=True,
+                    random_seed=42,
+                    extra_trial_data=extra_trial_data  # Pass the extra data dictionary
+                )
 
-            print("\nBest parameters found:")
-            for param, value in best_params.items():
-                print(f"  {param}: {value}")
+                print("\nBest parameters found:")
+                for param, value in best_params.items():
+                    print(f"  {param}: {value}")
 
-            print(f"\nBest SUR achieved: {best_metrics['SUR']:.4f}")
+                print(f"\nBest SUR achieved: {best_metrics['SUR']:.4f}")
