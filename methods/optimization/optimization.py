@@ -64,15 +64,6 @@ def save_trial_to_db(
 
 
 def setup_sqlite_database(db_path: str) -> sqlite3.Connection:
-    """
-    Set up the SQLite database for storing optimization trials.
-
-    Args:
-        db_path: Path to the SQLite database file
-
-    Returns:
-        SQLite database connection
-    """
     # Create directory if it doesn't exist
     os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
 
@@ -395,41 +386,104 @@ def optimize_fairness_testing(
 
 
 if __name__ == "__main__":
-    from data_generator.main import get_real_data, generate_from_real_data
+    from data_generator.main import get_real_data, generate_from_real_data, generate_data
+    import numpy as np
 
-    datasets_functions = [('real', get_real_data), ('synthetic', generate_from_real_data)]
+    # Create dataset generation functions
+    datasets_functions = [
+        ('real', get_real_data),
+        ('synthetic', generate_from_real_data),
+        ('pure-synthetic-balanced', lambda dataset, use_cache=True: (
+            generate_data(
+                nb_groups=100,
+                nb_attributes=20,
+                prop_protected_attr=0.3,
+                min_similarity=0.3,
+                max_similarity=0.7,
+                use_cache=use_cache
+            ), None)
+         ),
+        ('pure-synthetic-uncertain', lambda dataset, use_cache=True: (
+            generate_data(
+                nb_groups=100,
+                nb_attributes=20,
+                prop_protected_attr=0.2,
+                min_alea_uncertainty=0.3,
+                max_alea_uncertainty=0.7,
+                min_epis_uncertainty=0.3,
+                max_epis_uncertainty=0.7,
+                use_cache=use_cache
+            ), None)
+         ),
+        ('pure-synthetic-intersectional', lambda dataset, use_cache=True: (
+            generate_data(
+                nb_groups=150,
+                nb_attributes=25,
+                prop_protected_attr=0.6,
+                min_intersectionality=3,
+                max_intersectionality=5,
+                use_cache=use_cache
+            ), None)
+         )
+    ]
 
     for dataset in ['adult', 'credit', 'bank']:
         for algorithm in ['sg', 'expga', 'adf', 'aequitas']:
             for gen_data in datasets_functions:
-                # Get data
-                data_obj, schema = gen_data[1](dataset, use_cache=True)
+                # Skip pure-synthetic for non-adult datasets
+                if dataset != 'adult' and 'pure-synthetic' in gen_data[0]:
+                    continue
 
-                # Fixed parameters that we don't want to optimize
-                fixed_params = {
-                    "db_path": None,
-                    "analysis_id": None,
-                }
+                print(f"\nStarting experiment: {gen_data[0]}_{dataset}_{algorithm}")
 
-                # Additional information to save with each trial
-                extra_trial_data = {'dataset': dataset}
+                try:
+                    # Get data
+                    data_obj, schema = gen_data[1](dataset, use_cache=True)
 
-                # Run optimization for ExpGA for 10 minutes (600 seconds)
-                best_params, results_df, best_metrics = optimize_fairness_testing(
-                    study_name=f"{gen_data[0]}_{dataset}_{algorithm}",
-                    data=data_obj,
-                    method=algorithm,
-                    total_timeout=2000,
-                    n_trials=5,
-                    fixed_params=fixed_params,
-                    max_tsn=20000,
-                    verbose=True,
-                    random_seed=42,
-                    extra_trial_data=extra_trial_data  # Pass the extra data dictionary
-                )
+                    # Fixed parameters that we don't want to optimize
+                    fixed_params = {
+                        "db_path": None,
+                        "analysis_id": None,
+                    }
 
-                print("\nBest parameters found:")
-                for param, value in best_params.items():
-                    print(f"  {param}: {value}")
+                    # Additional information to save with each trial
+                    extra_trial_data = {
+                        'dataset': dataset,
+                        'data_source': gen_data[0],
+                        'data_groups': data_obj.nb_groups,
+                        'data_attributes': len(data_obj.attributes) if hasattr(data_obj, 'attributes') else 0
+                    }
 
-                print(f"\nBest SUR achieved: {best_metrics['SUR']:.4f}")
+                    # Create unique study name with a timestamp to avoid conflicts
+                    import time
+
+                    unique_timestamp = int(time.time())
+                    study_name = f"{gen_data[0]}_{dataset}_{algorithm}_{unique_timestamp}"
+
+                    # Create a fresh storage for each study to prevent parameter conflicts
+                    storage = None  # This forces Optuna to create a new in-memory storage
+
+                    # Run optimization
+                    best_params, results_df, best_metrics = optimize_fairness_testing(
+                        study_name=study_name,
+                        data=data_obj,
+                        method=algorithm,
+                        total_timeout=2000,
+                        n_trials=5,
+                        fixed_params=fixed_params,
+                        max_tsn=20000,
+                        verbose=True,
+                        random_seed=42,
+                        storage=storage,  # Use fresh storage for each study
+                        extra_trial_data=extra_trial_data
+                    )
+
+                    print(f"\nExperiment completed: {gen_data[0]}_{dataset}_{algorithm}")
+                    print("Best parameters found:")
+                    for param, value in best_params.items():
+                        print(f"  {param}: {value}")
+                    print(f"Best SUR achieved: {best_metrics['SUR']:.4f}")
+
+                except Exception as e:
+                    print(f"Error in {gen_data[0]}_{dataset}_{algorithm}: {str(e)}")
+                    continue
