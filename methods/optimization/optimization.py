@@ -385,105 +385,595 @@ def optimize_fairness_testing(
             conn.close()
 
 
+def get_best_hyperparameters(
+        db_path: str,
+        method: str = None,
+        dataset: str = None,
+        data_source: str = None,
+        study_name: str = None,
+        top_n: int = 1,
+        metric: str = "SUR"
+) -> list:
+    """
+    Get the best hyperparameters from the optimization database.
+
+    Args:
+        db_path: Path to the SQLite database
+        method: Filter by method name (e.g., 'expga', 'sg', 'aequitas', 'adf')
+        dataset: Filter by dataset name (e.g., 'adult', 'credit', 'bank')
+        data_source: Filter by data source (e.g., 'real', 'synthetic', 'pure-synthetic-balanced')
+        study_name: Filter by study name
+        top_n: Number of top results to return
+        metric: Metric to optimize for (default: "SUR")
+
+    Returns:
+        List of dictionaries containing the best hyperparameters and their metrics
+    """
+    import json
+    import sqlite3
+
+    # Connect to the database
+    conn = sqlite3.connect(db_path)
+
+    # Construct the query based on provided filters
+    query = """
+            SELECT trial_number, \
+                   study_name, \
+                   method, \
+                   parameters, \
+                   metrics, \
+                   runtime, \
+                   extra_data
+            FROM optimization_trials
+            WHERE 1 = 1 \
+            """
+
+    params = []
+
+    if method:
+        query += " AND method = ?"
+        params.append(method)
+
+    if study_name:
+        query += " AND study_name = ?"
+        params.append(study_name)
+
+    # Execute the query
+    cursor = conn.cursor()
+    cursor.execute(query, params)
+
+    # Process the results
+    results = []
+    for row in cursor.fetchall():
+        trial_number, study_name, method, params_json, metrics_json, runtime, extra_data_json = row
+
+        # Parse JSON data
+        params_dict = json.loads(params_json)
+        metrics_dict = json.loads(metrics_json)
+        extra_data_dict = json.loads(extra_data_json) if extra_data_json else {}
+
+        # Apply additional filters on extra_data
+        if dataset and ('dataset' not in extra_data_dict or extra_data_dict['dataset'] != dataset):
+            continue
+
+        if data_source and ('data_source' not in extra_data_dict or extra_data_dict['data_source'] != data_source):
+            continue
+
+        # Get the metric value
+        metric_value = metrics_dict.get(metric, 0)
+
+        results.append({
+            'trial_number': trial_number,
+            'study_name': study_name,
+            'method': method,
+            'parameters': params_dict,
+            'metrics': metrics_dict,
+            'runtime': runtime,
+            'extra_data': extra_data_dict,
+            'metric_value': metric_value
+        })
+
+    # Close the connection
+    conn.close()
+
+    # Sort results by the specified metric (descending order)
+    results.sort(key=lambda x: x['metric_value'], reverse=True)
+
+    # Return top_n results
+    return results[:top_n]
+
+
 if __name__ == "__main__":
     from data_generator.main import get_real_data, generate_from_real_data, generate_data
     import numpy as np
+    import time
 
     # Create dataset generation functions
     datasets_functions = [
         ('real', get_real_data),
-        ('synthetic', generate_from_real_data),
-        ('pure-synthetic-balanced', lambda dataset, use_cache=True: (
-            generate_data(
-                nb_groups=100,
-                nb_attributes=20,
-                prop_protected_attr=0.3,
-                min_similarity=0.3,
-                max_similarity=0.7,
-                use_cache=use_cache
-            ), None)
-         ),
-        ('pure-synthetic-uncertain', lambda dataset, use_cache=True: (
-            generate_data(
-                nb_groups=100,
-                nb_attributes=20,
-                prop_protected_attr=0.2,
-                min_alea_uncertainty=0.3,
-                max_alea_uncertainty=0.7,
-                min_epis_uncertainty=0.3,
-                max_epis_uncertainty=0.7,
-                use_cache=use_cache
-            ), None)
-         ),
-        ('pure-synthetic-intersectional', lambda dataset, use_cache=True: (
-            generate_data(
-                nb_groups=150,
-                nb_attributes=25,
-                prop_protected_attr=0.6,
-                min_intersectionality=3,
-                max_intersectionality=5,
-                use_cache=use_cache
-            ), None)
-         )
     ]
 
-    for dataset in ['adult', 'credit', 'bank']:
-        for algorithm in ['sg', 'expga', 'adf', 'aequitas']:
-            for gen_data in datasets_functions:
-                # Skip pure-synthetic for non-adult datasets
-                if dataset != 'adult' and 'pure-synthetic' in gen_data[0]:
-                    continue
+    # Define validation test configurations based on analysis results
+    validation_tests = {
+        'adf': [
+            {
+                'name': 'low_max_local',
+                'params': {
+                    'max_global': 2500,  # Moderate value
+                    'max_local': 200,  # Low value
+                    'cluster_num': 55,  # Low-mid range (53-62)
+                    'step_size': 0.6,  # Higher value
+                    'one_attr_at_a_time': True,
+                    'random_seed': 42
+                }
+            },
+            {
+                'name': 'parameter_interaction',
+                'params': {
+                    'max_global': 3000,  # Higher value
+                    'max_local': 1000,  # Mid value
+                    'cluster_num': 55,  # Low-mid range
+                    'step_size': 0.4,  # Mid value
+                    'one_attr_at_a_time': True,
+                    'random_seed': 42
+                }
+            }
+        ],
+        'aequitas': [
+            {
+                'name': 'decision_tree_model',
+                'params': {
+                    'model_type': 'dt',
+                    'max_global': 200,  # Low range (134-294)
+                    'max_local': 8000,  # High value
+                    'step_size': 0.75,  # Low range (0.7-0.8)
+                    'init_prob': 0.65,  # High range (0.6-0.7)
+                    'param_probability_change_size': 0.006,
+                    'direction_probability_change_size': 0.008,
+                    'one_attr_at_a_time': False,
+                    'random_seed': 42
+                }
+            },
+            {
+                'name': 'model_comparison',
+                'params': {
+                    'model_type': 'rf',  # Comparison with random forest
+                    'max_global': 200,  # Low range
+                    'max_local': 8000,  # High value
+                    'step_size': 0.75,  # Low value
+                    'init_prob': 0.65,  # High value
+                    'param_probability_change_size': 0.006,
+                    'direction_probability_change_size': 0.008,
+                    'one_attr_at_a_time': False,
+                    'random_seed': 42
+                }
+            }
+        ],
+        'expga': [
+            {
+                'name': 'optimized_combination',
+                'params': {
+                    'threshold_rank': 0.38,  # Low value
+                    'max_global': 20000,  # Mid value (16860-21851)
+                    'max_local': 130,  # Low value (116-145)
+                    'model_type': 'dt',  # Best performing
+                    'cross_rate': 0.85,  # High value (0.8-0.9)
+                    'mutation': 0.4,  # High value (0.4+)
+                    'one_attr_at_a_time': False,
+                    'random_seed': 42
+                }
+            },
+            {
+                'name': 'parameter_interaction',
+                'params': {
+                    'threshold_rank': 0.4,  # Low-mid value
+                    'max_global': 15000,  # Lower value
+                    'max_local': 170,  # Mid value (145-175)
+                    'model_type': 'dt',  # Best performing
+                    'cross_rate': 0.75,  # Mid value
+                    'mutation': 0.3,  # Mid value
+                    'one_attr_at_a_time': False,
+                    'random_seed': 42
+                }
+            }
+        ],
+        'sg': [
+            {
+                'name': 'random_forest_model',
+                'params': {
+                    'model_type': 'rf',  # Best performing
+                    'cluster_num': 20,  # Low value (12-32)
+                    'one_attr_at_a_time': False,
+                    'random_seed': 42
+                }
+            },
+            {
+                'name': 'model_comparison',
+                'params': {
+                    'model_type': 'dt',  # For comparison
+                    'cluster_num': 20,  # Low value (12-32)
+                    'one_attr_at_a_time': False,
+                    'random_seed': 42
+                }
+            }
+        ]
+    }
 
-                print(f"\nStarting experiment: {gen_data[0]}_{dataset}_{algorithm}")
+    # Add dataset-specific tests
+    dataset_specific_tests = {
+        'adult': {
+            'adf': {
+                'name': 'adult_optimized',
+                'params': {
+                    'max_global': 662,
+                    'max_local': 4782,
+                    'cluster_num': 71,
+                    'step_size': 0.0715,
+                    'one_attr_at_a_time': True,
+                    'random_seed': 42
+                }
+            },
+            'aequitas': {
+                'name': 'adult_optimized',
+                'params': {
+                    'model_type': 'lr',
+                    'max_global': 455,
+                    'max_local': 6901,
+                    'step_size': 1.4701,
+                    'init_prob': 0.2874,
+                    'param_probability_change_size': 0.0059,
+                    'direction_probability_change_size': 0.0080,
+                    'one_attr_at_a_time': True,
+                    'random_seed': 42
+                }
+            },
+            'expga': {
+                'name': 'adult_optimized',
+                'params': {
+                    'threshold_rank': 0.7227,
+                    'max_global': 29418,
+                    'max_local': 390,
+                    'model_type': 'dt',
+                    'cross_rate': 0.7247,
+                    'mutation': 0.0498,
+                    'one_attr_at_a_time': True,
+                    'random_seed': 42
+                }
+            },
+            'sg': {
+                'name': 'adult_optimized',
+                'params': {
+                    'model_type': 'rf',
+                    'cluster_num': 70,
+                    'one_attr_at_a_time': False,
+                    'random_seed': 39
+                }
+            }
+        },
+        'bank': {
+            'adf': {
+                'name': 'bank_optimized',
+                'params': {
+                    'max_global': 435,
+                    'max_local': 164,
+                    'cluster_num': 53,
+                    'step_size': 0.1667,
+                    'one_attr_at_a_time': True,
+                    'random_seed': 42
+                }
+            },
+            'aequitas': {
+                'name': 'bank_optimized',
+                'params': {
+                    'model_type': 'rf',
+                    'max_global': 968,
+                    'max_local': 9209,
+                    'step_size': 0.7444,
+                    'init_prob': 0.7334,
+                    'param_probability_change_size': 0.0099,
+                    'direction_probability_change_size': 0.0073,
+                    'one_attr_at_a_time': False,
+                    'random_seed': 42
+                }
+            },
+            'expga': {
+                'name': 'bank_optimized',
+                'params': {
+                    'threshold_rank': 0.4503,
+                    'max_global': 11870,
+                    'max_local': 116,
+                    'model_type': 'lr',
+                    'cross_rate': 0.5881,
+                    'mutation': 0.3665,
+                    'one_attr_at_a_time': False,
+                    'random_seed': 42
+                }
+            },
+            'sg': {
+                'name': 'bank_optimized',
+                'params': {
+                    'model_type': 'rf',
+                    'cluster_num': 32,
+                    'one_attr_at_a_time': False,
+                    'random_seed': 75
+                }
+            }
+        },
+        'credit': {
+            'adf': {
+                'name': 'credit_optimized',
+                'params': {
+                    'max_global': 3424,
+                    'max_local': 2331,
+                    'cluster_num': 81,
+                    'step_size': 0.6632,
+                    'one_attr_at_a_time': False,
+                    'random_seed': 42
+                }
+            },
+            'aequitas': {
+                'name': 'credit_optimized',
+                'params': {
+                    'model_type': 'dt',
+                    'max_global': 134,
+                    'max_local': 7909,
+                    'step_size': 0.9233,
+                    'init_prob': 0.5581,
+                    'param_probability_change_size': 0.0057,
+                    'direction_probability_change_size': 0.0086,
+                    'one_attr_at_a_time': False,
+                    'random_seed': 42
+                }
+            },
+            'expga': {
+                'name': 'credit_optimized',
+                'params': {
+                    'threshold_rank': 0.3825,
+                    'max_global': 21851,
+                    'max_local': 175,
+                    'model_type': 'dt',
+                    'cross_rate': 0.9407,
+                    'mutation': 0.4252,
+                    'one_attr_at_a_time': False,
+                    'random_seed': 42
+                }
+            },
+            'sg': {
+                'name': 'credit_optimized',
+                'params': {
+                    'model_type': 'rf',
+                    'cluster_num': 12,
+                    'one_attr_at_a_time': False,
+                    'random_seed': 44
+                }
+            }
+        }
+    }
+
+    # Add cross-parameter interaction tests
+    interaction_tests = {
+        'adf': {
+            'name': 'max_local_step_size_interaction',
+            'params': [
+                # Test different combinations of max_local and step_size
+                {'max_local': 200, 'step_size': 0.2},
+                {'max_local': 200, 'step_size': 0.6},
+                {'max_local': 2000, 'step_size': 0.2},
+                {'max_local': 2000, 'step_size': 0.6},
+            ],
+            'base_params': {
+                'max_global': 662,
+                'cluster_num': 55,
+                'one_attr_at_a_time': True,
+                'random_seed': 42
+            }
+        },
+        'expga': {
+            'name': 'threshold_mutation_interaction',
+            'params': [
+                # Test different combinations of threshold_rank and mutation
+                {'threshold_rank': 0.3, 'mutation': 0.1},
+                {'threshold_rank': 0.3, 'mutation': 0.4},
+                {'threshold_rank': 0.7, 'mutation': 0.1},
+                {'threshold_rank': 0.7, 'mutation': 0.4}
+            ],
+            'base_params': {
+                'max_global': 20000,
+                'max_local': 130,
+                'model_type': 'dt',
+                'cross_rate': 0.85,
+                'one_attr_at_a_time': False,
+                'random_seed': 42
+            }
+        }
+    }
+
+    # Run validation tests
+    results = {}
+
+    for dataset in ['adult', 'credit', 'bank']:
+        results[dataset] = {}
+
+        for algorithm in ['sg', 'expga', 'adf', 'aequitas']:
+            algorithm_results = []
+
+            # Get data
+            data_obj, schema = get_real_data(dataset, use_cache=True)
+
+            # Fixed parameters that we don't want to optimize
+            fixed_params = {
+                "db_path": None,
+                "analysis_id": None,
+                "max_tsn": 20000,
+                "max_runtime_seconds": 1200,  # 20 minutes max per test
+                "use_cache": True
+            }
+
+            if algorithm == 'expga':
+                fixed_params["use_gpu"] = False
+
+            # Run general validation tests
+            print(f"\n{'=' * 50}")
+            print(f"Running validation tests for {dataset} - {algorithm}")
+            print(f"{'=' * 50}")
+
+            for test in validation_tests[algorithm]:
+                test_name = test['name']
+                test_params = test['params'].copy()
+                test_params.update(fixed_params)
+
+                print(f"\nRunning test: {test_name}")
+                print(f"Parameters: {test_params}")
 
                 try:
-                    # Get data
-                    data_obj, schema = gen_data[1](dataset, use_cache=True)
+                    start_time = time.time()
 
-                    # Fixed parameters that we don't want to optimize
-                    fixed_params = {
-                        "db_path": None,
-                        "analysis_id": None,
+                    if algorithm == 'expga':
+                        results_df, metrics = run_expga(data_obj, **test_params)
+                    elif algorithm == 'sg':
+                        results_df, metrics = run_sg(data_obj, **test_params)
+                    elif algorithm == 'aequitas':
+                        results_df, metrics = run_aequitas(data_obj, **test_params)
+                    elif algorithm == 'adf':
+                        results_df, metrics = run_adf(data_obj, **test_params)
+
+                    runtime = time.time() - start_time
+
+                    test_result = {
+                        'test_name': test_name,
+                        'parameters': test_params,
+                        'metrics': metrics,
+                        'runtime': runtime
                     }
 
-                    # Additional information to save with each trial
-                    extra_trial_data = {
-                        'dataset': dataset,
-                        'data_source': gen_data[0],
-                        'data_groups': data_obj.nb_groups,
-                        'data_attributes': len(data_obj.attributes) if hasattr(data_obj, 'attributes') else 0
-                    }
+                    algorithm_results.append(test_result)
 
-                    # Create unique study name with a timestamp to avoid conflicts
-                    import time
-
-                    unique_timestamp = int(time.time())
-                    study_name = f"{gen_data[0]}_{dataset}_{algorithm}_{unique_timestamp}"
-
-                    # Create a fresh storage for each study to prevent parameter conflicts
-                    storage = None  # This forces Optuna to create a new in-memory storage
-
-                    # Run optimization
-                    best_params, results_df, best_metrics = optimize_fairness_testing(
-                        study_name=study_name,
-                        data=data_obj,
-                        method=algorithm,
-                        total_timeout=2000,
-                        n_trials=5,
-                        fixed_params=fixed_params,
-                        max_tsn=20000,
-                        verbose=True,
-                        random_seed=42,
-                        storage=storage,  # Use fresh storage for each study
-                        extra_trial_data=extra_trial_data
-                    )
-
-                    print(f"\nExperiment completed: {gen_data[0]}_{dataset}_{algorithm}")
-                    print("Best parameters found:")
-                    for param, value in best_params.items():
-                        print(f"  {param}: {value}")
-                    print(f"Best SUR achieved: {best_metrics['SUR']:.4f}")
+                    print(f"Test completed in {runtime:.2f} seconds")
+                    print(
+                        f"Results: DSN={metrics.get('DSN', 0)}, TSN={metrics.get('TSN', 0)}, SUR={metrics.get('SUR', 0):.4f}")
 
                 except Exception as e:
-                    print(f"Error in {gen_data[0]}_{dataset}_{algorithm}: {str(e)}")
-                    continue
+                    print(f"Error in test {test_name}: {str(e)}")
+
+            # Run dataset-specific tests
+            if dataset in dataset_specific_tests and algorithm in dataset_specific_tests[dataset]:
+                test = dataset_specific_tests[dataset][algorithm]
+                test_name = test['name']
+                test_params = test['params'].copy()
+                test_params.update(fixed_params)
+
+                print(f"\nRunning dataset-specific test: {test_name}")
+                print(f"Parameters: {test_params}")
+
+                try:
+                    start_time = time.time()
+
+                    if algorithm == 'expga':
+                        results_df, metrics = run_expga(data_obj, **test_params)
+                    elif algorithm == 'sg':
+                        results_df, metrics = run_sg(data_obj, **test_params)
+                    elif algorithm == 'aequitas':
+                        results_df, metrics = run_aequitas(data_obj, **test_params)
+                    elif algorithm == 'adf':
+                        results_df, metrics = run_adf(data_obj, **test_params)
+
+                    runtime = time.time() - start_time
+
+                    test_result = {
+                        'test_name': test_name,
+                        'parameters': test_params,
+                        'metrics': metrics,
+                        'runtime': runtime
+                    }
+
+                    algorithm_results.append(test_result)
+
+                    print(f"Test completed in {runtime:.2f} seconds")
+                    print(
+                        f"Results: DSN={metrics.get('DSN', 0)}, TSN={metrics.get('TSN', 0)}, SUR={metrics.get('SUR', 0):.4f}")
+
+                except Exception as e:
+                    print(f"Error in test {test_name}: {str(e)}")
+
+            # Run interaction tests if available
+            if algorithm in interaction_tests:
+                interaction_test = interaction_tests[algorithm]
+                test_name = interaction_test['name']
+                base_params = interaction_test['base_params'].copy()
+                base_params.update(fixed_params)
+
+                print(f"\nRunning interaction test: {test_name}")
+
+                for i, param_combination in enumerate(interaction_test['params']):
+                    test_params = base_params.copy()
+                    test_params.update(param_combination)
+
+                    sub_test_name = f"{test_name}_{i + 1}"
+                    print(f"\nRunning sub-test: {sub_test_name}")
+                    print(f"Parameters: {test_params}")
+
+                    try:
+                        start_time = time.time()
+
+                        if algorithm == 'expga':
+                            results_df, metrics = run_expga(data_obj, **test_params)
+                        elif algorithm == 'sg':
+                            results_df, metrics = run_sg(data_obj, **test_params)
+                        elif algorithm == 'aequitas':
+                            results_df, metrics = run_aequitas(data_obj, **test_params)
+                        elif algorithm == 'adf':
+                            results_df, metrics = run_adf(data_obj, **test_params)
+
+                        runtime = time.time() - start_time
+
+                        test_result = {
+                            'test_name': sub_test_name,
+                            'parameters': test_params,
+                            'metrics': metrics,
+                            'runtime': runtime
+                        }
+
+                        algorithm_results.append(test_result)
+
+                        print(f"Test completed in {runtime:.2f} seconds")
+                        print(
+                            f"Results: DSN={metrics.get('DSN', 0)}, TSN={metrics.get('TSN', 0)}, SUR={metrics.get('SUR', 0):.4f}")
+
+                    except Exception as e:
+                        print(f"Error in test {sub_test_name}: {str(e)}")
+
+            results[dataset][algorithm] = algorithm_results
+
+    # Save results to file
+    import json
+
+    with open('validation_test_results.json', 'w') as f:
+        json.dump(results, f, indent=2)
+
+    # Print summary of results
+    print("\n\n" + "=" * 80)
+    print("VALIDATION TEST RESULTS SUMMARY")
+    print("=" * 80)
+
+    for dataset in results:
+        print(f"\nDATASET: {dataset}")
+
+        for algorithm in results[dataset]:
+            print(f"\n  ALGORITHM: {algorithm}")
+
+            # Sort tests by SUR value
+            sorted_tests = sorted(
+                results[dataset][algorithm],
+                key=lambda x: x['metrics'].get('SUR', 0),
+                reverse=True
+            )
+
+            for i, test in enumerate(sorted_tests[:3]):  # Show top 3 results
+                print(f"    {i + 1}. {test['test_name']}: SUR={test['metrics'].get('SUR', 0):.4f}")
+                # Show key parameters
+                for param, value in test['parameters'].items():
+                    if param not in ['db_path', 'analysis_id', 'max_tsn', 'max_runtime_seconds', 'use_cache',
+                                     'use_gpu']:
+                        print(f"       {param}: {value}")
+
+    print("\nValidation tests completed successfully!")
