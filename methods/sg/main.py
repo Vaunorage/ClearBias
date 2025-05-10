@@ -294,16 +294,16 @@ def run_sg(data: DiscriminationData, model_type='lr', cluster_num=None, max_tsn=
     ge_targets_queue = Queue()
     [ge_targets_queue.put(inp) for inp in all_inputs]
 
-    while not should_terminate() and ge_targets_queue.qsize() != 0:
+    model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
+        data=data.training_dataframe,
+        model_type=model_type,
+        sensitive_attrs=data.protected_attributes,
+        target_col=data.outcome_column,
+        random_state=random_seed,
+        use_cache=use_cache
+    )
 
-        model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
-            data=data.training_dataframe,
-            model_type=model_type,
-            sensitive_attrs=data.protected_attributes,
-            target_col=data.outcome_column,
-            random_state=random_seed,
-            use_cache=use_cache
-        )
+    while not should_terminate() and ge_targets_queue.qsize() != 0:
 
         # the rank for priority queue, rank1 is for seed inputs, rank2 for local, rank3 for global
         rank1 = 5

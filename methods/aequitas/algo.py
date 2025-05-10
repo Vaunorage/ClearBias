@@ -421,7 +421,8 @@ def run_aequitas(data: DiscriminationData, model_type='rf', max_global=500, max_
                 minimizer_kwargs=local_minimizer,
                 niter=max_local,
                 seed=local_seed,
-                callback=basin_callback
+                callback=basin_callback,
+                accept_test=lambda f_new, x_new, f_old, x_old: not should_terminate(),
             )
         except Exception as e:
             logger.error(f"Local search error: {e}")
