@@ -227,18 +227,8 @@ def get_result_and_synthetic_matching_res(experiment_id):
 
 # %%
 if __name__ == '__main__':
-    run_ids = [
-        'experiment_1746917695_config_0_expga_iter_0',
-        'experiment_1746917695_config_0_sg_iter_0',
-        'experiment_1746917695_config_0_aequitas_iter_0',
-        'experiment_1746917695_config_0_adf_iter_0'
-    ]
-    res = []
-    for run_id in run_ids:
-        res_with_groups, synth_with_groups = get_result_and_synthetic_matching_res(
-            experiment_id=run_id)
-        ll = res_with_groups[['couple_key', 'indv_key', 'indv_matching_subgroups',
-                              'indv_matching_groups', 'couple_matching_groups']]
-        ll['run_id'] = run_id
-        res.append(ll)
-    res = pd.concat(res)
+    res_with_groups, synth_with_groups = get_result_and_synthetic_matching_res(
+            experiment_id='experiment_1746970529_config_0_iter_0')
+    ll = res_with_groups[['couple_key', 'indv_key', 'indv_matching_subgroups',
+                          'indv_matching_groups', 'couple_matching_groups']]
+    print('dddd')

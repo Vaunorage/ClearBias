@@ -6,6 +6,9 @@ import json
 import math
 import pickle
 import random
+import contextlib
+import io
+import sys
 from collections import defaultdict
 from pathlib import Path
 import numpy as np
@@ -529,23 +532,6 @@ class RobustGaussianCopulaSynthesizer(GaussianCopulaSynthesizer):
                 raise e
 
 
-def create_sdv_numerical_distributions(data_schema):
-    """Create numerical distributions configuration for SDV GaussianCopulaSynthesizer."""
-    numerical_distributions = {}
-
-    for attr_name, attr_cats in zip(data_schema.attr_names, data_schema.attr_categories):
-        # Check if attribute is numerical
-        if all(isinstance(c, (int, float)) for c in attr_cats if c != -1):
-            # Use beta distribution for protected attributes and normal for non-protected
-            is_protected = data_schema.protected_attr[data_schema.attr_names.index(attr_name)]
-            if is_protected:
-                numerical_distributions[attr_name] = 'beta'
-            else:
-                numerical_distributions[attr_name] = 'truncnorm'
-
-    return numerical_distributions
-
-
 def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attributes,
                          prop_protected_attr, fit_synthesizer=True, n_samples=10000) -> DataSchema:
     """Generate a data schema for synthetic data."""
@@ -1017,11 +1003,6 @@ def fill_nan_values(df, data_schema=None):
                 filled_df[col].fillna("unknown", inplace=True)
 
     return filled_df
-
-
-import contextlib
-import io
-import sys
 
 
 @contextlib.contextmanager
@@ -1664,98 +1645,6 @@ def is_numeric_type(series):
         if n_unique >= 5:  # SDV typically treats columns with 5+ values as numeric
             return True
     return False
-
-
-def calculate_sdv_correlation_matrix(encoded_df, attr_columns, ensure_positive_definite=True):
-    """
-    Calculate a correlation matrix suitable for SDV from encoded data.
-
-    Args:
-        encoded_df: DataFrame with encoded values
-        attr_columns: List of attribute column names
-        ensure_positive_definite: Whether to ensure the matrix is positive definite
-
-    Returns:
-        Correlation matrix as numpy array
-    """
-    n_cols = len(attr_columns)
-    correlation_matrix = np.zeros((n_cols, n_cols))
-
-    # Fill the diagonal with 1.0
-    np.fill_diagonal(correlation_matrix, 1.0)
-
-    # Calculate pairwise correlations
-    for i, col1 in enumerate(attr_columns):
-        for j in range(i + 1, n_cols):  # Only need to calculate upper triangle
-            col2 = attr_columns[j]
-
-            # Filter out missing values (-1)
-            mask = (encoded_df[col1] >= 0) & (encoded_df[col2] >= 0)
-
-            if mask.sum() > 1:  # Need at least 2 points for correlation
-                try:
-                    # Use Spearman correlation as it works better with ordinal data
-                    corr, _ = spearmanr(encoded_df[col1][mask], encoded_df[col2][mask])
-
-                    # Handle NaN or infinity
-                    if np.isnan(corr) or np.isinf(corr):
-                        corr = 0.0
-
-                    # Keep correlations in reasonable bounds
-                    corr = np.clip(corr, -0.99, 0.99)
-
-                    correlation_matrix[i, j] = corr
-                    correlation_matrix[j, i] = corr  # Mirror to lower triangle
-                except:
-                    # If correlation calculation fails, use zero
-                    correlation_matrix[i, j] = 0.0
-                    correlation_matrix[j, i] = 0.0
-            else:
-                correlation_matrix[i, j] = 0.0
-                correlation_matrix[j, i] = 0.0
-
-    # Ensure the matrix is positive definite if requested
-    if ensure_positive_definite:
-        # Check eigenvalues
-        eigenvalues, eigenvectors = np.linalg.eigh(correlation_matrix)
-
-        # If any eigenvalues are negative or very close to zero, adjust them
-        if np.any(eigenvalues < 1e-6):
-            # Set small eigenvalues to a small positive number
-            eigenvalues[eigenvalues < 1e-6] = 1e-6
-
-            # Reconstruct the correlation matrix
-            correlation_matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
-
-            # Normalize to ensure diagonal is 1
-            d = np.sqrt(np.diag(correlation_matrix))
-            correlation_matrix = correlation_matrix / np.outer(d, d)
-
-            # Ensure it's symmetric (might have small numerical errors)
-            correlation_matrix = (correlation_matrix + correlation_matrix.T) / 2
-
-            # Final check for diagonal elements
-            np.fill_diagonal(correlation_matrix, 1.0)
-
-    return correlation_matrix
-
-
-def create_sdv_numerical_distributions(schema):
-    """Create numerical distributions configuration for SDV GaussianCopulaSynthesizer."""
-    numerical_distributions = {}
-
-    for attr_name, attr_cats in zip(schema.attr_names, schema.attr_categories):
-        # Check if attribute is numerical
-        if all(isinstance(c, (int, float)) for c in attr_cats if c != -1):
-            # Use beta distribution for protected attributes and normal for non-protected
-            is_protected = schema.protected_attr[schema.attr_names.index(attr_name)]
-            if is_protected:
-                numerical_distributions[attr_name] = 'beta'
-            else:
-                numerical_distributions[attr_name] = 'truncnorm'
-
-    return numerical_distributions
-
 
 def generate_schema_from_dataframe(
         df: pd.DataFrame,

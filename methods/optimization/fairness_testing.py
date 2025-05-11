@@ -1,6 +1,5 @@
 import optuna
 from data_generator.main import generate_data
-from experiments.analyzing_methods.global_m.discrimination_found_in_data.test import method_params
 from methods.adf.main import run_adf
 from methods.exp_ga.algo import run_expga
 from methods.aequitas.algo import run_aequitas
