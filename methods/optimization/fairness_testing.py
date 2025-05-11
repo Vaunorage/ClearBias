@@ -4,6 +4,7 @@ from experiments.analyzing_methods.global_m.discrimination_found_in_data.test im
 from methods.adf.main import run_adf
 from methods.exp_ga.algo import run_expga
 from methods.aequitas.algo import run_aequitas
+from methods.optimization.analysis import analyze_matching_synthetic_and_result
 from methods.sg.main import run_sg
 from path import HERE
 import time
@@ -982,7 +983,7 @@ def run_fairness_testing(
                     params["use_gpu"] = use_gpu
 
                 # Create a configuration-specific run_id that includes the master run_id and iteration
-                iter_run_id = f"{run_id}_{method}_iter_{iteration}"
+                iter_run_id = f"{run_id}_iter_{iteration}"
 
                 # Run the method with db_path for analysis
                 results_df, synth_df, metrics, method_runtime = run_method_with_params(
@@ -994,10 +995,11 @@ def run_fairness_testing(
                     verbose=verbose
                 )
 
+                res_with_groups, synth_with_groups = analyze_matching_synthetic_and_result(results_df, synth_df)
                 save_dataframes_to_db(
                     conn=conn,
-                    results_df=results_df,
-                    data_df=synth_df,
+                    results_df=res_with_groups,
+                    data_df=synth_with_groups,
                     run_id=iter_run_id,
                     method=method,
                     iteration=iteration,
@@ -1037,8 +1039,8 @@ if __name__ == "__main__":
     db_path = HERE.joinpath("methods/optimization/fairness_test_results2.db")
     params_db_path = str(DB_PATH.as_posix())
     use_optimized_params = True
-    run_optimization = False
-    optimization_trials = 5
+    run_optimization = True
+    optimization_trials = 3
     use_gpu = False
     verbose = True
     optimization_metric = "SUR"
@@ -1054,64 +1056,101 @@ if __name__ == "__main__":
 
     # Loop through each data configuration
     data_configs = [
+        # Base configuration
+        {'nb_groups': 10, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 2,
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.5},
+
         # Test different numbers of groups
         {'nb_groups': 2, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 2,
-         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000 },
-        # {'nb_groups': 100, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 3,
-        #  'max_number_of_classes': 5, 'use_cache': True},
-        # {'nb_groups': 150, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 3,
-        #  'max_number_of_classes': 6, 'use_cache': True},
-        # {'nb_groups': 200, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 4,
-        #  'max_number_of_classes': 7, 'use_cache': True},
-        # {'nb_groups': 300, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 4,
-        #  'max_number_of_classes': 8, 'use_cache': True},
-        #
-        # # Test different numbers of attributes
-        # {'nb_groups': 100, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'use_cache': True},
-        # {'nb_groups': 100, 'nb_attributes': 7, 'prop_protected_attr': 0.2, 'use_cache': True},
-        # {'nb_groups': 100, 'nb_attributes': 10, 'prop_protected_attr': 0.2, 'use_cache': True},
-        # {'nb_groups': 100, 'nb_attributes': 12, 'prop_protected_attr': 0.2, 'use_cache': True},
-        # {'nb_groups': 100, 'nb_attributes': 15, 'prop_protected_attr': 0.2, 'use_cache': True},
-        #
-        # # Test different proportions of protected attributes
-        # {'nb_groups': 100, 'nb_attributes': 5, 'prop_protected_attr': 0.1, 'use_cache': True},
-        # {'nb_groups': 100, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'use_cache': True},
-        # {'nb_groups': 100, 'nb_attributes': 5, 'prop_protected_attr': 0.3, 'use_cache': True},
-        # {'nb_groups': 100, 'nb_attributes': 5, 'prop_protected_attr': 0.4, 'use_cache': True},
-        # {'nb_groups': 100, 'nb_attributes': 5, 'prop_protected_attr': 0.5, 'use_cache': True},
-        # {'nb_groups': 100, 'nb_attributes': 5, 'prop_protected_attr': 0.6, 'use_cache': True},
-        #
-        # # Test different group sizes
-        # {'nb_groups': 100, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_group_size': 5, 'max_group_size': 50,
-        #  'use_cache': True},
-        # {'nb_groups': 100, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_group_size': 10, 'max_group_size': 100,
-        #  'use_cache': True},
-        # {'nb_groups': 100, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_group_size': 20, 'max_group_size': 200,
-        #  'use_cache': True},
-        # {'nb_groups': 100, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_group_size': 50, 'max_group_size': 500,
-        #  'use_cache': True},
-        #
-        # # Test different number of classes
-        # {'nb_groups': 100, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 2,
-        #  'max_number_of_classes': 3, 'use_cache': True},
-        # {'nb_groups': 100, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 3,
-        #  'max_number_of_classes': 5, 'use_cache': True},
-        # {'nb_groups': 100, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 4,
-        #  'max_number_of_classes': 8, 'use_cache': True},
-        #
-        # # Some combined parameter variations
-        # {'nb_groups': 150, 'nb_attributes': 20, 'prop_protected_attr': 0.3, 'use_cache': True},
-        # {'nb_groups': 200, 'nb_attributes': 15, 'prop_protected_attr': 0.4, 'use_cache': True},
-        # {'nb_groups': 250, 'nb_attributes': 10, 'prop_protected_attr': 0.5, 'use_cache': True},
-        # {'nb_groups': 75, 'nb_attributes': 22, 'prop_protected_attr': 0.25, 'use_cache': True},
-        #
-        # # Complex variations
-        # {'nb_groups': 150, 'nb_attributes': 30, 'prop_protected_attr': 0.4, 'min_group_size': 20, 'max_group_size': 200,
-        #  'min_number_of_classes': 3, 'max_number_of_classes': 6, 'use_cache': True},
-        # {'nb_groups': 200, 'nb_attributes': 25, 'prop_protected_attr': 0.3, 'min_group_size': 30, 'max_group_size': 300,
-        #  'min_number_of_classes': 2, 'max_number_of_classes': 4, 'use_cache': True},
-        # {'nb_groups': 120, 'nb_attributes': 35, 'prop_protected_attr': 0.5, 'min_group_size': 15, 'max_group_size': 150,
-        #  'min_number_of_classes': 4, 'max_number_of_classes': 8, 'use_cache': True}
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.5},
+        {'nb_groups': 5, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 2,
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.5},
+        {'nb_groups': 20, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 2,
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.5},
+
+        # Test different numbers of attributes
+        {'nb_groups': 10, 'nb_attributes': 3, 'prop_protected_attr': 0.2, 'min_number_of_classes': 2,
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.5},
+        {'nb_groups': 10, 'nb_attributes': 8, 'prop_protected_attr': 0.2, 'min_number_of_classes': 2,
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.5},
+        {'nb_groups': 10, 'nb_attributes': 12, 'prop_protected_attr': 0.2, 'min_number_of_classes': 2,
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.5},
+
+        # Test different proportions of protected attributes
+        {'nb_groups': 10, 'nb_attributes': 5, 'prop_protected_attr': 0.1, 'min_number_of_classes': 2,
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.5},
+        {'nb_groups': 10, 'nb_attributes': 5, 'prop_protected_attr': 0.3, 'min_number_of_classes': 2,
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.5},
+        {'nb_groups': 10, 'nb_attributes': 5, 'prop_protected_attr': 0.5, 'min_number_of_classes': 2,
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.5},
+
+        # Test different group sizes
+        {'nb_groups': 10, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 2,
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 50, 'max_group_size': 200,
+         'min_similarity': 0.5},
+        {'nb_groups': 10, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 2,
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 200, 'max_group_size': 2000,
+         'min_similarity': 0.5},
+        {'nb_groups': 10, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 2,
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 500, 'max_group_size': 5000,
+         'min_similarity': 0.5},
+
+        # Test different number of classes
+        {'nb_groups': 10, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 2,
+         'max_number_of_classes': 2, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.5},
+        {'nb_groups': 10, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 3,
+         'max_number_of_classes': 5, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.5},
+        {'nb_groups': 10, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 4,
+         'max_number_of_classes': 8, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.5},
+
+        # Test different similarity values
+        {'nb_groups': 10, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 2,
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.2},
+        {'nb_groups': 10, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 2,
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.7},
+        {'nb_groups': 10, 'nb_attributes': 5, 'prop_protected_attr': 0.2, 'min_number_of_classes': 2,
+         'max_number_of_classes': 4, 'use_cache': True, 'min_group_size': 100, 'max_group_size': 1000,
+         'min_similarity': 0.9},
+
+        # Complex combined variations - Small dataset with many groups
+        {'nb_groups': 20, 'nb_attributes': 3, 'prop_protected_attr': 0.4, 'min_number_of_classes': 2,
+         'max_number_of_classes': 3, 'use_cache': True, 'min_group_size': 50, 'max_group_size': 200,
+         'min_similarity': 0.3},
+
+        # Complex combined variations - Large dataset with few groups
+        {'nb_groups': 3, 'nb_attributes': 10, 'prop_protected_attr': 0.3, 'min_number_of_classes': 4,
+         'max_number_of_classes': 8, 'use_cache': True, 'min_group_size': 500, 'max_group_size': 5000,
+         'min_similarity': 0.8},
+
+        # High dimensional with many classes
+        {'nb_groups': 15, 'nb_attributes': 15, 'prop_protected_attr': 0.2, 'min_number_of_classes': 5,
+         'max_number_of_classes': 10, 'use_cache': True, 'min_group_size': 200, 'max_group_size': 1000,
+         'min_similarity': 0.6},
+
+        # Extreme case - few groups, few attributes, binary classes
+        {'nb_groups': 2, 'nb_attributes': 2, 'prop_protected_attr': 0.5, 'min_number_of_classes': 2,
+         'max_number_of_classes': 2, 'use_cache': True, 'min_group_size': 1000, 'max_group_size': 2000,
+         'min_similarity': 0.9},
+
+        # Extreme case - many groups, many attributes, many classes
+        {'nb_groups': 30, 'nb_attributes': 20, 'prop_protected_attr': 0.1, 'min_number_of_classes': 8,
+         'max_number_of_classes': 10, 'use_cache': True, 'min_group_size': 50, 'max_group_size': 200,
+         'min_similarity': 0.4}
     ]
     for data_index, data_config in enumerate(data_configs):
         print(f"\n===== Testing Data Configuration {data_index + 1}/{len(data_configs)} =====")

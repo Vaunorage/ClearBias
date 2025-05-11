@@ -8,8 +8,8 @@ from methods.utils import reformat_discrimination_results, convert_to_non_float_
 # %%
 data_obj, schema = get_real_data('credit', use_cache=False)
 
-results_df_origin, metrics = run_aequitas(data=data_obj, model_type='rf', max_global=100, max_local=1000, step_size=1.0,
-                                          random_seed=42, max_tsn=4000, one_attr_at_a_time=True)
+results_df_origin, metrics = run_aequitas(data=data_obj, model_type='rf', max_global=1000, max_local=10000, step_size=1.0,
+                                          random_seed=42, max_tsn=40000, one_attr_at_a_time=False)
 
 # %%
 non_float_df = convert_to_non_float_rows(results_df_origin, schema)

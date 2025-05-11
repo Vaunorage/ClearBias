@@ -439,7 +439,7 @@ def run_aequitas(data: DiscriminationData, model_type='rf', max_global=500, max_
 
 if __name__ == '__main__':
     # Get data using provided generator
-    discrimination_data, schema = get_real_data('adult', use_cache=True)
+    discrimination_data, schema = get_real_data('credit', use_cache=True)
     # discrimination_data, schema = generate_from_real_data(data_generator)
 
     # For the adult dataset with max_tsn parameter

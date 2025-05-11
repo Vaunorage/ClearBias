@@ -745,7 +745,8 @@ def generate_categorical_distribution(attr_categories, attr_names, bias_strength
 
 
 def generate_data_from_distribution(distribution, attr_categories, attr_names, n_samples=1000,
-                                    preset_values=None, excluded_values=None):
+                                    preset_values=None, excluded_values=None,
+                                    same_attributes=None, reference_values=None):
     """
     Generate synthetic data using categorical distributions.
 
@@ -765,6 +766,10 @@ def generate_data_from_distribution(distribution, attr_categories, attr_names, n
                                      If None for an attribute, no values will be excluded.
                                      If a list is provided, those values will be excluded.
                                      Default is None (no excluded values).
+        same_attributes (List[int]): Indices of attributes that should have the same values as in reference_values.
+                                   Default is None (no attributes need to match).
+        reference_values (List): A list of values for all attributes, used as reference for attributes in same_attributes.
+                               Default is None (no reference values).
 
     Returns:
         pd.DataFrame: DataFrame with generated categorical data
@@ -781,6 +786,21 @@ def generate_data_from_distribution(distribution, attr_categories, attr_names, n
     elif len(excluded_values) < len(attr_names):
         excluded_values.extend([None] * (len(attr_names) - len(excluded_values)))
 
+    # Handle same_attributes and reference_values
+    if same_attributes is not None and reference_values is not None:
+        # For attributes in same_attributes, set preset_values to the specific reference value
+        for idx in same_attributes:
+            if 0 <= idx < len(attr_names) and idx < len(reference_values):
+                # Use the reference value as a preset (forced) value for this attribute
+                if preset_values[idx] is None:
+                    preset_values[idx] = [reference_values[idx]]
+                else:
+                    # If there's already a preset list, make sure it includes the reference value
+                    if reference_values[idx] not in preset_values[idx]:
+                        # If reference value isn't in preset list, this is a conflict
+                        # We prioritize the "same" constraint by replacing the preset list
+                        preset_values[idx] = [reference_values[idx]]
+
     # Initialize dataframe to store generated data
     generated_data = defaultdict(list)
 
@@ -791,6 +811,14 @@ def generate_data_from_distribution(distribution, attr_categories, attr_names, n
             probs = distribution.get(attr_name, [])
             valid_categories = list(filter(lambda x: x != -1, attr_categories[i]))
             categories = list(filter(lambda x: x != -1, attr_categories[i]))
+
+            # Handle case where this attribute should have the same value as reference
+            if same_attributes is not None and i in same_attributes and reference_values is not None:
+                # Simply use the reference value
+                if i < len(reference_values) and reference_values[i] != -1:
+                    generated_data[attr_name].append(reference_values[i])
+                    continue
+                # If reference value is -1 or invalid, fall through to normal processing
 
             if preset_values[i] == [-1]:
                 generated_data[attr_name].append(-1)
@@ -1013,7 +1041,7 @@ def create_group(granularity, intersectionality,
                  min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
                  min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
                  min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size,
-                 predefined_group=None, subgroup1_vals=None, subgroup2_vals=None):
+                 predefined_group=None, subgroup1_vals=None, subgroup2_vals=None, collision_tracker=None):
     """
     Create a group with two subgroups having specific attribute values.
 
@@ -1053,7 +1081,6 @@ def create_group(granularity, intersectionality,
 
     # Adjust attr_categories and sets_attr in the same order
     attr_categories = [attr_categories[attr_names.index(attr)] for attr in attr_names]
-    sets_attr = [sets_attr[attr_names.index(attr)] for attr in attr_names]
 
     # Function to create sets based on the new ordering
     def make_sets(possibility):
@@ -1114,16 +1141,43 @@ def create_group(granularity, intersectionality,
 
         # Generate samples for subgroups if not provided
         if subgroup1_vals is None:
-            subgroup1_vals = generate_data_from_distribution(data_schema.categorical_distribution, attr_categories,
-                                                             data_schema.attr_names, n_samples=1,
+            # Generate values for subgroups
+            subgroup1_vals = generate_data_from_distribution(data_schema.categorical_distribution,
+                                                             attr_categories, data_schema.attr_names, n_samples=1,
                                                              preset_values=subgroup_sets).values.tolist()[0]
 
         if subgroup2_vals is None:
-            subgroup2_vals = generate_data_from_distribution(data_schema.categorical_distribution, attr_categories,
-                                                             data_schema.attr_names, n_samples=1,
+            num_same_attributes = min(len(possibility) - 1, round(similarity * len(possibility)))
+
+            # Ensure at least one attribute differs to maintain distinct subgroups
+            if num_same_attributes >= len(possibility):
+                num_same_attributes = len(possibility) - 1
+            # Randomly select which attributes can be the same
+            attributes_to_be_same = random.sample(possibility,
+                                                  num_same_attributes) if num_same_attributes > 0 else []
+            attributes_to_differ = [idx for idx in possibility if idx not in attributes_to_be_same]
+
+            # Create excluded_values list for subgroup2 (only exclude values for attributes that should differ)
+            excluded_values = [None] * len(attr_names)
+            for idx in attributes_to_differ:
+                excluded_values[idx] = [subgroup1_vals[idx]]
+
+            # Generate subgroup2 values with the updated function
+            subgroup2_vals = generate_data_from_distribution(data_schema.categorical_distribution,
+                                                             attr_categories, data_schema.attr_names, n_samples=1,
                                                              preset_values=subgroup_sets,
-                                                             excluded_values=list(
-                                                                 map(lambda x: [x], subgroup1_vals))).values.tolist()[0]
+                                                             excluded_values=excluded_values,
+                                                             same_attributes=attributes_to_be_same,
+                                                             # Pass the indices of attributes that should be the same
+                                                             reference_values=subgroup1_vals
+                                                             # Pass the subgroup1 values as reference
+                                                             ).values.tolist()[0]
+
+        if collision_tracker is not None and not collision_tracker.is_collision(possibility, subgroup1_vals,
+                                                                                subgroup2_vals):
+            collision_tracker.add_combination(possibility, subgroup1_vals, subgroup2_vals)
+        else:
+            return None
 
     # Ensure each subgroup meets minimum size requirements
     diff_size = int(total_group_size * diff_percentage)
@@ -1182,9 +1236,9 @@ def create_group(granularity, intersectionality,
     subgroup2_individuals_df['subgroup_key'] = subgroup2_key
 
     subgroup1_individuals_df['indv_key'] = subgroup1_individuals_df[attr_names].apply(
-        lambda x: '|'.join(list(x.astype(str))), axis=1)
+        lambda x: '|'.join(list(x.astype(int).astype(str))), axis=1)
     subgroup2_individuals_df['indv_key'] = subgroup2_individuals_df[attr_names].apply(
-        lambda x: '|'.join(list(x.astype(str))), axis=1)
+        lambda x: '|'.join(list(x.astype(int).astype(str))), axis=1)
 
     result_df = pd.concat([subgroup1_individuals_df, subgroup2_individuals_df])
 
@@ -1495,51 +1549,18 @@ def generate_data(
 
                 possibility = sorted(possible_gran + possible_intersec)
 
-                # Generate subgroup sets
-                subgroup_sets = []
-                for ind in range(len(attr_categories)):
-                    if ind in possibility:
-                        ss = copy.deepcopy(attr_categories[ind])
-                        try:
-                            ss.remove(-1)
-                        except:
-                            pass
-                        subgroup_sets.append(ss)
-                    else:
-                        subgroup_sets.append([-1])
+                group = create_group(
+                    granularity, intersectionality,
+                    possibility, data_schema, attr_categories, W,
+                    subgroup_bias, corr_matrix_randomness,
+                    categorical_influence,
+                    min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
+                    min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
+                    min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size,
+                    collision_tracker=collision_tracker
+                )
 
-                # Generate values for subgroups
-                subgroup1_vals = generate_data_from_distribution(
-                    data_schema.categorical_distribution,
-                    attr_categories,
-                    data_schema.attr_names,
-                    n_samples=1,
-                    preset_values=subgroup_sets
-                ).values.tolist()[0]
-
-                subgroup2_vals = generate_data_from_distribution(
-                    data_schema.categorical_distribution,
-                    attr_categories,
-                    data_schema.attr_names,
-                    n_samples=1,
-                    preset_values=subgroup_sets,
-                    excluded_values=list(map(lambda x: [x], subgroup1_vals))
-                ).values.tolist()[0]
-
-                # Check for value-based collision
-                if not collision_tracker.is_collision(possibility, subgroup1_vals, subgroup2_vals):
-                    collision_tracker.add_combination(possibility, subgroup1_vals, subgroup2_vals)
-
-                    group = create_group(
-                        granularity, intersectionality,
-                        possibility, data_schema, attr_categories, W,
-                        subgroup_bias, corr_matrix_randomness,
-                        categorical_influence,
-                        min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
-                        min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
-                        min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size
-                    )
-
+                if group is not None:
                     results.append(group)
                     pbar.update(1)
                 else:

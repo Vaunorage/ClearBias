@@ -8,7 +8,9 @@ from data_generator.utils import plot_distribution_comparison, print_distributio
 from methods.utils import get_groups
 
 # data, schema = generate_from_real_data('bank')
-data, schema = get_real_data('bank')
+
+# %%
+# data, schema = get_real_data('bank')
 
 # %%
 nb_attributes = 20
@@ -321,35 +323,42 @@ group_defs = [{'alea_uncertainty': 0, 'avg_diff_outcome': 0.43070422535211267, '
                'subgroup2': {'Attr1_T': 39, 'Attr3_T': 0, 'Attr4_T': 1}, 'subgroup_bias': 0.039199800573351616}]
 predefined_groups = [GroupDefinition(**e) for e in group_defs]
 
-data_obj_synth, schema = generate_from_real_data('bank', nb_groups=10,
-                                                 predefined_groups=predefined_groups[:4],
-                                                 use_cache=False)
+# data_obj_synth, schema = generate_from_real_data('bank', nb_groups=10,
+#                                                  predefined_groups=predefined_groups[:4],
+#                                                  use_cache=False)
 
 # predefined_groups_origin, nb_elements = get_groups(data_obj_synth, data, schema)
 
 # %%
-data = generate_data(
-    nb_attributes=nb_attributes,
+data1 = generate_data(
+    nb_attributes=5,
+    min_number_of_classes=3,
+    max_number_of_classes=5,
     nb_groups=100,
     max_group_size=100,
     categorical_outcome=True,
     nb_categories_outcome=4,
     corr_matrix_randomness=1,
     categorical_influence=1,
-    data_schema=schema,
+    # data_schema=schema,
     use_cache=False,
-    predefined_groups=predefined_groups,
+    min_similarity=0.9,
+    max_similarity=1.0
+    # predefined_groups=predefined_groups,
     # additional_random_rows=30000
 )
 
-print(f"Generated {len(data.dataframe)} samples in {data.nb_groups} groups")
+print(f"Generated {len(data1.dataframe)} samples in {data1.nb_groups} groups")
 
 # %%
-# df = pd.concat([data.xdf, data.ydf],axis=1)
-# fig = visualize_df(df, data.attr_columns, data.outcome_column, HERE.joinpath('ll.png'))
-# fig.show()
+import pandas as pd
+from path import HERE
+
+df = pd.concat([data1.xdf, data1.ydf], axis=1)
+fig = visualize_df(df, data1.attr_columns, data1.outcome_column, HERE.joinpath('ll.png'))
+fig.show()
 # %%
-create_parallel_coordinates_plot(data.dataframe)
+create_parallel_coordinates_plot(data1.dataframe)
 plt.show()
 
 # Print statistics

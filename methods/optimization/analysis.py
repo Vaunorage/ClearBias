@@ -204,10 +204,7 @@ def calculate_match_counts_from_groups(res_with_groups, synth_df):
 
 # %%
 
-def analyze_matching_synthetic_and_result(df_res, df_synth, experiment_id):
-    res = pd.DataFrame(json.loads(df_res[df_res['run_id'] == experiment_id]['dataframe_json'][0]))
-    synth = pd.DataFrame(json.loads(df_synth[df_synth['run_id'] == experiment_id]['dataframe_json'][0]))
-
+def analyze_matching_synthetic_and_result(res, synth):
     # Identify group membership first
     mapping_df = identify_group_membership(synth, res)
     res_with_groups = res.merge(mapping_df, on=['indv_key', 'couple_key'], how='left')
@@ -220,26 +217,28 @@ def analyze_matching_synthetic_and_result(df_res, df_synth, experiment_id):
 
 
 def get_result_and_synthetic_matching_res(experiment_id):
-    df_res = pd.read_sql_query("SELECT * FROM results_dataframes", conn)
-    df_synth = pd.read_sql_query("SELECT * FROM synthetic_dataframes", conn)
-    res_with_groups, synth_with_groups = analyze_matching_synthetic_and_result(df_res, df_synth, experiment_id)
+    df_res = pd.read_sql_query(f"SELECT * FROM results_dataframes where run_id = '{experiment_id}'", conn)
+    df_synth = pd.read_sql_query(f"SELECT * FROM synthetic_dataframes where run_id = '{experiment_id}'", conn)
+    res_with_groups = pd.DataFrame(json.loads(df_res['dataframe_json'][0]))
+    synth_with_groups = pd.DataFrame(json.loads(df_synth['dataframe_json'][0]))
 
     return res_with_groups, synth_with_groups
 
 
 # %%
 if __name__ == '__main__':
-    run_ids = ['experiment_1746894372_config_0_expga_iter_0',
-               'experiment_1746894372_config_0_sg_iter_0',
-               'experiment_1746894372_config_0_aequitas_iter_0',
-               'experiment_1746894372_config_0_adf_iter_0'
-               ]
+    run_ids = [
+        'experiment_1746917695_config_0_expga_iter_0',
+        'experiment_1746917695_config_0_sg_iter_0',
+        'experiment_1746917695_config_0_aequitas_iter_0',
+        'experiment_1746917695_config_0_adf_iter_0'
+    ]
     res = []
     for run_id in run_ids:
         res_with_groups, synth_with_groups = get_result_and_synthetic_matching_res(
-            experiment_id='experiment_1746894372_config_0_expga_iter_0')
-        ll = res_with_groups[
-            ['couple_key', 'indv_key', 'indv_matching_subgroups', 'indv_matching_groups', 'couple_matching_groups']]
+            experiment_id=run_id)
+        ll = res_with_groups[['couple_key', 'indv_key', 'indv_matching_subgroups',
+                              'indv_matching_groups', 'couple_matching_groups']]
         ll['run_id'] = run_id
         res.append(ll)
     res = pd.concat(res)
