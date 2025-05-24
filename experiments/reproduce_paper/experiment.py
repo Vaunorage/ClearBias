@@ -3,7 +3,7 @@ import sqlite3
 import json
 from pathlib import Path
 from data_generator.main import get_real_data
-from experiments.baseline_exp.reproduce_paper.reference_exp import ref_data
+from experiments.reproduce_paper.reference_exp import ref_data
 from methods.adf.main import run_adf
 from methods.sg.main import run_sg
 from methods.exp_ga.algo import run_expga
@@ -14,7 +14,7 @@ from collections import defaultdict
 
 from path import HERE
 
-DB_PATH = Path(HERE.joinpath("experiments/baseline_exp/exp.db"))
+DB_PATH = Path(HERE.joinpath("experiments/reproduce_paper/exp.db"))
 
 
 def run_experiment_for_model(model_type: str, dataset_name: str, sensitive_feature: str, completed_experiments: set,

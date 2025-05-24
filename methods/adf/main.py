@@ -366,16 +366,20 @@ def run_adf(data: DiscriminationData, max_global: int = 2000, max_local: int = 2
     clusters = seed_test_input(X, cluster_num, random_seed=random_seed)
 
     def round_robin_clusters(clusters):
-        queues = [deque(cluster) for cluster in clusters]
-        iter_cycle = itertools.cycle(queues)  # Create a cycle over non-empty queues
-
+        queues = [deque(cluster) for cluster in clusters if len(cluster)!=0]
+        if not queues:
+            return
         while queues:
-            queue = next(iter_cycle)  # Get the next queue
-            if queue:
-                yield queue.popleft()  # Pop from front
-                if not queue:
-                    queues.remove(queue)  # Remove empty queues
-                    iter_cycle = itertools.cycle(queues)
+            i = 0
+            while i < len(queues):
+                if queues[i]:
+                    yield queues[i].popleft()
+                    if not queues[i]:
+                        queues.pop(i)
+                    else:
+                        i += 1
+                else:
+                    i += 1
 
     # Global search phase
     for inst_num, instance_id in enumerate(round_robin_clusters(clusters)):
@@ -416,7 +420,6 @@ def run_adf(data: DiscriminationData, max_global: int = 2000, max_local: int = 2
         if should_terminate():
             break
 
-    # Define a callback to allow early termination in basinhopping
     class EarlyTerminationCallback:
         def __init__(self):
             self.should_stop = False

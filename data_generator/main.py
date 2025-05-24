@@ -6,6 +6,9 @@ import json
 import math
 import pickle
 import random
+import contextlib
+import io
+import sys
 from collections import defaultdict
 from pathlib import Path
 import numpy as np
@@ -20,12 +23,10 @@ from sdv.sampling import Condition
 from tqdm import tqdm
 from path import HERE
 from ucimlrepo import fetch_ucirepo
-
-from data_generator.main_old2 import safe_normalize, GaussianCopulaCategorical, generate_subgroup2_probabilities, \
-    bin_array_values, coefficient_of_variation, calculate_actual_metrics
-
 import logging
 import warnings
+from scipy.spatial.distance import jensenshannon
+from uncertainty_quantification.main import UncertaintyRandomForest, AleatoricUncertainty, EpistemicUncertainty
 
 # Suppress all warnings
 warnings.filterwarnings('ignore')
@@ -34,6 +35,211 @@ warnings.filterwarnings('ignore')
 logging.getLogger('sdv').setLevel(logging.ERROR)
 logging.getLogger('SingleTableSynthesizer').setLevel(logging.ERROR)
 logging.getLogger('copulas').setLevel(logging.ERROR)
+
+
+def bin_array_values(array, num_bins):
+    min_val = np.min(array)
+    max_val = np.max(array)
+    bins = np.linspace(min_val, max_val, num_bins + 1)
+    binned_indices = np.digitize(array, bins) - 1
+    return binned_indices
+
+
+def coefficient_of_variation(data):
+    mean = np.mean(data)
+    std_dev = np.std(data)
+    if mean == 0 or np.isnan(mean) or np.isnan(std_dev):
+        return 0  # or another appropriate value
+    cv = (std_dev / mean) * 100
+    return cv
+
+
+def calculate_actual_similarity(data):
+    def calculate_group_similarity(group_data):
+        subgroup_keys = group_data['subgroup_key'].unique()
+        if len(subgroup_keys) != 2:
+            return np.nan
+
+        # Get data for each subgroup
+        subgroup1_data = group_data[group_data['subgroup_key'] == subgroup_keys[0]]
+        subgroup2_data = group_data[group_data['subgroup_key'] == subgroup_keys[1]]
+
+        # Calculate similarity across all attribute distributions
+        similarities = []
+
+        for attr in data.attr_columns:
+            # Get distributions of values for this attribute in each subgroup
+            vals1 = subgroup1_data[attr].value_counts(normalize=True).sort_index()
+            vals2 = subgroup2_data[attr].value_counts(normalize=True).sort_index()
+
+            # Align the distributions
+            all_values = sorted(set(vals1.index) | set(vals2.index))
+            dist1 = np.array([vals1.get(v, 0) for v in all_values])
+            dist2 = np.array([vals2.get(v, 0) for v in all_values])
+
+            # Calculate Jensen-Shannon divergence
+            js_distance = jensenshannon(dist1, dist2)
+
+            # Apply non-linear transformation to spread out values
+            # This will push values away from 0.5
+            if np.isnan(js_distance):
+                sim = 1.0
+            else:
+                # Convert distance to similarity
+                raw_sim = 1.0 - js_distance
+
+                # Apply power transformation to increase sensitivity
+                # This pushes high similarities higher and low similarities lower
+                # Adjust the power (3.0) to control sensitivity
+                sim = pow(raw_sim, 3.0) if raw_sim >= 0.5 else 1.0 - pow(1.0 - raw_sim, 3.0)
+
+            similarities.append(sim)
+
+        # Weight more discriminative attributes higher
+        # Attributes with similarity far from 0.5 contribute more
+        weights = [abs(s - 0.5) + 0.5 for s in similarities]
+        weighted_sum = sum(s * w for s, w in zip(similarities, weights))
+        weighted_avg = weighted_sum / sum(weights) if sum(weights) > 0 else 0.5
+
+        # Final transformation to spread values further
+        spread_factor = 2.0  # Adjust this to control overall spread
+        final_sim = 0.5 + spread_factor * (weighted_avg - 0.5)
+
+        # Ensure result stays in [0,1] range
+        return max(0.0, min(1.0, final_sim))
+
+    return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_similarity)
+
+
+def calculate_actual_uncertainties(data):
+    X = data.dataframe[data.feature_names].values  # Convert to numpy array
+    y = data.dataframe[data.outcome_column].values  # Convert to numpy array
+
+    # Initialize base random forest for comparison
+    urf = UncertaintyRandomForest(n_estimators=50, random_state=42)
+    urf.fit(X, y)
+    mean_pred, base_epistemic, base_aleatoric = urf.predict_with_uncertainty(X)
+
+    # Initialize result columns
+    data.dataframe['calculated_epistemic_random_forest'] = base_epistemic
+    data.dataframe['calculated_aleatoric_random_forest'] = base_aleatoric
+
+    # Calculate all Aleatoric Uncertainties
+    aleatoric_methods = ['entropy', 'probability_margin', 'label_smoothing']
+    for method in aleatoric_methods:
+        aleatoric_model = AleatoricUncertainty(
+            method=method,
+            temperature=1.0
+        )
+        aleatoric_model.fit(X, y)
+        probs, aleatoric_uncertainty = aleatoric_model.predict_uncertainty(X)
+        data.dataframe[f'calculated_aleatoric_{method}'] = aleatoric_uncertainty
+
+    # Calculate all Epistemic Uncertainties
+    epistemic_methods = ['ensemble', 'mc_dropout', 'evidential']
+    epistemic_params = {
+        'ensemble': {'n_estimators': 5, 'dropout_rate': None, 'n_forward_passes': None},
+        'mc_dropout': {'n_estimators': None, 'dropout_rate': 0.5, 'n_forward_passes': 30},
+        'evidential': {'n_estimators': None, 'dropout_rate': None, 'n_forward_passes': None}
+    }
+
+    for method in epistemic_methods:
+        params = epistemic_params[method]
+        epistemic_model = EpistemicUncertainty(
+            method=method,
+            n_estimators=params['n_estimators'],
+            dropout_rate=params['dropout_rate'],
+            n_forward_passes=params['n_forward_passes']
+        )
+        epistemic_model.fit(X, y)
+        probs, epistemic_uncertainty = epistemic_model.predict_uncertainty(X)
+        data.dataframe[f'calculated_epistemic_{method}'] = epistemic_uncertainty
+
+    # Aggregate results by group
+    uncertainty_columns = [col for col in data.dataframe.columns
+                           if col.startswith('calculated_')]
+
+    res = data.dataframe.groupby('group_key')[uncertainty_columns].agg('mean')
+
+    # Add combined uncertainty metrics for all combinations
+    for epistemic_method in epistemic_methods:
+        for aleatoric_method in aleatoric_methods:
+            combined_col = f'combined_{epistemic_method}_{aleatoric_method}'
+            res[combined_col] = (
+                    res[f'calculated_epistemic_{epistemic_method}'] +
+                    res[f'calculated_aleatoric_{aleatoric_method}']
+            )
+
+    # Add summary statistics
+    res['calculated_epistemic'] = res[[col for col in res.columns
+                                       if col.startswith('calculated_epistemic')]].mean(axis=1)
+    res['calculated_aleatoric'] = res[[col for col in res.columns
+                                       if col.startswith('calculated_aleatoric')]].mean(axis=1)
+    res['calculated_combined'] = res[[col for col in res.columns
+                                      if col.startswith('combined')]].mean(axis=1)
+    return res
+
+
+def calculate_actual_mean_diff_outcome(data):
+    def calculate_group_diff(group_data):
+        subgroup_keys = group_data['subgroup_key'].unique()
+        if len(subgroup_keys) != 2:
+            return np.nan
+
+        subgroup1_outcome = group_data[group_data['subgroup_key'] == subgroup_keys[0]][data.outcome_column].mean()
+        subgroup2_outcome = group_data[group_data['subgroup_key'] == subgroup_keys[1]][data.outcome_column].mean()
+
+        return abs(subgroup1_outcome - subgroup2_outcome) / max(subgroup1_outcome, subgroup2_outcome)
+
+    return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_diff)
+
+
+def calculate_actual_diff_outcome_from_avg(data):
+    avg_outcome = data.dataframe[data.outcome_column].mean()
+
+    def calculate_group_diff(group_data):
+        try:
+            unique_subgroups = group_data['subgroup_key'].unique()
+            subgroup1_outcome = group_data[group_data['subgroup_key'] == unique_subgroups[0]][data.outcome_column]
+            subgroup2_outcome = group_data[group_data['subgroup_key'] == unique_subgroups[1]][data.outcome_column]
+            res = (abs(avg_outcome - subgroup1_outcome.mean()) + abs(avg_outcome - subgroup2_outcome.mean())) / 2
+        except Exception as e:
+            print(e)
+        return res
+
+    return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_diff)
+
+
+def calculate_actual_metrics(data):
+    """
+    Calculate the actual metrics and relevance for each group.
+    """
+    actual_similarity = calculate_actual_similarity(data)
+    actual_uncertainties = calculate_actual_uncertainties(data)
+    actual_mean_diff_outcome = calculate_actual_mean_diff_outcome(data)
+    actual_diff_outcome_from_avg = calculate_actual_diff_outcome_from_avg(data)
+
+    # Merge these metrics into the main dataframe
+    data.dataframe['calculated_similarity'] = data.dataframe['group_key'].map(actual_similarity)
+    data.dataframe['calculated_epistemic_group'] = data.dataframe['group_key'].map(
+        actual_uncertainties['calculated_epistemic'])
+    data.dataframe['calculated_aleatoric_group'] = data.dataframe['group_key'].map(
+        actual_uncertainties['calculated_aleatoric'])
+    data.dataframe['calculated_magnitude'] = data.dataframe['group_key'].map(actual_mean_diff_outcome)
+    data.dataframe['calculated_mean_demographic_disparity'] = data.dataframe['group_key'].map(
+        actual_diff_outcome_from_avg)
+    data.dataframe['calculated_uncertainty_group'] = data.dataframe.apply(
+        lambda x: (x['calculated_epistemic_group'] + x['calculated_aleatoric_group']) / 2, axis=1)
+
+    data.dataframe['calculated_intersectionality'] = data.dataframe['intersectionality_param'].copy() / len(
+        data.protected_attributes)
+    data.dataframe['calculated_granularity'] = data.dataframe['granularity_param'].copy() / len(
+        data.non_protected_attributes)
+    data.dataframe['calculated_group_size'] = data.dataframe['group_size'].copy()
+    data.dataframe['calculated_subgroup_ratio'] = data.dataframe['diff_subgroup_size'].copy()
+    data.dataframe = data.dataframe.loc[:, ~data.dataframe.columns.duplicated()]
+
+    return data
 
 
 class DataCache:
@@ -529,23 +735,6 @@ class RobustGaussianCopulaSynthesizer(GaussianCopulaSynthesizer):
                 raise e
 
 
-def create_sdv_numerical_distributions(data_schema):
-    """Create numerical distributions configuration for SDV GaussianCopulaSynthesizer."""
-    numerical_distributions = {}
-
-    for attr_name, attr_cats in zip(data_schema.attr_names, data_schema.attr_categories):
-        # Check if attribute is numerical
-        if all(isinstance(c, (int, float)) for c in attr_cats if c != -1):
-            # Use beta distribution for protected attributes and normal for non-protected
-            is_protected = data_schema.protected_attr[data_schema.attr_names.index(attr_name)]
-            if is_protected:
-                numerical_distributions[attr_name] = 'beta'
-            else:
-                numerical_distributions[attr_name] = 'truncnorm'
-
-    return numerical_distributions
-
-
 def generate_data_schema(min_number_of_classes, max_number_of_classes, nb_attributes,
                          prop_protected_attr, fit_synthesizer=True, n_samples=10000) -> DataSchema:
     """Generate a data schema for synthetic data."""
@@ -745,7 +934,8 @@ def generate_categorical_distribution(attr_categories, attr_names, bias_strength
 
 
 def generate_data_from_distribution(distribution, attr_categories, attr_names, n_samples=1000,
-                                    preset_values=None, excluded_values=None):
+                                    preset_values=None, excluded_values=None,
+                                    same_attributes=None, reference_values=None):
     """
     Generate synthetic data using categorical distributions.
 
@@ -765,6 +955,10 @@ def generate_data_from_distribution(distribution, attr_categories, attr_names, n
                                      If None for an attribute, no values will be excluded.
                                      If a list is provided, those values will be excluded.
                                      Default is None (no excluded values).
+        same_attributes (List[int]): Indices of attributes that should have the same values as in reference_values.
+                                   Default is None (no attributes need to match).
+        reference_values (List): A list of values for all attributes, used as reference for attributes in same_attributes.
+                               Default is None (no reference values).
 
     Returns:
         pd.DataFrame: DataFrame with generated categorical data
@@ -781,6 +975,21 @@ def generate_data_from_distribution(distribution, attr_categories, attr_names, n
     elif len(excluded_values) < len(attr_names):
         excluded_values.extend([None] * (len(attr_names) - len(excluded_values)))
 
+    # Handle same_attributes and reference_values
+    if same_attributes is not None and reference_values is not None:
+        # For attributes in same_attributes, set preset_values to the specific reference value
+        for idx in same_attributes:
+            if 0 <= idx < len(attr_names) and idx < len(reference_values):
+                # Use the reference value as a preset (forced) value for this attribute
+                if preset_values[idx] is None:
+                    preset_values[idx] = [reference_values[idx]]
+                else:
+                    # If there's already a preset list, make sure it includes the reference value
+                    if reference_values[idx] not in preset_values[idx]:
+                        # If reference value isn't in preset list, this is a conflict
+                        # We prioritize the "same" constraint by replacing the preset list
+                        preset_values[idx] = [reference_values[idx]]
+
     # Initialize dataframe to store generated data
     generated_data = defaultdict(list)
 
@@ -791,6 +1000,14 @@ def generate_data_from_distribution(distribution, attr_categories, attr_names, n
             probs = distribution.get(attr_name, [])
             valid_categories = list(filter(lambda x: x != -1, attr_categories[i]))
             categories = list(filter(lambda x: x != -1, attr_categories[i]))
+
+            # Handle case where this attribute should have the same value as reference
+            if same_attributes is not None and i in same_attributes and reference_values is not None:
+                # Simply use the reference value
+                if i < len(reference_values) and reference_values[i] != -1:
+                    generated_data[attr_name].append(reference_values[i])
+                    continue
+                # If reference value is -1 or invalid, fall through to normal processing
 
             if preset_values[i] == [-1]:
                 generated_data[attr_name].append(-1)
@@ -991,11 +1208,6 @@ def fill_nan_values(df, data_schema=None):
     return filled_df
 
 
-import contextlib
-import io
-import sys
-
-
 @contextlib.contextmanager
 def suppress_stdout():
     old_stdout = sys.stdout
@@ -1013,7 +1225,7 @@ def create_group(granularity, intersectionality,
                  min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
                  min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
                  min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size,
-                 predefined_group=None, subgroup1_vals=None, subgroup2_vals=None):
+                 predefined_group=None, subgroup1_vals=None, subgroup2_vals=None, collision_tracker=None):
     """
     Create a group with two subgroups having specific attribute values.
 
@@ -1053,7 +1265,6 @@ def create_group(granularity, intersectionality,
 
     # Adjust attr_categories and sets_attr in the same order
     attr_categories = [attr_categories[attr_names.index(attr)] for attr in attr_names]
-    sets_attr = [sets_attr[attr_names.index(attr)] for attr in attr_names]
 
     # Function to create sets based on the new ordering
     def make_sets(possibility):
@@ -1114,16 +1325,43 @@ def create_group(granularity, intersectionality,
 
         # Generate samples for subgroups if not provided
         if subgroup1_vals is None:
-            subgroup1_vals = generate_data_from_distribution(data_schema.categorical_distribution, attr_categories,
-                                                             data_schema.attr_names, n_samples=1,
+            # Generate values for subgroups
+            subgroup1_vals = generate_data_from_distribution(data_schema.categorical_distribution,
+                                                             attr_categories, data_schema.attr_names, n_samples=1,
                                                              preset_values=subgroup_sets).values.tolist()[0]
 
         if subgroup2_vals is None:
-            subgroup2_vals = generate_data_from_distribution(data_schema.categorical_distribution, attr_categories,
-                                                             data_schema.attr_names, n_samples=1,
+            num_same_attributes = min(len(possibility) - 1, round(similarity * len(possibility)))
+
+            # Ensure at least one attribute differs to maintain distinct subgroups
+            if num_same_attributes >= len(possibility):
+                num_same_attributes = len(possibility) - 1
+            # Randomly select which attributes can be the same
+            attributes_to_be_same = random.sample(possibility,
+                                                  num_same_attributes) if num_same_attributes > 0 else []
+            attributes_to_differ = [idx for idx in possibility if idx not in attributes_to_be_same]
+
+            # Create excluded_values list for subgroup2 (only exclude values for attributes that should differ)
+            excluded_values = [None] * len(attr_names)
+            for idx in attributes_to_differ:
+                excluded_values[idx] = [subgroup1_vals[idx]]
+
+            # Generate subgroup2 values with the updated function
+            subgroup2_vals = generate_data_from_distribution(data_schema.categorical_distribution,
+                                                             attr_categories, data_schema.attr_names, n_samples=1,
                                                              preset_values=subgroup_sets,
-                                                             excluded_values=list(
-                                                                 map(lambda x: [x], subgroup1_vals))).values.tolist()[0]
+                                                             excluded_values=excluded_values,
+                                                             same_attributes=attributes_to_be_same,
+                                                             # Pass the indices of attributes that should be the same
+                                                             reference_values=subgroup1_vals
+                                                             # Pass the subgroup1 values as reference
+                                                             ).values.tolist()[0]
+
+        if collision_tracker is not None and not collision_tracker.is_collision(possibility, subgroup1_vals,
+                                                                                subgroup2_vals):
+            collision_tracker.add_combination(possibility, subgroup1_vals, subgroup2_vals)
+        else:
+            return None
 
     # Ensure each subgroup meets minimum size requirements
     diff_size = int(total_group_size * diff_percentage)
@@ -1182,9 +1420,9 @@ def create_group(granularity, intersectionality,
     subgroup2_individuals_df['subgroup_key'] = subgroup2_key
 
     subgroup1_individuals_df['indv_key'] = subgroup1_individuals_df[attr_names].apply(
-        lambda x: '|'.join(list(x.astype(str))), axis=1)
+        lambda x: '|'.join(list(x.astype(int).astype(str))), axis=1)
     subgroup2_individuals_df['indv_key'] = subgroup2_individuals_df[attr_names].apply(
-        lambda x: '|'.join(list(x.astype(str))), axis=1)
+        lambda x: '|'.join(list(x.astype(int).astype(str))), axis=1)
 
     result_df = pd.concat([subgroup1_individuals_df, subgroup2_individuals_df])
 
@@ -1495,51 +1733,18 @@ def generate_data(
 
                 possibility = sorted(possible_gran + possible_intersec)
 
-                # Generate subgroup sets
-                subgroup_sets = []
-                for ind in range(len(attr_categories)):
-                    if ind in possibility:
-                        ss = copy.deepcopy(attr_categories[ind])
-                        try:
-                            ss.remove(-1)
-                        except:
-                            pass
-                        subgroup_sets.append(ss)
-                    else:
-                        subgroup_sets.append([-1])
+                group = create_group(
+                    granularity, intersectionality,
+                    possibility, data_schema, attr_categories, W,
+                    subgroup_bias, corr_matrix_randomness,
+                    categorical_influence,
+                    min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
+                    min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
+                    min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size,
+                    collision_tracker=collision_tracker
+                )
 
-                # Generate values for subgroups
-                subgroup1_vals = generate_data_from_distribution(
-                    data_schema.categorical_distribution,
-                    attr_categories,
-                    data_schema.attr_names,
-                    n_samples=1,
-                    preset_values=subgroup_sets
-                ).values.tolist()[0]
-
-                subgroup2_vals = generate_data_from_distribution(
-                    data_schema.categorical_distribution,
-                    attr_categories,
-                    data_schema.attr_names,
-                    n_samples=1,
-                    preset_values=subgroup_sets,
-                    excluded_values=list(map(lambda x: [x], subgroup1_vals))
-                ).values.tolist()[0]
-
-                # Check for value-based collision
-                if not collision_tracker.is_collision(possibility, subgroup1_vals, subgroup2_vals):
-                    collision_tracker.add_combination(possibility, subgroup1_vals, subgroup2_vals)
-
-                    group = create_group(
-                        granularity, intersectionality,
-                        possibility, data_schema, attr_categories, W,
-                        subgroup_bias, corr_matrix_randomness,
-                        categorical_influence,
-                        min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
-                        min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
-                        min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size
-                    )
-
+                if group is not None:
                     results.append(group)
                     pbar.update(1)
                 else:
@@ -1643,97 +1848,6 @@ def is_numeric_type(series):
         if n_unique >= 5:  # SDV typically treats columns with 5+ values as numeric
             return True
     return False
-
-
-def calculate_sdv_correlation_matrix(encoded_df, attr_columns, ensure_positive_definite=True):
-    """
-    Calculate a correlation matrix suitable for SDV from encoded data.
-
-    Args:
-        encoded_df: DataFrame with encoded values
-        attr_columns: List of attribute column names
-        ensure_positive_definite: Whether to ensure the matrix is positive definite
-
-    Returns:
-        Correlation matrix as numpy array
-    """
-    n_cols = len(attr_columns)
-    correlation_matrix = np.zeros((n_cols, n_cols))
-
-    # Fill the diagonal with 1.0
-    np.fill_diagonal(correlation_matrix, 1.0)
-
-    # Calculate pairwise correlations
-    for i, col1 in enumerate(attr_columns):
-        for j in range(i + 1, n_cols):  # Only need to calculate upper triangle
-            col2 = attr_columns[j]
-
-            # Filter out missing values (-1)
-            mask = (encoded_df[col1] >= 0) & (encoded_df[col2] >= 0)
-
-            if mask.sum() > 1:  # Need at least 2 points for correlation
-                try:
-                    # Use Spearman correlation as it works better with ordinal data
-                    corr, _ = spearmanr(encoded_df[col1][mask], encoded_df[col2][mask])
-
-                    # Handle NaN or infinity
-                    if np.isnan(corr) or np.isinf(corr):
-                        corr = 0.0
-
-                    # Keep correlations in reasonable bounds
-                    corr = np.clip(corr, -0.99, 0.99)
-
-                    correlation_matrix[i, j] = corr
-                    correlation_matrix[j, i] = corr  # Mirror to lower triangle
-                except:
-                    # If correlation calculation fails, use zero
-                    correlation_matrix[i, j] = 0.0
-                    correlation_matrix[j, i] = 0.0
-            else:
-                correlation_matrix[i, j] = 0.0
-                correlation_matrix[j, i] = 0.0
-
-    # Ensure the matrix is positive definite if requested
-    if ensure_positive_definite:
-        # Check eigenvalues
-        eigenvalues, eigenvectors = np.linalg.eigh(correlation_matrix)
-
-        # If any eigenvalues are negative or very close to zero, adjust them
-        if np.any(eigenvalues < 1e-6):
-            # Set small eigenvalues to a small positive number
-            eigenvalues[eigenvalues < 1e-6] = 1e-6
-
-            # Reconstruct the correlation matrix
-            correlation_matrix = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
-
-            # Normalize to ensure diagonal is 1
-            d = np.sqrt(np.diag(correlation_matrix))
-            correlation_matrix = correlation_matrix / np.outer(d, d)
-
-            # Ensure it's symmetric (might have small numerical errors)
-            correlation_matrix = (correlation_matrix + correlation_matrix.T) / 2
-
-            # Final check for diagonal elements
-            np.fill_diagonal(correlation_matrix, 1.0)
-
-    return correlation_matrix
-
-
-def create_sdv_numerical_distributions(schema):
-    """Create numerical distributions configuration for SDV GaussianCopulaSynthesizer."""
-    numerical_distributions = {}
-
-    for attr_name, attr_cats in zip(schema.attr_names, schema.attr_categories):
-        # Check if attribute is numerical
-        if all(isinstance(c, (int, float)) for c in attr_cats if c != -1):
-            # Use beta distribution for protected attributes and normal for non-protected
-            is_protected = schema.protected_attr[schema.attr_names.index(attr_name)]
-            if is_protected:
-                numerical_distributions[attr_name] = 'beta'
-            else:
-                numerical_distributions[attr_name] = 'truncnorm'
-
-    return numerical_distributions
 
 
 def generate_schema_from_dataframe(

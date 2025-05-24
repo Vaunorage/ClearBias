@@ -177,7 +177,7 @@ def search_seed(model: BaseEstimator, feature_names: List[str], sens_name: str,
         if i > 0 and i % 100 == 0:
             logger.info(f"Processed {i}/{len(train_vectors)} instances, found {len(seed)}/{nb_seed} seeds")
 
-        exp = explainer.explain_instance(x, model.predict_proba, num_features=num)
+        exp = explainer.explain_instance(x, model.predict_proba, num_features=num, num_samples=1000)
         exp_result = exp.as_list(label=exp.available_labels()[0])
         rank = [item[0] for item in exp_result]
 
@@ -202,10 +202,22 @@ class GlobalDiscovery:
     def __call__(self, iteration: int, params: int, input_bounds: List[Tuple[int, int]],
                  sensitive_param: int) -> List[np.ndarray]:
         samples = []
-        for _ in range(iteration):
+        unique_tuples = set()
+
+        attempts = 0
+        max_attempts = iteration * 10  # Set a reasonable limit to prevent infinite loops
+
+        while len(samples) < iteration and attempts < max_attempts:
+            attempts += 1
             sample = [random.randint(bounds[0], bounds[1]) for bounds in input_bounds]
             sample[sensitive_param - 1] = 0
-            samples.append(np.array(sample))
+
+            sample_tuple = tuple(sample)
+
+            if sample_tuple not in unique_tuples:
+                unique_tuples.add(sample_tuple)
+                samples.append(np.array(sample))
+
         return samples
 
 

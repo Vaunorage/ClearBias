@@ -22,9 +22,16 @@ class AleatoricUncertainty(BaseEstimator):
             raise ValueError(f"Method must be one of {valid_methods}")
 
     def fit(self, X: np.ndarray, y: np.ndarray):
-        self.n_classes = len(np.unique(y))
+
+        # Ensure labels are consecutive integers starting from 0
+        unique_labels = np.unique(y)
+        self.label_encoder = {old: new for new, old in enumerate(unique_labels)}
+        self.reverse_encoder = {new: old for old, new in self.label_encoder.items()}
+        encoded_y = np.array([self.label_encoder[label] for label in y])
+        
+        self.n_classes = len(unique_labels)
         self.X = self.scaler.fit_transform(X)
-        self.y = y
+        self.y = encoded_y
 
         # Train a base classifier (Random Forest in this case)
         self.classifier = RandomForestClassifier(n_estimators=100)
@@ -193,6 +200,10 @@ class EpistemicUncertainty(BaseEstimator):
     def predict_uncertainty(self, X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
         X_scaled = self.scaler.transform(X)
+        # Store the label encoder/decoder if not already stored
+        if not hasattr(self, 'label_encoder'):
+            self.label_encoder = {i: i for i in range(self.n_classes)}
+            self.reverse_encoder = {i: i for i in range(self.n_classes)}
 
         if self.method == 'ensemble':
             # Ensemble code remains the same

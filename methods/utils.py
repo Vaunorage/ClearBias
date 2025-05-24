@@ -548,7 +548,7 @@ def check_for_error_condition(dsn_by_attr_value, discrimination_data: Discrimina
     dsn = len(all_discriminations)
     sur = dsn / tsn if tsn > 0 else 0
 
-    if logger and tsn % 100 == 0:
+    if logger and tsn % 10 == 0:
         logger.info(f"Current Metrics - TSN: {tsn}, DSN: {dsn}, SUR: {sur:.4f}")
 
     # Record discriminatory pairs and update attribute value counts

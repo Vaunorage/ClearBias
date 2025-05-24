@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from path import HERE
 
-DB_PATH = HERE.joinpath("experiments/baseline_exp/exp.db")
+DB_PATH = HERE.joinpath("experiments/reproduce_paper/exp.db")
 
 
 def ref_data():

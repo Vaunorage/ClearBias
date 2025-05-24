@@ -6,10 +6,10 @@ from data_generator.utils import plot_distribution_comparison
 from methods.utils import reformat_discrimination_results, convert_to_non_float_rows, compare_discriminatory_groups
 
 # %%
-data_obj, schema = get_real_data('credit', use_cache=False)
+data_obj, schema = get_real_data('adult', use_cache=False)
 
-results_df_origin, metrics = run_aequitas(data=data_obj, model_type='rf', max_global=100, max_local=1000, step_size=1.0,
-                                          random_seed=42, max_tsn=4000, one_attr_at_a_time=True)
+results_df_origin, metrics = run_aequitas(data=data_obj, model_type='rf', max_global=1000, max_local=10000, step_size=1.0,
+                                          random_seed=42, max_tsn=40000, one_attr_at_a_time=False)
 
 # %%
 non_float_df = convert_to_non_float_rows(results_df_origin, schema)
@@ -17,7 +17,7 @@ predefined_groups_origin = reformat_discrimination_results(non_float_df, data_ob
 nb_elements = sum([el.group_size for el in predefined_groups_origin])
 
 # %%
-data_obj_synth, schema = generate_from_real_data('credit',
+data_obj_synth, schema = generate_from_real_data('adult',
                                                  predefined_groups=predefined_groups_origin)
 
 # %%
