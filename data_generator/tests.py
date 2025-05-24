@@ -2,6 +2,7 @@ from data_generator.main import generate_data, get_real_data, generate_data_sche
     generate_from_real_data
 import matplotlib.pyplot as plt
 
+from data_generator.main3 import generate_optimal_discrimination_data
 from data_generator.utils import plot_distribution_comparison, print_distribution_stats, visualize_df, \
     create_parallel_coordinates_plot, plot_and_print_metric_distributions, unique_individuals_ratio, \
     individuals_in_multiple_groups, plot_correlation_matrices
@@ -330,23 +331,29 @@ predefined_groups = [GroupDefinition(**e) for e in group_defs]
 # predefined_groups_origin, nb_elements = get_groups(data_obj_synth, data, schema)
 
 # %%
-data1 = generate_data(
-    nb_attributes=5,
-    min_number_of_classes=3,
-    max_number_of_classes=5,
+data1 = generate_optimal_discrimination_data(
     nb_groups=100,
-    max_group_size=100,
-    categorical_outcome=True,
-    nb_categories_outcome=4,
-    corr_matrix_randomness=1,
-    categorical_influence=1,
-    # data_schema=schema,
-    use_cache=False,
-    min_similarity=0.9,
-    max_similarity=1.0
-    # predefined_groups=predefined_groups,
-    # additional_random_rows=30000
+    nb_attributes=15,
+    prop_protected_attr=0.3
 )
+
+# data1 = generate_data(
+#     nb_attributes=5,
+#     min_number_of_classes=3,
+#     max_number_of_classes=5,
+#     nb_groups=100,
+#     max_group_size=100,
+#     categorical_outcome=True,
+#     nb_categories_outcome=4,
+#     corr_matrix_randomness=1,
+#     categorical_influence=1,
+#     # data_schema=schema,
+#     use_cache=False,
+#     min_similarity=0.9,
+#     max_similarity=1.0
+#     # predefined_groups=predefined_groups,
+#     # additional_random_rows=30000
+# )
 
 print(f"Generated {len(data1.dataframe)} samples in {data1.nb_groups} groups")
 
@@ -363,21 +370,21 @@ create_parallel_coordinates_plot(data1.dataframe)
 plt.show()
 
 # Print statistics
-print_distribution_stats(schema, data)
+print_distribution_stats(schema, data1)
 
 # %%
 
-plot_and_print_metric_distributions(data.dataframe)
+plot_and_print_metric_distributions(data1.dataframe)
 
 # %%
 # Example usage:
 individual_col = 'indv_key'
 group_col = 'group_key'
 
-unique_ratio, duplicates_count, total = unique_individuals_ratio(data.dataframe, 'indv_key', data.attr_possible_values)
-individuals_in_multiple_groups_count = individuals_in_multiple_groups(data.dataframe, individual_col, group_col)
+unique_ratio, duplicates_count, total = unique_individuals_ratio(data1.dataframe, 'indv_key', data1.attr_possible_values)
+individuals_in_multiple_groups_count = individuals_in_multiple_groups(data1.dataframe, individual_col, group_col)
 
 print(f"Unique Individuals Ratio: {unique_ratio}, duplicate : {duplicates_count}, total: {total}")
 
 # %%
-plot_correlation_matrices(schema.correlation_matrix, data)
+plot_correlation_matrices(schema.correlation_matrix, data1)
