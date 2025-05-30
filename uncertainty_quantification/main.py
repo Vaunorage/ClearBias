@@ -92,10 +92,13 @@ class EpistemicUncertainty(BaseEstimator):
             raise ValueError(f"Method must be one of {valid_methods}")
 
     def fit(self, X: np.ndarray, y: np.ndarray):
-
-        self.n_classes = len(np.unique(y))
+        # Encode labels to be zero-based and contiguous
+        unique_labels = np.unique(y)
+        label_map = {old: new for new, old in enumerate(unique_labels)}
+        y_encoded = np.array([label_map[label] for label in y])
+        self.n_classes = len(unique_labels)
         self.X = self.scaler.fit_transform(X)
-        self.y = y
+        self.y = y_encoded
 
         if self.method == 'ensemble':
             self.models = []
@@ -116,7 +119,7 @@ class EpistemicUncertainty(BaseEstimator):
                 nn.Linear(32, self.n_classes)
             )
             # Train the model (simplified for demonstration)
-            self._train_dropout_model(X, y)
+            self._train_dropout_model(X, self.y)
 
         elif self.method == 'evidential':
             input_dim = X.shape[1]
@@ -126,7 +129,7 @@ class EpistemicUncertainty(BaseEstimator):
                 nn.Linear(64, self.n_classes * 2)  # Output both logits and uncertainty
             )
             # Train the model (simplified for demonstration)
-            self._train_evidential_model(X, y)
+            self._train_evidential_model(X, self.y)
 
         return self
 
@@ -138,6 +141,7 @@ class EpistemicUncertainty(BaseEstimator):
 
         X_tensor = torch.FloatTensor(X)
         y_tensor = torch.LongTensor(y)
+        assert y_tensor.min() >= 0 and y_tensor.max() < self.n_classes, f"Target label out of bounds: [{y_tensor.min()}, {y_tensor.max()}], n_classes={self.n_classes}"
 
         for _ in range(100):  # epochs
             optimizer.zero_grad()
@@ -148,6 +152,7 @@ class EpistemicUncertainty(BaseEstimator):
 
     def _train_evidential_model(self, X: np.ndarray, y: np.ndarray):
         """Train the evidential model using PyTorch."""
+        assert np.min(y) >= 0 and np.max(y) < self.n_classes, f"Target label out of bounds: [{np.min(y)}, {np.max(y)}], n_classes={self.n_classes}"
 
         class EvidentialNet(nn.Module):
             def __init__(self, input_dim, n_classes):
