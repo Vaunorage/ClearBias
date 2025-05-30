@@ -54,6 +54,35 @@ def coefficient_of_variation(data):
     return cv
 
 
+def calculate_subgroup_key_similarity_binary_overlap(data):
+    """
+    Calculate similarity based on binary representation overlap.
+    Assumes subgroup keys can be converted to binary representations.
+    """
+
+    def calculate_group_similarity(group_data):
+        subgroup_keys = group_data['subgroup_key'].unique()
+        if len(subgroup_keys) != 2:
+            return np.nan
+
+        key1_parts = subgroup_keys[0].split('|')
+        key2_parts = subgroup_keys[1].split('|')
+
+        if len(key1_parts) != len(key2_parts):
+            return np.nan
+
+        matches = 0
+        total_positions = len(key1_parts)
+
+        for part1, part2 in zip(key1_parts, key2_parts):
+            if part1 == part2:
+                matches += 1
+
+        return matches / total_positions
+
+    return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_similarity)
+
+
 def calculate_actual_similarity(data):
     def calculate_group_similarity(group_data):
         subgroup_keys = group_data['subgroup_key'].unique()
@@ -215,12 +244,14 @@ def calculate_actual_metrics(data):
     Calculate the actual metrics and relevance for each group.
     """
     actual_similarity = calculate_actual_similarity(data)
+    actual_binary_similarity = calculate_subgroup_key_similarity_binary_overlap(data)
     actual_uncertainties = calculate_actual_uncertainties(data)
     actual_mean_diff_outcome = calculate_actual_mean_diff_outcome(data)
     actual_diff_outcome_from_avg = calculate_actual_diff_outcome_from_avg(data)
 
     # Merge these metrics into the main dataframe
     data.dataframe['calculated_similarity'] = data.dataframe['group_key'].map(actual_similarity)
+    data.dataframe['calculated_binary_similarity'] = data.dataframe['group_key'].map(actual_binary_similarity)
     data.dataframe['calculated_epistemic_group'] = data.dataframe['group_key'].map(
         actual_uncertainties['calculated_epistemic'])
     data.dataframe['calculated_aleatoric_group'] = data.dataframe['group_key'].map(
