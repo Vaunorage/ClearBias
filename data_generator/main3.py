@@ -8,11 +8,481 @@ from typing import List, Dict, Tuple, Set, Optional, Any
 from dataclasses import dataclass, field
 import pandas as pd
 import numpy as np
+from scipy.spatial.distance import jensenshannon
+from sdv.metadata import SingleTableMetadata
 from sdv.sampling import Condition
 from tqdm import tqdm
 
-from data_generator.main import estimate_min_attributes_and_classes, generate_data_schema, bin_array_values, \
-    DiscriminationData, calculate_actual_metrics
+from data_generator.main import estimate_min_attributes_and_classes, generate_data_schema
+from uncertainty_quantification.main import UncertaintyRandomForest, AleatoricUncertainty, EpistemicUncertainty
+
+
+@dataclass
+class GroupDefinition:
+    group_size: int
+    subgroup_bias: float
+    similarity: float
+    alea_uncertainty: float
+    epis_uncertainty: float
+    frequency: float
+    diff_subgroup_size: float
+    subgroup1: Dict[str, Any]
+    subgroup2: Dict[str, Any]
+    avg_diff_outcome: Optional[float] = None
+    granularity: Optional[int] = None
+    intersectionality: Optional[int] = None
+
+    def __post_init__(self):
+        """Validate the group definition after initialization."""
+        if set(self.subgroup1.keys()) != set(self.subgroup2.keys()):
+            raise ValueError("subgroups must have the same keys")
+
+        if -1 in set(self.subgroup1.keys()) | set(self.subgroup2.keys()):
+            raise ValueError("-1 is not a valide value")
+
+        # Ensure subgroups have at least one attribute
+        if not self.subgroup1 or not self.subgroup2:
+            raise ValueError("Both subgroups must have at least one attribute defined")
+
+        # Ensure parameters are within valid ranges
+        if not (0.0 <= self.similarity <= 1.0):
+            raise ValueError("Similarity must be between 0.0 and 1.0")
+        if not (0.0 <= self.alea_uncertainty <= 1.0):
+            raise ValueError("Aleatoric uncertainty must be between 0.0 and 1.0")
+        if not (0.0 <= self.epis_uncertainty <= 1.0):
+            raise ValueError("Epistemic uncertainty must be between 0.0 and 1.0")
+        if not (0.0 <= self.frequency <= 1.0):
+            raise ValueError("Frequency must be between 0.0 and 1.0")
+        if not (0.0 <= self.diff_subgroup_size <= 1.0):
+            raise ValueError("Difference in subgroup size must be between 0.0 and 1.0")
+
+        # Ensure group_size is valid
+        if self.group_size < 2:
+            raise ValueError("Group size must be at least 2 to have both subgroups")
+
+    def get_preset_values_for_subgroup1(self, attr_names):
+        return [self.subgroup1.get(attr, None) for attr in attr_names]
+
+    def get_preset_values_for_subgroup2(self, attr_names):
+        return [self.subgroup2.get(attr, None) for attr in attr_names]
+
+    def calculate_granularity_intersectionality(self, attr_names, protected_attr):
+        # Get attributes used in either subgroup
+        used_attrs = set(self.subgroup1.keys()) | set(self.subgroup2.keys())
+
+        # Count protected and non-protected attributes
+        granularity = 0
+        intersectionality = 0
+
+        for attr in used_attrs:
+            if attr in attr_names:
+                idx = attr_names.index(attr)
+                if protected_attr[idx]:
+                    intersectionality += 1
+                else:
+                    granularity += 1
+
+        return granularity, intersectionality
+
+
+@dataclass
+class DataSchema:
+    attr_categories: List[List[str]]
+    protected_attr: List[bool]
+    attr_names: List[str]
+    categorical_distribution: Dict[str, List[float]]
+    correlation_matrix: np.ndarray
+    gen_order: List[str]
+    category_maps: Dict[str, Dict[int, str]] = None  # Add category maps for encoding/decoding
+    column_mapping: Dict[str, str] = None
+    synthesizer: Any = None  # Store the trained SDV synthesizer
+    sdv_metadata: Any = None  # Store the SDV metadata
+
+    def to_sdv_metadata(self) -> SingleTableMetadata:
+        """Convert this schema to SDV SingleTableMetadata."""
+        if self.sdv_metadata is not None:
+            return self.sdv_metadata
+
+        metadata = SingleTableMetadata()
+
+        # Add columns to the metadata
+        for i, (attr_name, attr_cats, is_protected) in enumerate(zip(
+                self.attr_names, self.attr_categories, self.protected_attr)):
+
+            # Determine the SDV column type
+            if -1 in attr_cats:  # If -1 is in categories, it handles missing values
+                cats_without_missing = [c for c in attr_cats if c != -1]
+            else:
+                cats_without_missing = attr_cats
+
+            # Check if this is a categorical or numerical column
+            if all(isinstance(v, (int, float)) for v in cats_without_missing):
+                # This is a numerical column
+                metadata.add_column(attr_name, sdtype='numerical')
+            else:
+                # This is a categorical column
+                metadata.add_column(attr_name, sdtype='categorical')
+
+        # Add outcome column
+        metadata.add_column('outcome', sdtype='categorical')
+
+        return metadata
+
+    def sample(self, num_rows=100, conditions=None):
+        """Sample from the fitted synthesizer if available."""
+        if self.synthesizer is None:
+            raise ValueError("No synthesizer has been fitted to this schema")
+
+        if conditions:
+            return self.synthesizer.sample_from_conditions(conditions=conditions)
+        else:
+            return self.synthesizer.sample(num_rows=num_rows)
+
+    def decode_dataframe(self, df):
+        """Decode a dataframe using the category maps."""
+        if not self.category_maps:
+            return df
+
+        decoded_df = pd.DataFrame(index=df.index)
+
+        for col in self.attr_names:
+            if col in df.columns and col in self.category_maps:
+                category_map = self.category_maps[col]
+                decoded_df[col] = df[col].map(
+                    lambda x: category_map.get(int(x) if isinstance(x, (int, float)) else x, 'unknown'))
+
+        # Copy non-schema columns
+        for col in df.columns:
+            if col not in decoded_df.columns:
+                decoded_df[col] = df[col]
+
+        return decoded_df
+
+
+@dataclass
+class DiscriminationDataFrame(pd.DataFrame):
+    """A custom DataFrame subclass for discrimination data."""
+
+    @property
+    def _constructor(self):
+        return DiscriminationDataFrame
+
+
+@dataclass
+class DiscriminationData:
+    dataframe: pd.DataFrame
+    categorical_columns: List[str]
+    attributes: Dict[str, bool]
+    collisions: int
+    nb_groups: int
+    max_group_size: int
+    hiddenlayers_depth: int
+    schema: DataSchema
+    outcome_column: str = 'outcome'
+    relevance_metrics: pd.DataFrame = field(default_factory=pd.DataFrame)
+    attr_possible_values: Dict[str, List[int]] = field(default_factory=dict)
+    generation_arguments: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def attr_columns(self) -> List[str]:
+        return list(self.attributes)
+
+    @property
+    def protected_attributes(self):
+        return [k for k, v in self.attributes.items() if v]
+
+    @property
+    def non_protected_attributes(self):
+        return [k for k, v in self.attributes.items() if not v]
+
+    @property
+    def feature_names(self):
+        return list(self.attributes)
+
+    @property
+    def sensitive_indices_dict(self):
+        return {k: i for i, (k, v) in enumerate(self.attributes.items()) if v}
+
+    @property
+    def sensitive_indices(self):
+        return [i for i, (k, v) in enumerate(self.attributes.items()) if v]
+
+    @property
+    def training_dataframe(self):
+        return self.dataframe[list(self.attributes) + [self.outcome_column]]
+
+    @property
+    def xdf(self):
+        return self.dataframe[list(self.attributes)]
+
+    @property
+    def ydf(self):
+        return self.dataframe[self.outcome_column]
+
+    @property
+    def input_bounds(self):
+        input_bounds = getattr(self, '_input_bounds', None)
+        if input_bounds is None:
+            self._input_bounds = []
+            for col in list(self.attributes):
+                min_val = max(math.floor(self.xdf[col].min()), 0)
+                max_val = math.ceil(self.xdf[col].max())
+                self._input_bounds.append([min_val, max_val])
+        input_bounds = getattr(self, '_input_bounds')
+        return input_bounds
+
+    def get_random_rows(self, n: int) -> pd.DataFrame:
+        random_data = {}
+
+        for i, attr in enumerate(self.attributes.keys()):
+            min_val, max_val = self.input_bounds[i]
+
+            if attr in self.categorical_columns:
+                random_values = np.random.randint(min_val, max_val + 1, size=n)
+            else:
+                random_values = np.random.uniform(min_val, max_val, size=n)
+
+            random_data[attr] = random_values
+
+        random_df = pd.DataFrame(random_data)
+
+        return random_df
+
+
+def calculate_actual_metrics(data):
+    """
+    Calculate the actual metrics and relevance for each group.
+    """
+    actual_similarity = calculate_actual_similarity(data)
+    actual_binary_similarity = calculate_subgroup_key_similarity_binary_overlap(data)
+    actual_uncertainties = calculate_actual_uncertainties(data)
+    actual_mean_diff_outcome = calculate_actual_mean_diff_outcome(data)
+    actual_diff_outcome_from_avg = calculate_actual_diff_outcome_from_avg(data)
+
+    # Merge these metrics into the main dataframe
+    data.dataframe['calculated_similarity'] = data.dataframe['group_key'].map(actual_similarity)
+    data.dataframe['calculated_binary_similarity'] = data.dataframe['group_key'].map(actual_binary_similarity)
+    data.dataframe['calculated_epistemic_group'] = data.dataframe['group_key'].map(
+        actual_uncertainties['calculated_epistemic'])
+    data.dataframe['calculated_aleatoric_group'] = data.dataframe['group_key'].map(
+        actual_uncertainties['calculated_aleatoric'])
+    data.dataframe['calculated_magnitude'] = data.dataframe['group_key'].map(actual_mean_diff_outcome)
+    data.dataframe['calculated_mean_demographic_disparity'] = data.dataframe['group_key'].map(
+        actual_diff_outcome_from_avg)
+    data.dataframe['calculated_uncertainty_group'] = data.dataframe.apply(
+        lambda x: (x['calculated_epistemic_group'] + x['calculated_aleatoric_group']) / 2, axis=1)
+
+    data.dataframe['calculated_intersectionality'] = data.dataframe['intersectionality_param'].copy() / len(
+        data.protected_attributes)
+    data.dataframe['calculated_granularity'] = data.dataframe['granularity_param'].copy() / len(
+        data.non_protected_attributes)
+    data.dataframe['calculated_group_size'] = data.dataframe['group_size'].copy()
+    data.dataframe['calculated_subgroup_ratio'] = data.dataframe['diff_subgroup_size'].copy()
+    data.dataframe = data.dataframe.loc[:, ~data.dataframe.columns.duplicated()]
+
+    return data
+
+
+def bin_array_values(array, num_bins):
+    min_val = np.min(array)
+    max_val = np.max(array)
+    bins = np.linspace(min_val, max_val, num_bins + 1)
+    binned_indices = np.digitize(array, bins) - 1
+    return binned_indices
+
+
+def coefficient_of_variation(data):
+    mean = np.mean(data)
+    std_dev = np.std(data)
+    if mean == 0 or np.isnan(mean) or np.isnan(std_dev):
+        return 0  # or another appropriate value
+    cv = (std_dev / mean) * 100
+    return cv
+
+
+def calculate_subgroup_key_similarity_binary_overlap(data):
+    """
+    Calculate similarity based on binary representation overlap.
+    Assumes subgroup keys can be converted to binary representations.
+    """
+
+    def calculate_group_similarity(group_data):
+        subgroup_keys = group_data['subgroup_key'].unique()
+        if len(subgroup_keys) != 2:
+            return np.nan
+
+        key1_parts = subgroup_keys[0].split('|')
+        key2_parts = subgroup_keys[1].split('|')
+
+        if len(key1_parts) != len(key2_parts):
+            return np.nan
+
+        matches = 0
+        total_positions = len(key1_parts)
+
+        for part1, part2 in zip(key1_parts, key2_parts):
+            if part1 == part2:
+                matches += 1
+
+        return matches / total_positions
+
+    return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_similarity)
+
+
+def calculate_actual_similarity(data):
+    def calculate_group_similarity(group_data):
+        subgroup_keys = group_data['subgroup_key'].unique()
+        if len(subgroup_keys) != 2:
+            return np.nan
+
+        # Get data for each subgroup
+        subgroup1_data = group_data[group_data['subgroup_key'] == subgroup_keys[0]]
+        subgroup2_data = group_data[group_data['subgroup_key'] == subgroup_keys[1]]
+
+        # Calculate similarity across all attribute distributions
+        similarities = []
+
+        for attr in data.attr_columns:
+            # Get distributions of values for this attribute in each subgroup
+            vals1 = subgroup1_data[attr].value_counts(normalize=True).sort_index()
+            vals2 = subgroup2_data[attr].value_counts(normalize=True).sort_index()
+
+            # Align the distributions
+            all_values = sorted(set(vals1.index) | set(vals2.index))
+            dist1 = np.array([vals1.get(v, 0) for v in all_values])
+            dist2 = np.array([vals2.get(v, 0) for v in all_values])
+
+            # Calculate Jensen-Shannon divergence
+            js_distance = jensenshannon(dist1, dist2)
+
+            # Apply non-linear transformation to spread out values
+            # This will push values away from 0.5
+            if np.isnan(js_distance):
+                sim = 1.0
+            else:
+                # Convert distance to similarity
+                raw_sim = 1.0 - js_distance
+
+                # Apply power transformation to increase sensitivity
+                # This pushes high similarities higher and low similarities lower
+                # Adjust the power (3.0) to control sensitivity
+                sim = pow(raw_sim, 3.0) if raw_sim >= 0.5 else 1.0 - pow(1.0 - raw_sim, 3.0)
+
+            similarities.append(sim)
+
+        # Weight more discriminative attributes higher
+        # Attributes with similarity far from 0.5 contribute more
+        weights = [abs(s - 0.5) + 0.5 for s in similarities]
+        weighted_sum = sum(s * w for s, w in zip(similarities, weights))
+        weighted_avg = weighted_sum / sum(weights) if sum(weights) > 0 else 0.5
+
+        # Final transformation to spread values further
+        spread_factor = 2.0  # Adjust this to control overall spread
+        final_sim = 0.5 + spread_factor * (weighted_avg - 0.5)
+
+        # Ensure result stays in [0,1] range
+        return max(0.0, min(1.0, final_sim))
+
+    return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_similarity)
+
+
+def calculate_actual_uncertainties(data):
+    X = data.dataframe[data.feature_names].values  # Convert to numpy array
+    y = data.dataframe[data.outcome_column].values  # Convert to numpy array
+
+    # Initialize base random forest for comparison
+    urf = UncertaintyRandomForest(n_estimators=50, random_state=42)
+    urf.fit(X, y)
+    mean_pred, base_epistemic, base_aleatoric = urf.predict_with_uncertainty(X)
+
+    # Initialize result columns
+    data.dataframe['calculated_epistemic_random_forest'] = base_epistemic
+    data.dataframe['calculated_aleatoric_random_forest'] = base_aleatoric
+
+    # Calculate all Aleatoric Uncertainties
+    aleatoric_methods = ['entropy', 'probability_margin', 'label_smoothing']
+    for method in aleatoric_methods:
+        aleatoric_model = AleatoricUncertainty(
+            method=method,
+            temperature=1.0
+        )
+        aleatoric_model.fit(X, y)
+        probs, aleatoric_uncertainty = aleatoric_model.predict_uncertainty(X)
+        data.dataframe[f'calculated_aleatoric_{method}'] = aleatoric_uncertainty
+
+    # Calculate all Epistemic Uncertainties
+    epistemic_methods = ['ensemble', 'mc_dropout', 'evidential']
+    epistemic_params = {
+        'ensemble': {'n_estimators': 5, 'dropout_rate': None, 'n_forward_passes': None},
+        'mc_dropout': {'n_estimators': None, 'dropout_rate': 0.5, 'n_forward_passes': 30},
+        'evidential': {'n_estimators': None, 'dropout_rate': None, 'n_forward_passes': None}
+    }
+
+    for method in epistemic_methods:
+        params = epistemic_params[method]
+        epistemic_model = EpistemicUncertainty(
+            method=method,
+            n_estimators=params['n_estimators'],
+            dropout_rate=params['dropout_rate'],
+            n_forward_passes=params['n_forward_passes']
+        )
+        epistemic_model.fit(X, y)
+        probs, epistemic_uncertainty = epistemic_model.predict_uncertainty(X)
+        data.dataframe[f'calculated_epistemic_{method}'] = epistemic_uncertainty
+
+    # Aggregate results by group
+    uncertainty_columns = [col for col in data.dataframe.columns
+                           if col.startswith('calculated_')]
+
+    res = data.dataframe.groupby('group_key')[uncertainty_columns].agg('mean')
+
+    # Add combined uncertainty metrics for all combinations
+    for epistemic_method in epistemic_methods:
+        for aleatoric_method in aleatoric_methods:
+            combined_col = f'combined_{epistemic_method}_{aleatoric_method}'
+            res[combined_col] = (
+                    res[f'calculated_epistemic_{epistemic_method}'] +
+                    res[f'calculated_aleatoric_{aleatoric_method}']
+            )
+
+    # Add summary statistics
+    res['calculated_epistemic'] = res[[col for col in res.columns
+                                       if col.startswith('calculated_epistemic')]].mean(axis=1)
+    res['calculated_aleatoric'] = res[[col for col in res.columns
+                                       if col.startswith('calculated_aleatoric')]].mean(axis=1)
+    res['calculated_combined'] = res[[col for col in res.columns
+                                      if col.startswith('combined')]].mean(axis=1)
+    return res
+
+
+def calculate_actual_mean_diff_outcome(data):
+    def calculate_group_diff(group_data):
+        subgroup_keys = group_data['subgroup_key'].unique()
+        if len(subgroup_keys) != 2:
+            return np.nan
+
+        subgroup1_outcome = group_data[group_data['subgroup_key'] == subgroup_keys[0]][data.outcome_column].mean()
+        subgroup2_outcome = group_data[group_data['subgroup_key'] == subgroup_keys[1]][data.outcome_column].mean()
+
+        return abs(subgroup1_outcome - subgroup2_outcome) / max(subgroup1_outcome, subgroup2_outcome)
+
+    return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_diff)
+
+
+def calculate_actual_diff_outcome_from_avg(data):
+    avg_outcome = data.dataframe[data.outcome_column].mean()
+
+    def calculate_group_diff(group_data):
+        try:
+            unique_subgroups = group_data['subgroup_key'].unique()
+            subgroup1_outcome = group_data[group_data['subgroup_key'] == unique_subgroups[0]][data.outcome_column]
+            subgroup2_outcome = group_data[group_data['subgroup_key'] == unique_subgroups[1]][data.outcome_column]
+            res = (abs(avg_outcome - subgroup1_outcome.mean()) + abs(avg_outcome - subgroup2_outcome.mean())) / 2
+        except Exception as e:
+            print(e)
+        return res
+
+    return data.dataframe.groupby('group_key', group_keys=False).apply(calculate_group_diff)
 
 
 @dataclass
