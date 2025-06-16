@@ -6,9 +6,9 @@ import logging
 import sys
 from data_generator.main import get_real_data, DiscriminationData
 from methods.utils import train_sklearn_model, check_for_error_condition, make_final_metrics_and_dataframe
-from sklearnex import patch_sklearn
-
-patch_sklearn()
+# from sklearnex import patch_sklearn
+#
+# patch_sklearn()
 
 # Configure logging
 logger = logging.getLogger('aequitas')

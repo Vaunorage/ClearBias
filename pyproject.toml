@@ -17,7 +17,6 @@ dependencies = [
     "parsimonious>=0.10.0",
     "patsy>=1.0.1",
     "pytest>=8.3.4",
-    "scikit-learn-intelex>=2025.2.0",
     "scikit-learn>=1.5.2",
     "seaborn>=0.13.2",
     "sqlalchemy>=2.0.38",
@@ -31,4 +30,6 @@ dependencies = [
     "plotly==5.24.1",
     "scikit-image==0.25.2",
     "optuna>=4.3.0",
+    "ipython-extensions>=0.2",
+    "scikit-learn-intelex>=2025.5.0",
 ]
