@@ -379,10 +379,25 @@ from scipy.spatial.distance import cosine
 
 
 def plot_correlation_matrices(input_correlation_matrix, generated_data, figsize=(30, 10)):
+    # Get attribute columns from the generated data
     attr_columns = [col for col in generated_data.dataframe.columns if col.startswith('Attr')]
     generated_correlation_matrix = generated_data.dataframe[attr_columns].corr(method='spearman')
-
-    assert input_correlation_matrix.shape == generated_correlation_matrix.shape, "Correlation matrices have different shapes"
+    
+    # Convert input correlation matrix to DataFrame if it's a numpy array
+    if isinstance(input_correlation_matrix, np.ndarray):
+        # Create column names that match the size of the input matrix
+        input_cols = [f'Attr{i+1}_X' if i < input_correlation_matrix.shape[0] - sum(generated_data.schema.protected_attr) else f'Attr{i-input_correlation_matrix.shape[0]+sum(generated_data.schema.protected_attr)+1}_T' 
+                     for i in range(input_correlation_matrix.shape[0])]
+        input_correlation_matrix = pd.DataFrame(input_correlation_matrix, columns=input_cols, index=input_cols)
+    
+    # Get common columns between input and generated matrices
+    common_cols = sorted(set(attr_columns) & set(input_correlation_matrix.columns))
+    if not common_cols:
+        raise ValueError("No common attributes found between input and generated correlation matrices")
+    
+    # Filter both matrices to use only common columns
+    input_correlation_matrix = input_correlation_matrix.loc[common_cols, common_cols]
+    generated_correlation_matrix = generated_correlation_matrix.loc[common_cols, common_cols]
 
     if isinstance(input_correlation_matrix, np.ndarray):
         input_correlation_matrix = pd.DataFrame(input_correlation_matrix, columns=attr_columns, index=attr_columns)
