@@ -1,8 +1,7 @@
 from data_generator.main import generate_data, get_real_data, generate_data_schema, GroupDefinition, \
-    generate_from_real_data
+    generate_from_real_data, generate_optimal_discrimination_data
 import matplotlib.pyplot as plt
 
-from data_generator.main3 import generate_optimal_discrimination_data
 from data_generator.utils import plot_distribution_comparison, print_distribution_stats, visualize_df, \
     create_parallel_coordinates_plot, plot_and_print_metric_distributions, unique_individuals_ratio, \
     individuals_in_multiple_groups, plot_correlation_matrices
