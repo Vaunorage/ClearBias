@@ -343,6 +343,30 @@ def compare_discriminatory_groups(original_groups, synthetic_groups):
         'total_original_size': total_original_size
     }
 
+def comparison_results_to_dataframe(comparison_results):
+    """Convert the output of compare_discriminatory_groups to a pandas DataFrame.
+
+    Args:
+        comparison_results (dict): Output dictionary from compare_discriminatory_groups
+
+    Returns:
+        pd.DataFrame: DataFrame containing the comparison metrics
+    """
+    import pandas as pd
+    
+    # Extract all metrics except matched_groups into a single row DataFrame
+    metrics_df = pd.DataFrame([
+        {
+            'Total Groups Matched': comparison_results['total_groups_matched'],
+            'Total Original Groups': comparison_results['total_original_groups'],
+            'Coverage Ratio': comparison_results['coverage_ratio'],
+            'Total Matched Size': comparison_results['total_matched_size'],
+            'Total Original Size': comparison_results['total_original_size']
+        }
+    ])
+    
+    return metrics_df
+
 
 def check_groups_in_synthetic_data(data_obj_synth, predefined_groups_origin):
     """
