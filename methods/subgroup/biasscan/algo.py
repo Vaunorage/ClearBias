@@ -1,13 +1,12 @@
-from typing import TypedDict, Union, Tuple, Dict, Any
+from typing import TypedDict, Tuple
 
 import pandas as pd
 from itertools import product
 
 from pandas import DataFrame
 from sklearn.model_selection import train_test_split
-from typing_extensions import NotRequired
 
-from methods.biasscan.mdss_detector import bias_scan
+from methods.subgroup.biasscan.mdss_detector import bias_scan
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
 

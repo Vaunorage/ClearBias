@@ -2,7 +2,7 @@ from matplotlib import pyplot as plt
 
 from data_generator.main import get_real_data, generate_from_real_data
 from data_generator.utils import plot_distribution_comparison
-from methods.adf.main import run_adf
+from methods.individual.adf.main import run_adf
 from methods.utils import compare_discriminatory_groups, check_groups_in_synthetic_data, get_groups
 
 # %%

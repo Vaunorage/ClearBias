@@ -1,4 +1,4 @@
-from methods.aequitas.algo import run_aequitas
+from methods.individual.aequitas.algo import run_aequitas
 from matplotlib import pyplot as plt
 
 from data_generator.main import get_real_data, generate_from_real_data
