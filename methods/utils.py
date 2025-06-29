@@ -24,11 +24,55 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def _compute_metrics(y_true, y_pred):
+    """Helper function to compute performance metrics."""
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report, \
+        confusion_matrix
+
+    # Determine if it's binary or multiclass
+    unique_labels = np.unique(np.concatenate([y_true, y_pred]))
+    is_binary = len(unique_labels) == 2
+
+    # Compute basic metrics
+    accuracy = accuracy_score(y_true, y_pred)
+
+    # For precision, recall, f1 - handle binary vs multiclass
+    if is_binary:
+        precision = precision_score(y_true, y_pred)
+        recall = recall_score(y_true, y_pred)
+        f1 = f1_score(y_true, y_pred)
+    else:
+        precision = precision_score(y_true, y_pred, average='weighted')
+        recall = recall_score(y_true, y_pred, average='weighted')
+        f1 = f1_score(y_true, y_pred, average='weighted')
+
+    # Confusion matrix
+    cm = confusion_matrix(y_true, y_pred)
+
+    # Classification report
+    class_report = classification_report(y_true, y_pred, output_dict=True)
+
+    metrics = {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1,
+        'confusion_matrix': cm.tolist(),  # Convert to list for JSON serialization
+        'classification_report': class_report,
+        'n_samples': len(y_true),
+        'n_classes': len(unique_labels),
+        'class_labels': unique_labels.tolist()
+    }
+
+    return metrics
+
+
 def train_sklearn_model(data, model_type='rf', model_params=None, target_col='class', sensitive_attrs=None,
                         test_size=0.2, random_state=42, use_cache=False, cache_dir=HERE.joinpath('.cache/model_cache'),
                         use_gpu=False):
     """
     Train a model using either scikit-learn (CPU) or cuML (GPU) based on the use_gpu flag.
+    Returns model, data splits, feature names, and performance metrics.
     """
     # Import GPU libraries if requested
     if use_gpu:
@@ -43,6 +87,10 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
             logger.warning("GPU libraries not available. Falling back to CPU.")
             use_gpu = False
             gpu_available = False
+
+    # Import metrics
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report, \
+        confusion_matrix
 
     # Set random seeds
     np.random.seed(random_state)
@@ -131,6 +179,13 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
             y_train = cached_data['y_train']
             y_test = cached_data['y_test']
             feature_names = cached_data['feature_names']
+            # Load metrics if available in cache, otherwise compute them
+            if 'metrics' in cached_data:
+                metrics = cached_data['metrics']
+            else:
+                # Compute metrics for cached model
+                y_pred = model.predict(X_test)
+                metrics = _compute_metrics(y_test, y_pred)
     else:
         # Split the data
         X_train, X_test, y_train, y_test = train_test_split(
@@ -155,6 +210,12 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
                     X_test_return = X_test
                     y_train_return = y_train
                     y_test_return = y_test
+
+                    # Make predictions and compute metrics
+                    y_pred = model.predict(X_test_gpu).to_pandas() if hasattr(model.predict(X_test_gpu),
+                                                                              'to_pandas') else model.predict(
+                        X_test_gpu)
+                    metrics = _compute_metrics(y_test, y_pred)
                 except Exception as e:
                     logger.warning(f"Error using GPU: {e}. Falling back to CPU.")
                     model = model_map[model_type](**params)
@@ -163,6 +224,10 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
                     X_test_return = X_test
                     y_train_return = y_train
                     y_test_return = y_test
+
+                    # Make predictions and compute metrics
+                    y_pred = model.predict(X_test)
+                    metrics = _compute_metrics(y_test, y_pred)
             else:
                 # For MLP, use CPU version since there's no cuML equivalent
                 model = model_map[model_type](**params)
@@ -171,6 +236,10 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
                 X_test_return = X_test
                 y_train_return = y_train
                 y_test_return = y_test
+
+                # Make predictions and compute metrics
+                y_pred = model.predict(X_test)
+                metrics = _compute_metrics(y_test, y_pred)
         else:
             # Create and train model on CPU
             model = model_map[model_type](**params)
@@ -180,12 +249,16 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
             y_train_return = y_train
             y_test_return = y_test
 
+            # Make predictions and compute metrics
+            y_pred = model.predict(X_test)
+            metrics = _compute_metrics(y_test, y_pred)
+
         # Save model to cache if requested
         if use_cache and not os.path.exists(cache_path):
             logger.info(f"Saving model to cache: {model_id}")
             # Create cache directory if it doesn't exist
             os.makedirs(cache_dir, exist_ok=True)
-            # Save model and data
+            # Save model, data, and metrics
             with open(cache_path, 'wb') as f:
                 pickle.dump({
                     'model': model,
@@ -193,10 +266,11 @@ def train_sklearn_model(data, model_type='rf', model_params=None, target_col='cl
                     'X_test': X_test_return,
                     'y_train': y_train_return,
                     'y_test': y_test_return,
-                    'feature_names': feature_names
+                    'feature_names': feature_names,
+                    'metrics': metrics
                 }, f)
 
-    return model, X_train, X_test, y_train, y_test, feature_names
+    return model, X_train, X_test, y_train, y_test, feature_names, metrics
 
 
 def reformat_discrimination_results(non_float_df, original_df) -> List[GroupDefinition]:
@@ -343,6 +417,7 @@ def compare_discriminatory_groups(original_groups, synthetic_groups):
         'total_original_size': total_original_size
     }
 
+
 def comparison_results_to_dataframe(comparison_results):
     """Convert the output of compare_discriminatory_groups to a pandas DataFrame.
 
@@ -353,7 +428,7 @@ def comparison_results_to_dataframe(comparison_results):
         pd.DataFrame: DataFrame containing the comparison metrics
     """
     import pandas as pd
-    
+
     # Extract all metrics except matched_groups into a single row DataFrame
     metrics_df = pd.DataFrame([
         {
@@ -364,7 +439,7 @@ def comparison_results_to_dataframe(comparison_results):
             'Total Original Size': comparison_results['total_original_size']
         }
     ])
-    
+
     return metrics_df
 
 
@@ -619,7 +694,7 @@ def make_final_metrics_and_dataframe(discrimination_data, tot_inputs, all_discri
     for k, v in dsn_by_attr_value.items():
         if k != 'total':
             dsn_by_attr_value[k]['SUR'] = dsn_by_attr_value[k]['DSN'] / dsn_by_attr_value[k]['TSN'] if \
-            dsn_by_attr_value[k]['TSN'] != 0 else 0
+                dsn_by_attr_value[k]['TSN'] != 0 else 0
             dsn_by_attr_value[k]['DSS'] = dss
 
     # Log dsn_by_attr_value counts
