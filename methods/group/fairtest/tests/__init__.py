@@ -1,0 +1,3 @@
+"""
+FairTest unit tests
+"""
