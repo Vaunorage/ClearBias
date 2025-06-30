@@ -1,0 +1,246 @@
+(declare-fun Attr0_X0 () Int)
+
+(declare-fun Attr1_X0 () Int)
+
+(declare-fun Attr2_X0 () Int)
+
+(declare-fun Attr3_X0 () Int)
+
+(declare-fun Attr4_X0 () Int)
+
+(declare-fun Attr5_X0 () Int)
+
+(declare-fun Attr6_X0 () Int)
+
+(declare-fun Attr7_T0 () Int)
+
+(declare-fun Attr8_T0 () Int)
+
+(declare-fun Attr9_X0 () Int)
+
+(declare-fun Attr10_X0 () Int)
+
+(declare-fun Attr11_X0 () Int)
+
+(declare-fun Attr12_X0 () Int)
+
+(declare-fun outcome0 () Int)
+
+; 0th element
+(declare-fun Attr0_X1 () Int)
+
+(declare-fun Attr1_X1 () Int)
+
+(declare-fun Attr2_X1 () Int)
+
+(declare-fun Attr3_X1 () Int)
+
+(declare-fun Attr4_X1 () Int)
+
+(declare-fun Attr5_X1 () Int)
+
+(declare-fun Attr6_X1 () Int)
+
+(declare-fun Attr7_T1 () Int)
+
+(declare-fun Attr8_T1 () Int)
+
+(declare-fun Attr9_X1 () Int)
+
+(declare-fun Attr10_X1 () Int)
+
+(declare-fun Attr11_X1 () Int)
+
+(declare-fun Attr12_X1 () Int)
+
+(declare-fun outcome1 () Int)
+
+; 1th element
+;-----------Range constraints for instance 0--------------
+(assert (and (>= Attr0_X0 5) (<= Attr0_X0 78)))
+(assert (and (>= Attr1_X0 -1) (<= Attr1_X0 8)))
+(assert (and (>= Attr2_X0 0) (<= Attr2_X0 15)))
+(assert (and (>= Attr3_X0 1) (<= Attr3_X0 16)))
+(assert (and (>= Attr4_X0 0) (<= Attr4_X0 6)))
+(assert (and (>= Attr5_X0 -1) (<= Attr5_X0 14)))
+(assert (and (>= Attr6_X0 0) (<= Attr6_X0 5)))
+(assert (and (>= Attr7_T0 0) (<= Attr7_T0 4)))
+(assert (and (>= Attr8_T0 0) (<= Attr8_T0 1)))
+(assert (and (>= Attr9_X0 42) (<= Attr9_X0 99)))
+(assert (and (>= Attr10_X0 47) (<= Attr10_X0 99)))
+(assert (and (>= Attr11_X0 2) (<= Attr11_X0 98)))
+(assert (and (>= Attr12_X0 -1) (<= Attr12_X0 41)))
+(assert (and (>= outcome0 0) (<= outcome0 1)))
+
+;-----------Range constraints for instance 1--------------
+(assert (and (>= Attr0_X1 5) (<= Attr0_X1 78)))
+(assert (and (>= Attr1_X1 -1) (<= Attr1_X1 8)))
+(assert (and (>= Attr2_X1 0) (<= Attr2_X1 15)))
+(assert (and (>= Attr3_X1 1) (<= Attr3_X1 16)))
+(assert (and (>= Attr4_X1 0) (<= Attr4_X1 6)))
+(assert (and (>= Attr5_X1 -1) (<= Attr5_X1 14)))
+(assert (and (>= Attr6_X1 0) (<= Attr6_X1 5)))
+(assert (and (>= Attr7_T1 0) (<= Attr7_T1 4)))
+(assert (and (>= Attr8_T1 0) (<= Attr8_T1 1)))
+(assert (and (>= Attr9_X1 42) (<= Attr9_X1 99)))
+(assert (and (>= Attr10_X1 47) (<= Attr10_X1 99)))
+(assert (and (>= Attr11_X1 2) (<= Attr11_X1 98)))
+(assert (and (>= Attr12_X1 -1) (<= Attr12_X1 41)))
+(assert (and (>= outcome1 0) (<= outcome1 1)))
+
+(define-fun absoluteInt ((x Int)) Int 
+  (ite (>= x 0) x (- x))) 
+(define-fun absoluteReal ((x Real)) Real 
+  (ite (>= x 0) x (- x))) 
+
+
+;-----------0-----------number instance-------------- 
+
+(assert (=> (and (<= Attr0_X0 0.0) (<= Attr11_X0 11.0) (<= Attr0_X0 0.0) ) (= outcome0 1)))
+
+(assert (=> (and (<= Attr0_X0 0.0) (<= Attr11_X0 11.0) (> Attr0_X0 0.0) (<= Attr5_X0 5.0) (<= Attr0_X0 0.0) (<= Attr5_X0 5.0) ) (= outcome0 0)))
+
+(assert (=> (and (<= Attr0_X0 0.0) (<= Attr11_X0 11.0) (> Attr0_X0 0.0) (<= Attr5_X0 5.0) (<= Attr0_X0 0.0) (> Attr5_X0 5.0) ) (= outcome0 1)))
+
+(assert (=> (and (<= Attr0_X0 0.0) (<= Attr11_X0 11.0) (> Attr0_X0 0.0) (<= Attr5_X0 5.0) (> Attr0_X0 0.0) ) (= outcome0 1)))
+
+(assert (=> (and (<= Attr0_X0 0.0) (<= Attr11_X0 11.0) (> Attr0_X0 0.0) (> Attr5_X0 5.0) (<= Attr8_T0 8.0) (<= Attr2_X0 2.0) ) (= outcome0 1)))
+
+(assert (=> (and (<= Attr0_X0 0.0) (<= Attr11_X0 11.0) (> Attr0_X0 0.0) (> Attr5_X0 5.0) (<= Attr8_T0 8.0) (> Attr2_X0 2.0) ) (= outcome0 0)))
+
+(assert (=> (and (<= Attr0_X0 0.0) (<= Attr11_X0 11.0) (> Attr0_X0 0.0) (> Attr5_X0 5.0) (> Attr8_T0 8.0) ) (= outcome0 1)))
+
+(assert (=> (and (<= Attr0_X0 0.0) (> Attr11_X0 11.0) ) (= outcome0 1)))
+
+(assert (=> (and (> Attr0_X0 0.0) (<= Attr4_X0 4.0) ) (= outcome0 1)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (<= Attr11_X0 11.0) (<= Attr3_X0 3.0) ) (= outcome0 1)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (<= Attr11_X0 11.0) (> Attr3_X0 3.0) (<= Attr11_X0 11.0) ) (= outcome0 0)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (<= Attr11_X0 11.0) (> Attr3_X0 3.0) (> Attr11_X0 11.0) (<= Attr1_X0 1.0) (<= Attr5_X0 5.0) (<= Attr11_X0 11.0) (<= Attr6_X0 6.0) (<= Attr2_X0 2.0) (<= Attr8_T0 8.0) (<= Attr4_X0 4.0) ) (= outcome0 1)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (<= Attr11_X0 11.0) (> Attr3_X0 3.0) (> Attr11_X0 11.0) (<= Attr1_X0 1.0) (<= Attr5_X0 5.0) (<= Attr11_X0 11.0) (<= Attr6_X0 6.0) (<= Attr2_X0 2.0) (<= Attr8_T0 8.0) (> Attr4_X0 4.0) (<= Attr0_X0 0.0) (<= Attr11_X0 11.0) ) (= outcome0 0)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (<= Attr11_X0 11.0) (> Attr3_X0 3.0) (> Attr11_X0 11.0) (<= Attr1_X0 1.0) (<= Attr5_X0 5.0) (<= Attr11_X0 11.0) (<= Attr6_X0 6.0) (<= Attr2_X0 2.0) (<= Attr8_T0 8.0) (> Attr4_X0 4.0) (<= Attr0_X0 0.0) (> Attr11_X0 11.0) (<= Attr3_X0 3.0) (<= Attr5_X0 5.0) ) (= outcome0 1)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (<= Attr11_X0 11.0) (> Attr3_X0 3.0) (> Attr11_X0 11.0) (<= Attr1_X0 1.0) (<= Attr5_X0 5.0) (<= Attr11_X0 11.0) (<= Attr6_X0 6.0) (<= Attr2_X0 2.0) (<= Attr8_T0 8.0) (> Attr4_X0 4.0) (<= Attr0_X0 0.0) (> Attr11_X0 11.0) (<= Attr3_X0 3.0) (> Attr5_X0 5.0) ) (= outcome0 0)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (<= Attr11_X0 11.0) (> Attr3_X0 3.0) (> Attr11_X0 11.0) (<= Attr1_X0 1.0) (<= Attr5_X0 5.0) (<= Attr11_X0 11.0) (<= Attr6_X0 6.0) (<= Attr2_X0 2.0) (<= Attr8_T0 8.0) (> Attr4_X0 4.0) (<= Attr0_X0 0.0) (> Attr11_X0 11.0) (> Attr3_X0 3.0) ) (= outcome0 0)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (<= Attr11_X0 11.0) (> Attr3_X0 3.0) (> Attr11_X0 11.0) (<= Attr1_X0 1.0) (<= Attr5_X0 5.0) (<= Attr11_X0 11.0) (<= Attr6_X0 6.0) (<= Attr2_X0 2.0) (<= Attr8_T0 8.0) (> Attr4_X0 4.0) (> Attr0_X0 0.0) ) (= outcome0 0)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (<= Attr11_X0 11.0) (> Attr3_X0 3.0) (> Attr11_X0 11.0) (<= Attr1_X0 1.0) (<= Attr5_X0 5.0) (<= Attr11_X0 11.0) (<= Attr6_X0 6.0) (<= Attr2_X0 2.0) (> Attr8_T0 8.0) ) (= outcome0 1)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (<= Attr11_X0 11.0) (> Attr3_X0 3.0) (> Attr11_X0 11.0) (<= Attr1_X0 1.0) (<= Attr5_X0 5.0) (<= Attr11_X0 11.0) (<= Attr6_X0 6.0) (> Attr2_X0 2.0) (<= Attr6_X0 6.0) ) (= outcome0 1)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (<= Attr11_X0 11.0) (> Attr3_X0 3.0) (> Attr11_X0 11.0) (<= Attr1_X0 1.0) (<= Attr5_X0 5.0) (<= Attr11_X0 11.0) (<= Attr6_X0 6.0) (> Attr2_X0 2.0) (> Attr6_X0 6.0) ) (= outcome0 0)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (<= Attr11_X0 11.0) (> Attr3_X0 3.0) (> Attr11_X0 11.0) (<= Attr1_X0 1.0) (<= Attr5_X0 5.0) (<= Attr11_X0 11.0) (> Attr6_X0 6.0) ) (= outcome0 1)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (<= Attr11_X0 11.0) (> Attr3_X0 3.0) (> Attr11_X0 11.0) (<= Attr1_X0 1.0) (<= Attr5_X0 5.0) (> Attr11_X0 11.0) ) (= outcome0 1)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (<= Attr11_X0 11.0) (> Attr3_X0 3.0) (> Attr11_X0 11.0) (<= Attr1_X0 1.0) (> Attr5_X0 5.0) ) (= outcome0 0)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (<= Attr11_X0 11.0) (> Attr3_X0 3.0) (> Attr11_X0 11.0) (> Attr1_X0 1.0) ) (= outcome0 1)))
+
+(assert (=> (and (> Attr0_X0 0.0) (> Attr4_X0 4.0) (> Attr11_X0 11.0) ) (= outcome0 1)))
+
+
+;-----------1-----------number instance-------------- 
+
+(assert (=> (and (<= Attr0_X1 0.0) (<= Attr11_X1 11.0) (<= Attr0_X1 0.0) ) (= outcome1 1)))
+
+(assert (=> (and (<= Attr0_X1 0.0) (<= Attr11_X1 11.0) (> Attr0_X1 0.0) (<= Attr5_X1 5.0) (<= Attr0_X1 0.0) (<= Attr5_X1 5.0) ) (= outcome1 0)))
+
+(assert (=> (and (<= Attr0_X1 0.0) (<= Attr11_X1 11.0) (> Attr0_X1 0.0) (<= Attr5_X1 5.0) (<= Attr0_X1 0.0) (> Attr5_X1 5.0) ) (= outcome1 1)))
+
+(assert (=> (and (<= Attr0_X1 0.0) (<= Attr11_X1 11.0) (> Attr0_X1 0.0) (<= Attr5_X1 5.0) (> Attr0_X1 0.0) ) (= outcome1 1)))
+
+(assert (=> (and (<= Attr0_X1 0.0) (<= Attr11_X1 11.0) (> Attr0_X1 0.0) (> Attr5_X1 5.0) (<= Attr8_T1 8.0) (<= Attr2_X1 2.0) ) (= outcome1 1)))
+
+(assert (=> (and (<= Attr0_X1 0.0) (<= Attr11_X1 11.0) (> Attr0_X1 0.0) (> Attr5_X1 5.0) (<= Attr8_T1 8.0) (> Attr2_X1 2.0) ) (= outcome1 0)))
+
+(assert (=> (and (<= Attr0_X1 0.0) (<= Attr11_X1 11.0) (> Attr0_X1 0.0) (> Attr5_X1 5.0) (> Attr8_T1 8.0) ) (= outcome1 1)))
+
+(assert (=> (and (<= Attr0_X1 0.0) (> Attr11_X1 11.0) ) (= outcome1 1)))
+
+(assert (=> (and (> Attr0_X1 0.0) (<= Attr4_X1 4.0) ) (= outcome1 1)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (<= Attr11_X1 11.0) (<= Attr3_X1 3.0) ) (= outcome1 1)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (<= Attr11_X1 11.0) (> Attr3_X1 3.0) (<= Attr11_X1 11.0) ) (= outcome1 0)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (<= Attr11_X1 11.0) (> Attr3_X1 3.0) (> Attr11_X1 11.0) (<= Attr1_X1 1.0) (<= Attr5_X1 5.0) (<= Attr11_X1 11.0) (<= Attr6_X1 6.0) (<= Attr2_X1 2.0) (<= Attr8_T1 8.0) (<= Attr4_X1 4.0) ) (= outcome1 1)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (<= Attr11_X1 11.0) (> Attr3_X1 3.0) (> Attr11_X1 11.0) (<= Attr1_X1 1.0) (<= Attr5_X1 5.0) (<= Attr11_X1 11.0) (<= Attr6_X1 6.0) (<= Attr2_X1 2.0) (<= Attr8_T1 8.0) (> Attr4_X1 4.0) (<= Attr0_X1 0.0) (<= Attr11_X1 11.0) ) (= outcome1 0)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (<= Attr11_X1 11.0) (> Attr3_X1 3.0) (> Attr11_X1 11.0) (<= Attr1_X1 1.0) (<= Attr5_X1 5.0) (<= Attr11_X1 11.0) (<= Attr6_X1 6.0) (<= Attr2_X1 2.0) (<= Attr8_T1 8.0) (> Attr4_X1 4.0) (<= Attr0_X1 0.0) (> Attr11_X1 11.0) (<= Attr3_X1 3.0) (<= Attr5_X1 5.0) ) (= outcome1 1)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (<= Attr11_X1 11.0) (> Attr3_X1 3.0) (> Attr11_X1 11.0) (<= Attr1_X1 1.0) (<= Attr5_X1 5.0) (<= Attr11_X1 11.0) (<= Attr6_X1 6.0) (<= Attr2_X1 2.0) (<= Attr8_T1 8.0) (> Attr4_X1 4.0) (<= Attr0_X1 0.0) (> Attr11_X1 11.0) (<= Attr3_X1 3.0) (> Attr5_X1 5.0) ) (= outcome1 0)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (<= Attr11_X1 11.0) (> Attr3_X1 3.0) (> Attr11_X1 11.0) (<= Attr1_X1 1.0) (<= Attr5_X1 5.0) (<= Attr11_X1 11.0) (<= Attr6_X1 6.0) (<= Attr2_X1 2.0) (<= Attr8_T1 8.0) (> Attr4_X1 4.0) (<= Attr0_X1 0.0) (> Attr11_X1 11.0) (> Attr3_X1 3.0) ) (= outcome1 0)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (<= Attr11_X1 11.0) (> Attr3_X1 3.0) (> Attr11_X1 11.0) (<= Attr1_X1 1.0) (<= Attr5_X1 5.0) (<= Attr11_X1 11.0) (<= Attr6_X1 6.0) (<= Attr2_X1 2.0) (<= Attr8_T1 8.0) (> Attr4_X1 4.0) (> Attr0_X1 0.0) ) (= outcome1 0)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (<= Attr11_X1 11.0) (> Attr3_X1 3.0) (> Attr11_X1 11.0) (<= Attr1_X1 1.0) (<= Attr5_X1 5.0) (<= Attr11_X1 11.0) (<= Attr6_X1 6.0) (<= Attr2_X1 2.0) (> Attr8_T1 8.0) ) (= outcome1 1)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (<= Attr11_X1 11.0) (> Attr3_X1 3.0) (> Attr11_X1 11.0) (<= Attr1_X1 1.0) (<= Attr5_X1 5.0) (<= Attr11_X1 11.0) (<= Attr6_X1 6.0) (> Attr2_X1 2.0) (<= Attr6_X1 6.0) ) (= outcome1 1)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (<= Attr11_X1 11.0) (> Attr3_X1 3.0) (> Attr11_X1 11.0) (<= Attr1_X1 1.0) (<= Attr5_X1 5.0) (<= Attr11_X1 11.0) (<= Attr6_X1 6.0) (> Attr2_X1 2.0) (> Attr6_X1 6.0) ) (= outcome1 0)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (<= Attr11_X1 11.0) (> Attr3_X1 3.0) (> Attr11_X1 11.0) (<= Attr1_X1 1.0) (<= Attr5_X1 5.0) (<= Attr11_X1 11.0) (> Attr6_X1 6.0) ) (= outcome1 1)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (<= Attr11_X1 11.0) (> Attr3_X1 3.0) (> Attr11_X1 11.0) (<= Attr1_X1 1.0) (<= Attr5_X1 5.0) (> Attr11_X1 11.0) ) (= outcome1 1)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (<= Attr11_X1 11.0) (> Attr3_X1 3.0) (> Attr11_X1 11.0) (<= Attr1_X1 1.0) (> Attr5_X1 5.0) ) (= outcome1 0)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (<= Attr11_X1 11.0) (> Attr3_X1 3.0) (> Attr11_X1 11.0) (> Attr1_X1 1.0) ) (= outcome1 1)))
+
+(assert (=> (and (> Attr0_X1 0.0) (> Attr4_X1 4.0) (> Attr11_X1 11.0) ) (= outcome1 1)))
+
+(assert (=  Attr0_X0 Attr0_X1))
+(assert (=  Attr1_X0 Attr1_X1))
+(assert (=  Attr2_X0 Attr2_X1))
+(assert (=  Attr3_X0 Attr3_X1))
+(assert (=  Attr4_X0 Attr4_X1))
+(assert (=  Attr5_X0 Attr5_X1))
+(assert (=  Attr6_X0 Attr6_X1))
+(assert (not(= Attr7_T0 Attr7_T1)))
+(assert (not(= Attr8_T0 Attr8_T1)))
+(assert (=  Attr9_X0 Attr9_X1))
+(assert (=  Attr10_X0 Attr10_X1))
+(assert (=  Attr11_X0 Attr11_X1))
+(assert (=  Attr12_X0 Attr12_X1))
+(assert (=  Attr0_X0 Attr0_X1))
+(assert (=  Attr1_X0 Attr1_X1))
+(assert (=  Attr2_X0 Attr2_X1))
+(assert (=  Attr3_X0 Attr3_X1))
+(assert (=  Attr4_X0 Attr4_X1))
+(assert (=  Attr5_X0 Attr5_X1))
+(assert (=  Attr6_X0 Attr6_X1))
+(assert (not(= Attr7_T0 Attr7_T1)))
+(assert (not(= Attr8_T0 Attr8_T1)))
+(assert (=  Attr9_X0 Attr9_X1))
+(assert (=  Attr10_X0 Attr10_X1))
+(assert (=  Attr11_X0 Attr11_X1))
+(assert (=  Attr12_X0 Attr12_X1))
+(assert (=  Attr0_X0 Attr0_X1))
+(assert (=  Attr1_X0 Attr1_X1))
+(assert (=  Attr2_X0 Attr2_X1))
+(assert (=  Attr3_X0 Attr3_X1))
+(assert (=  Attr4_X0 Attr4_X1))
+(assert (=  Attr5_X0 Attr5_X1))
+(assert (=  Attr6_X0 Attr6_X1))
+(assert (not(= Attr7_T0 Attr7_T1)))
+(assert (not(= Attr8_T0 Attr8_T1)))
+(assert (=  Attr9_X0 Attr9_X1))
+(assert (=  Attr10_X0 Attr10_X1))
+(assert (=  Attr11_X0 Attr11_X1))
+(assert (=  Attr12_X0 Attr12_X1))
+(assert(not (=  outcome0 outcome1)))
+(assert(not (=  outcome0 outcome1)))
+(assert(not (=  outcome0 outcome1)))
+
+ (check-sat) 
+ (get-model)

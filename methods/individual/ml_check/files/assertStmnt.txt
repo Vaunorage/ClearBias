@@ -1,0 +1,3 @@
+(assert(not (=  outcome0 outcome1)))
+(assert(not (=  outcome0 outcome1)))
+(assert(not (=  outcome0 outcome1)))

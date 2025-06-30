@@ -1,0 +1,1 @@
+(assert (=> (and (<= Attr0_X1 55.5) (<= Attr11_X1 21.5) (<= Attr0_X1 43.5) ) (= outcome 1)))

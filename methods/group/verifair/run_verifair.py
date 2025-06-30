@@ -5,8 +5,8 @@ import numpy as np
 from itertools import combinations
 from data_generator.main import get_real_data
 from methods.utils import train_sklearn_model
-from methods.individual.verifair.verify.verify import verify
-from methods.individual.verifair.util.log import log, setCurOutput, INFO
+from methods.group.verifair.verify.verify import verify
+from methods.group.verifair.util.log import log, setCurOutput, INFO
 
 
 class SklearnModelSampler:
@@ -180,8 +180,6 @@ def find_discrimination_with_verifair(dataset_name='adult',
 
 
 if __name__ == '__main__':
-    log_file_path = os.path.join(os.path.dirname(__file__), 'verifair_analysis.log')
-    setCurOutput(log_file_path)
     log('Starting VeriFair analysis script...', INFO)
 
     # To automatically analyze all combinations of protected attributes:
@@ -191,7 +189,6 @@ if __name__ == '__main__':
     )
 
     log('Script finished.', INFO)
-    print(f"\nVeriFair analysis complete. Results logged to: {log_file_path}")
 
     if not summary_df.empty:
         print("\n--- Analysis Summary ---")
