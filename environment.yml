@@ -48,3 +48,4 @@ dependencies:
     - feature-engine
     - python-sat
     - gpkit
+    - Cython
