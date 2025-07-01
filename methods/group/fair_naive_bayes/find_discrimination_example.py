@@ -15,7 +15,7 @@ except NameError:
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from data_generator.main import get_real_data
+from data_generator.main import get_real_data, generate_optimal_discrimination_data
 # We need these functions to manually calculate the NB parameters from a DataFrame
 from methods.group.fair_naive_bayes.parameter_learner.data_processor import (
     get_params_dict,
@@ -37,7 +37,7 @@ def find_discrimination_example():
     dataset_name = 'adult'
     print(f"Loading '{dataset_name}' dataset using get_real_data...")
     try:
-        data, schema = get_real_data(dataset_name, use_cache=True)
+        data, schema = generate_optimal_discrimination_data(use_cache=True)
         df = data.dataframe
     except Exception as e:
         print(f"Error loading data: {e}")
