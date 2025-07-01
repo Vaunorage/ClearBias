@@ -23,7 +23,7 @@ from sklearn.tree import DecisionTreeClassifier
 from methods.group.justicia.justicia.poison_attack_wrap import Poison_Model
 
 
-class Metric():
+class Metric:
 
     def __init__(self, model, data, sensitive_attributes, dependency_graph=None, mediator_attributes=[], major_group={}, encoding="Enum", filename="sample.sdimacs", verbose=True, feature_threshold=0, timeout=900, discretization_bins=10, dag_threshold=0.001):
         self.encoding = encoding

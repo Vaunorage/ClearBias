@@ -3,7 +3,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python>=3.12
+  - python=3.11  # Changed from >=3.12 to 3.11 for better compatibility
   - matplotlib
   - pandas
   - pytest
@@ -17,7 +17,8 @@ dependencies:
   - scikit-image
   - optuna
   - sqlalchemy
-  - numpy
+  - numpy>=1.21,<1.24  # Specify compatible numpy version
+  - networkx>=2.8,<3.0  # Add networkx constraint for pgmpy compatibility
   - rpy2
   - six
   - prettytable
@@ -50,3 +51,4 @@ dependencies:
     - python-sat
     - gpkit
     - Cython
+    - xarray<2023.1.0  # Add xarray with version constraint for pysat compatibility

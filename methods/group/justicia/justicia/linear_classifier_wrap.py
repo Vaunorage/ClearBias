@@ -1,6 +1,6 @@
 # wrapper for logistic regression - Updated with Z3 solver
 import z3
-from fractions import gcd
+import math  # Use math.gcd instead of fractions.gcd
 from functools import reduce
 import pandas as pd
 from sklearn.model_selection import train_test_split, KFold
@@ -31,7 +31,7 @@ class linear_classifier_wrap_Wrapper():
     """
 
     def _find_gcd(self, list):
-        x = reduce(gcd, list)
+        x = reduce(math.gcd, list)
         return x
 
     def __init__(self, weights, attributes, sensitive_attributes, bias, converted_data,
