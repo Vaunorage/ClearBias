@@ -16,7 +16,7 @@ from methods.group.justicia.justicia.subsetsum import SubSetSumCount
 
 
 # supporting classifiers
-from pyrulelearn.imli import imli
+
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
@@ -72,14 +72,14 @@ class Metric:
         if(self.encoding == "best"):
             if(self._model_name == "linear-model"):
                 self.encoding = "Learn"
-            elif(self._model_name in ['CNF', 'decision-tree']):
+            elif(self._model_name in ['decision-tree']):
                 self.encoding = "Enum"
             else:
                 raise ValueError((self._model_name))
         elif(self.encoding == "best-correlated"):
             if(self._model_name == "linear-model"):
                 self.encoding = "Learn-dependency"
-            elif(self._model_name in ['CNF', 'decision-tree']):
+            elif(self._model_name in ['decision-tree']):
                 self.encoding = "Enum-dependency"
             else:
                 raise ValueError((self._model_name))
@@ -87,8 +87,6 @@ class Metric:
             pass
 
     def __repr__(self):
-        if(self._model_name == "CNF"):
-            return "\nJusticia\n - model: pyrulelearn\n" + '\n'.join(" - %s: %s" % (item, value) for (item, value) in vars(self).items() if (not item.startswith("_") and item != "model"))
 
         return "\nJusticia\n" + '\n'.join(" - %s: %s" % (item, value) for (item, value) in vars(self).items() if not item.startswith("_"))
 
@@ -909,10 +907,7 @@ class Metric:
                     mask = mask & (self._data[_feature] == _threshold_1)
                 else:
                     raise ValueError(_comparator_2)
-            elif(self._model_name == "CNF"):
-                (_feature,
-                 _threshold) = self._variable_attribute_map[dominating_var]
-                mask = mask & (self._data[_feature] == _threshold)
+
             else:
                 raise ValueError(self._model_name)
         else:
@@ -1092,14 +1087,6 @@ class Metric:
         return max_value, min_value
 
     def _retrieve_model_name(self):
-        if(isinstance(self.model, imli)):
-            return "CNF"
-        if(isinstance(self.model, DecisionTreeClassifier)):
-            return "decision-tree"
-        if(isinstance(self.model, SVC)):
-            return "linear-model"
-        if(isinstance(self.model, LogisticRegression)):
-            return "linear-model"
         if(isinstance(self.model, Poison_Model)):
             return "linear-model"
         raise ValueError(str(self.model) + " not supported in Justicia")
@@ -1161,7 +1148,7 @@ class Metric:
         for attribute in attribute_variable_map:
             _feature = None
             if(type(attribute) == tuple):
-                if(self._model_name in ["decision-tree", "CNF"]):
+                if(self._model_name in ["decision-tree"]):
                     (_feature, _threshold) = attribute
 
                 elif(self._model_name == "linear-model"):
