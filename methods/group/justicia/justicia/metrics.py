@@ -49,6 +49,8 @@ class Metric:
         self._num_clauses = []
         self._dag_threshold = dag_threshold
         self._discretization_bins = discretization_bins
+        self.most_favored_group = {}
+        self.least_favored_group = {}
         """
         Path-specific causal fairness
         """
@@ -518,9 +520,15 @@ class Metric:
             _sensitive_attributes.append(_group)
 
         # For each combination, update answer
+        if self._verbose:
+            print("Sensitive attributes for iteration:", _sensitive_attributes)
+
         min_value = 1
         max_value = 0
         _combinations = list(itertools.product(*_sensitive_attributes))
+
+        if self._verbose:
+            print(f"Number of combinations to check: {len(_combinations)}")
         for configuration in _combinations:
             if (self._verbose):
                 print("configuration: ", configuration, ":",
