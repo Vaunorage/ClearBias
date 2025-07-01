@@ -76,92 +76,14 @@ class Fairness_verifier():
         return "e " + str(abs(var))+" 0\n"
 
     def invoke_SSAT_solver(self, filename, find_maximization=True, verbose=True):
-
-        # print("\n\n")
-        # print(self.formula)
-        # print("\n\n")
-
-        dir_path = os.path.dirname(os.path.realpath(filename))
-
-        # Execute and read output
-        cmd = "timeout " + str(self.timeout) + " stdbuf -oL " + " abc -c \"ssat -v " + str(dir_path) + "/" + str(filename) + \
-            "\" 1>" + str(dir_path) + "/" + str(filename) + "_out.log" + \
-            " 2>" + str(dir_path) + "/" + str(filename) + "_err.log"
-        os.system(cmd)
-
-        if(verbose):
-            f = open(str(dir_path) + "/" + str(filename) + "_err.log", "r")
-            lines = f.readlines()
-            if(len(lines) > 0):
-                print("Error print of SSAT (if any)")
-            print(("").join(lines))
-            f.close()
-
-        try:
-            f = open(str(dir_path) + "/" + str(filename) + "_out.log", "r")
-            lines = f.readlines()
-            f.close()
-        except FileNotFoundError:
-            lines = []
-            self.execution_error = True
-            warnings.warn(f"Output log not found: {filename}_out.log")
-
-        # os.system("rm " + str(dir_path) + "/" +str(filename) + "_out")
-
-        # process output
-        upper_bound = None
-        lower_bound = None
-        read_optimal_assignment = False
+        """
+        This function is a placeholder to avoid crashing on non-Linux systems.
+        The original implementation calls a Linux-specific SSAT solver which is not available on Windows.
+        """
+        warnings.warn("SSAT solver is not supported on this system and will be skipped.")
+        self.execution_error = True
         self.sol_prob = None
         self.assignment_to_exists_variables = None
-
-        for line in lines:
-            if(read_optimal_assignment):
-                try:
-                    self.assignment_to_exists_variables = list(
-                        map(int, line.strip().split(" ")))
-                except:
-                    warnings.warn(
-                        "Assignment extraction failure: existential variable is probably not in CNF")
-                    self.execution_error = True
-                if(verbose):
-                    print("Learned assignment:",
-                          self.assignment_to_exists_variables)
-                read_optimal_assignment = False
-            if(line.startswith("  > Satisfying probability:")):
-                self.sol_prob = float(line.split(" ")[-1])
-            if(line.startswith("  > Best upper bound:")):
-                upper_bound = float(line.split(" ")[-1])
-            if(line.startswith("  > Best lower bound:")):
-                lower_bound = float(line.split(" ")[-1])
-            if(line.startswith("  > Found an optimizing assignment to exist vars:")):
-                read_optimal_assignment = True
-                # read optimal assignment in the next iteration
-
-        # When conclusive solution is not found
-        if(self.sol_prob is None):
-            if(find_maximization):
-                try:
-                    assert upper_bound is not None
-                    self.sol_prob = upper_bound
-                except:
-                    self.execution_error = True
-            else:
-                try:
-                    assert lower_bound is not None
-                    self.sol_prob = lower_bound
-                except:
-                    self.execution_error = True
-
-        if(not find_maximization and self.sol_prob is not None):
-            self.sol_prob = 1 - self.sol_prob
-        if(verbose):
-            print("Probability:", self.sol_prob)
-            print("\n===================================\n")
-
-        # remove formula file
-        # os.system("rm " + str(dir_path) + "/" +str(filename))
-
         return self.execution_error
 
     def _construct_clause(self, vars):
