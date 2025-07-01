@@ -22,7 +22,6 @@ def find_discrimination_with_justicia(dataset_name='adult', model_type='rf'):
         target_col=discrimination_data.outcome_column,
         sensitive_attrs=discrimination_data.protected_attributes
     )
-    accuracy = metrics['accuracy']
 
     # Justicia works with the test set
     test_df = X_test.copy()
@@ -36,8 +35,40 @@ def find_discrimination_with_justicia(dataset_name='adult', model_type='rf'):
 
     # Run Justicia
     metric = Metric(model=model, data=test_df, sensitive_attributes=sensitive_attributes, verbose=False)
-    res = metric.compute()
-    print(res)
+    metric.compute()
+
+    # --- New code to format the output ---
+    most_favored = metric.most_favored_group
+    least_favored = metric.least_favored_group
+
+    subgroups_data = []
+    if most_favored:
+        subgroups_data.append({'Group Type': 'Most Favored', **most_favored})
+    if least_favored:
+        subgroups_data.append({'Group Type': 'Least Favored', **least_favored})
+
+    if subgroups_data:
+        # Decode the subgroup values from numerical back to original categories
+        decoded_subgroups = []
+        for subgroup in subgroups_data:
+            decoded_subgroup = {'Group Type': subgroup['Group Type']}
+            # Create a reverse map for easier lookup
+            reverse_maps = {attr: {v: k for k, v in mapping.items()} for attr, mapping in data_schema.category_maps.items()}
+
+            for key, value in subgroup.items():
+                if key in reverse_maps:
+                    decoded_subgroup[key] = reverse_maps[key].get(value, value) # Get decoded value, or original if not found
+                elif key != 'Group Type':
+                     decoded_subgroup[key] = value
+            decoded_subgroups.append(decoded_subgroup)
+
+        subgroups_df = pd.DataFrame(decoded_subgroups).set_index('Group Type')
+        # Fill NaN values for better display
+        subgroups_df = subgroups_df.fillna('')
+        print("Justicia identified the following subgroups with the largest difference in outcomes:")
+        print(subgroups_df.to_string())
+    else:
+        print("Justicia did not identify any discriminated subgroups.")
 
 
 if __name__ == '__main__':
