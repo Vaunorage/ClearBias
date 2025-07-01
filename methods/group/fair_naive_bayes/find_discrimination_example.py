@@ -88,7 +88,7 @@ def find_discrimination_example():
     root_params, leaf_params = convert_result_to_parameters(prob_dict, sensitive_var_ids, bn_dict, target_name)
 
     # --- 5. Find Discriminating Patterns ---
-    delta = 0.01  # Fairness threshold
+    delta = 0.001  # Fairness threshold (lowered to detect weaker signals)
     k = 5        # Number of patterns to find
     print(f"\nSearching for the top {k} discriminating patterns with a threshold of {delta}...")
     
