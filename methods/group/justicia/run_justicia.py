@@ -36,7 +36,8 @@ def find_discrimination_with_justicia(dataset_name='adult', model_type='rf'):
 
     # Run Justicia
     metric = Metric(model=model, data=test_df, sensitive_attributes=sensitive_attributes, verbose=False)
-    metric.compute()
+    res = metric.compute()
+    print(res)
 
 
 if __name__ == '__main__':
