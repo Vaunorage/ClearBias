@@ -53,4 +53,4 @@ def find_discrimination_with_justicia(dataset_name='adult', model_type='rf'):
 
 
 if __name__ == '__main__':
-    find_discrimination_with_justicia(dataset_name='adult')
+    find_discrimination_with_justicia(dataset_name='adult', model_type='dt')
