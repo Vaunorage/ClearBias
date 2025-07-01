@@ -89,25 +89,24 @@ def run_naive_bayes(data: DiscriminationData):
         logger.info("\nNo discriminating patterns found with the given threshold.")
     else:
         logger.info(f"\n--- Top {len(raw_patterns)} Discriminating Patterns Found ---")
-        all_attributes = data.attr_columns
         for i, pattern in enumerate(raw_patterns):
-            case_id = i + 1
-            subgroup_features = pattern.base + pattern.sens
+            base_features = {bn_dict.get(fid) : val for fid, val in pattern.base}
+            base_features = {**base_features, **{e:None for e in data.attr_columns if e not in base_features}}
+            base_features['nature'] = 'base'
 
-            for fid, val in subgroup_features:
-                # Create a new row for each feature in the subgroup
-                row = {attr: None for attr in all_attributes}
-                row['case_id'] = case_id
+            sens_features = {bn_dict.get(fid) : val for fid, val in pattern.sens}
+            sens_features = {**sens_features, **{e:None for e in data.attr_columns if e not in sens_features}}
+            sens_features['nature'] = 'sensitive'
 
-                feature_name = bn_dict.get(fid)
-                if feature_name in row:
-                    row[feature_name] = val
+            pattern_info = {
+                'case_id': i + 1,
+                'discrimination_score': pattern.score,
+                'p_unfavorable_sensitive': pattern.pDXY,
+                'p_unfavorable_others': pattern.pD_XY,
+            }
 
-                # Add other pattern-level info to each row
-                row['discrimination_score'] = pattern.score
-                row['p_unfavorable_sensitive'] = pattern.pDXY
-                row['p_unfavorable_others'] = pattern.pD_XY
-                pattern_results.append(row)
+            pattern_results.append({**pattern_info, **base_features})
+            pattern_results.append({**pattern_info, **sens_features})
 
     res_df = pd.DataFrame(pattern_results)
 
