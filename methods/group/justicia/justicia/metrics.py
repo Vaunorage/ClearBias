@@ -1052,6 +1052,12 @@ class Metric:
         return max_value, min_value
 
     def _retrieve_model_name(self):
+        if(isinstance(self.model, DecisionTreeClassifier)):
+            return "decision-tree"
+        if(isinstance(self.model, SVC)):
+            return "linear-model"
+        if(isinstance(self.model, LogisticRegression)):
+            return "linear-model"
         if(isinstance(self.model, Poison_Model)):
             return "linear-model"
         raise ValueError(str(self.model) + " not supported in Justicia")
