@@ -1,6 +1,6 @@
 import os
 import pandas as pd
-from data_generator.main import get_real_data
+from data_generator.main import get_real_data, generate_optimal_discrimination_data
 from methods.utils import train_sklearn_model
 from justicia.metrics import Metric
 import justicia.utils
@@ -14,7 +14,7 @@ def find_discrimination_with_justicia(dataset_name='adult', model_type='rf'):
     :param model_type: The type of model to train ('rf', 'lr', etc.).
     """
 
-    discrimination_data, data_schema = get_real_data(dataset_name, use_cache=True)
+    discrimination_data = generate_optimal_discrimination_data(use_cache=True)
 
     model, _, X_test, _, y_test, _, metrics = train_sklearn_model(
         data=discrimination_data.training_dataframe,
@@ -53,7 +53,7 @@ def find_discrimination_with_justicia(dataset_name='adult', model_type='rf'):
         for subgroup in subgroups_data:
             decoded_subgroup = {'Group Type': subgroup['Group Type']}
             # Create a reverse map for easier lookup
-            reverse_maps = {attr: {v: k for k, v in mapping.items()} for attr, mapping in data_schema.category_maps.items()}
+            reverse_maps = {attr: {v: k for k, v in mapping.items()} for attr, mapping in discrimination_data.category_maps.items()}
 
             for key, value in subgroup.items():
                 if key in reverse_maps:

@@ -10,7 +10,6 @@ from itertools import chain
 from time import time
 from sklearn.metrics import accuracy_score, f1_score
 
-
 from methods.group.justicia.justicia.subsetsum import SubSetSumCount
 # from justicia.subsetsum_backup import SubSetSumCount
 
@@ -25,13 +24,15 @@ from methods.group.justicia.justicia.poison_attack_wrap import Poison_Model
 
 class Metric:
 
-    def __init__(self, model, data, sensitive_attributes, dependency_graph=None, mediator_attributes=[], major_group={}, encoding="Enum", filename="sample.sdimacs", verbose=True, feature_threshold=0, timeout=900, discretization_bins=10, dag_threshold=0.001):
+    def __init__(self, model, data, sensitive_attributes, dependency_graph=None, mediator_attributes=[], major_group={},
+                 encoding="Enum", filename="sample.sdimacs", verbose=True, feature_threshold=0, timeout=900,
+                 discretization_bins=10, dag_threshold=0.001):
         self.encoding = encoding
         self.model = model
         self._model_name = self._retrieve_model_name()
         self._data = data
         self.given_sensitive_attributes = sensitive_attributes
-        if(dependency_graph is None):
+        if (dependency_graph is None):
             self._given_dependency_graph = None
         else:
             self._given_dependency_graph = dependency_graph.copy()
@@ -69,17 +70,17 @@ class Metric:
         self.time_taken = time() - start_time
 
     def _encoding_selection(self):
-        if(self.encoding == "best"):
-            if(self._model_name == "linear-model"):
+        if (self.encoding == "best"):
+            if (self._model_name == "linear-model"):
                 self.encoding = "Learn"
-            elif(self._model_name in ['decision-tree']):
+            elif (self._model_name in ['decision-tree']):
                 self.encoding = "Enum"
             else:
                 raise ValueError((self._model_name))
-        elif(self.encoding == "best-correlated"):
-            if(self._model_name == "linear-model"):
+        elif (self.encoding == "best-correlated"):
+            if (self._model_name == "linear-model"):
                 self.encoding = "Learn-dependency"
-            elif(self._model_name in ['decision-tree']):
+            elif (self._model_name in ['decision-tree']):
                 self.encoding = "Enum-dependency"
             else:
                 raise ValueError((self._model_name))
@@ -88,8 +89,11 @@ class Metric:
 
     def __repr__(self):
         if hasattr(self, '_model_name'):
-            return "\nJusticia\n - model: {}\n".format(self._model_name) + '\n'.join(" - %s: %s" % (item, value) for (item, value) in vars(self).items() if (not item.startswith("_") and item != "model"))
-        return "\nJusticia\n" + '\n'.join(" - %s: %s" % (item, value) for (item, value) in vars(self).items() if not item.startswith("_"))
+            return "\nJusticia\n - model: {}\n".format(self._model_name) + '\n'.join(
+                " - %s: %s" % (item, value) for (item, value) in vars(self).items() if
+                (not item.startswith("_") and item != "model"))
+        return "\nJusticia\n" + '\n'.join(
+            " - %s: %s" % (item, value) for (item, value) in vars(self).items() if not item.startswith("_"))
 
     def compute(self):
         start_time = time()
@@ -160,7 +164,7 @@ class Metric:
         # Some variables which are required later
         self._num_attributes_neg = None
         self._discretized_group_attributes = []
-        if(self._model_name == "linear-model"):
+        if (self._model_name == "linear-model"):
 
             self._original_weights = self.model.coef_[0].copy()
 
@@ -182,18 +186,19 @@ class Metric:
 
             for num_bins in range(1, self._discretization_bins):
                 self._attributes, self._sensitive_attributes, self._probs, self._given_weights, self._variable_attribute_map, self._column_info, converted_df, self._discretized_group_attributes = utils.get_statistics_for_linear_classifier_wrap(
-                    self._data.copy(), self._original_weights, self.given_sensitive_attributes, num_bins=num_bins, verbose=self._verbose)
+                    self._data.copy(), self._original_weights, self.given_sensitive_attributes, num_bins=num_bins,
+                    verbose=self._verbose)
 
                 # consider important features only
-                if(self._feature_threshold is not None):
+                if (self._feature_threshold is not None):
                     feature_importance = abs(self._given_weights)
                     feature_importance = 100.0 * \
-                        (feature_importance / feature_importance.max())
+                                         (feature_importance / feature_importance.max())
                     threshold = np.percentile(
                         np.array(feature_importance), float(self._feature_threshold))
                     self._weights = []
                     for i in range(len(self._given_weights)):
-                        if(feature_importance[i] < threshold):
+                        if (feature_importance[i] < threshold):
                             self._weights.append(0)
                         else:
                             self._weights.append(self._given_weights[i])
@@ -204,7 +209,7 @@ class Metric:
 
                 measured_accuracy = f1_score(self.model.predict(
                     self._data), predict_lin(converted_df, self._weights, self._bias))
-                if(measured_accuracy > best_accuracy):
+                if (measured_accuracy > best_accuracy):
                     best_accuracy = measured_accuracy
                     best_config["attributes"] = self._attributes
                     best_config["sensitive_attributes"] = self._sensitive_attributes
@@ -230,8 +235,11 @@ class Metric:
             self._discretized_group_attributes = best_config["discretized_group_attributes"]
 
             # get classifier
-            lr = linear_classifier_wrap_Wrapper(weights=self._weights, attributes=self._attributes, sensitive_attributes=self._sensitive_attributes, bias=self._bias,
-                                                converted_data=converted_df, original_model_prediction=self.model.predict(self._data), convert_to_cnf="Enum" in self.encoding, verbose=self._verbose)
+            lr = linear_classifier_wrap_Wrapper(weights=self._weights, attributes=self._attributes,
+                                                sensitive_attributes=self._sensitive_attributes, bias=self._bias,
+                                                converted_data=converted_df,
+                                                original_model_prediction=self.model.predict(self._data),
+                                                convert_to_cnf="Enum" in self.encoding, verbose=self._verbose)
             self._num_attributes = lr.num_attributes
             self._attributes = lr.attributes
             self._classifier = lr.classifier
@@ -239,7 +247,7 @@ class Metric:
             self._auxiliary_variables = lr.auxiliary_variables
             self._linear_model = lr
 
-            if(self._verbose):
+            if (self._verbose):
                 # print("Classifier:", self._classifier)
                 print("Translation accuracy", accuracy_score(self._linear_model.predict(
                     converted_df, self._linear_model.weights, self._linear_model.bias), self.model.predict(self._data)))
@@ -263,7 +271,7 @@ class Metric:
             #     self._sensitive_attributes_neg = lr_neg.sensitive_attributes
             #     self._auxiliary_variables_neg = lr_neg.auxiliary_variables
 
-        elif(self._model_name == "decision-tree"):
+        elif (self._model_name == "decision-tree"):
             _sensitive_attributes = utils.get_sensitive_attibutes(
                 self.given_sensitive_attributes, self._data.columns.to_list())
             dt_pos = dtWrapper(self.model, self._data, self._data.columns.tolist(
@@ -278,7 +286,7 @@ class Metric:
                 self._data, verbose=self._verbose)
             self._saved_dt_model = dt_pos
 
-            if("efficient" in self.encoding):
+            if ("efficient" in self.encoding):
                 dt_neg = dtWrapper(self.model, self._data, self._data.columns.tolist(
                 ), _sensitive_attributes, negate=True, verbose=False)
                 self._classifier_neg = dt_neg.classifier
@@ -295,8 +303,8 @@ class Metric:
 
         self._meta_sensitive_groups = []
         for _group in self._sensitive_attributes:
-            if(len(_group) == 1):
-                _group = [_group[0], -1*_group[0]]
+            if (len(_group) == 1):
+                _group = [_group[0], -1 * _group[0]]
             self._meta_sensitive_groups.append(len(_group))
 
         min_value = None
@@ -305,11 +313,11 @@ class Metric:
         self.most_favored_group = None
         self.least_favored_group = None
 
-        if("dependency" in self.encoding or self.encoding in ['Learn-correlation', 'Learn-efficient-correlation']):
+        if ("dependency" in self.encoding or self.encoding in ['Learn-correlation', 'Learn-efficient-correlation']):
             _sensitive_attributes = []
             for _group in self._sensitive_attributes:
-                if(len(_group) == 1):
-                    _group = [_group[0], -1*_group[0]]
+                if (len(_group) == 1):
+                    _group = [_group[0], -1 * _group[0]]
                 _sensitive_attributes.append(_group)
 
             # flatten to 1d list
@@ -320,7 +328,7 @@ class Metric:
 
             # construct conditional probability table based on dependency graph
             edges = None
-            if(self.encoding in ['Learn-correlation', 'Learn-efficient-correlation']):
+            if (self.encoding in ['Learn-correlation', 'Learn-efficient-correlation']):
                 edges, self._graph_edges = dependency_utils.compound_group_correlation(
                     self._sensitive_attributes, self._attributes, self._discretized_group_attributes)
             else:
@@ -328,23 +336,25 @@ class Metric:
                 Alternate approach: 1. probabilistic graphical model 2. Notears
                 """
 
-                if(self._given_dependency_graph is None):
-                    if(True):
+                if (self._given_dependency_graph is None):
+                    if (True):
                         """
                             Learn DAG
                         """
 
-                        if(False):
+                        if (False):
                             edges, self._graph_edges, flag = dependency_utils._call_notears(self._transform(
-                                self._data.copy()), self._sensitive_attributes, verbose=self._verbose, filename=self._filename)
-                            if(not flag):
+                                self._data.copy()), self._sensitive_attributes, verbose=self._verbose,
+                                filename=self._filename)
+                            if (not flag):
                                 print(
                                     "Notears cannot learn dependency within timeout!!")
                                 self._execution_error = True
                         else:
-                            edges, self._graph_edges, flag = dependency_utils._call_pgmpy(self._transform(self._data.copy(
-                            )), self._sensitive_attributes, verbose=self._verbose, threshold=self._dag_threshold)
-                            if(not flag):
+                            edges, self._graph_edges, flag = dependency_utils._call_pgmpy(
+                                self._transform(self._data.copy(
+                                )), self._sensitive_attributes, verbose=self._verbose, threshold=self._dag_threshold)
+                            if (not flag):
                                 print(
                                     "pgmpy cannot learn dependency within timeout!!")
                                 self._execution_error = True
@@ -370,7 +380,7 @@ class Metric:
             # edges = dependency_utils.refine_dependency_constraints(self._sensitive_attributes, edges)
 
             # parameter estimate
-            if(False):
+            if (False):
                 edge_weights = self._parameter_estimation_frequency(edges)
             else:
                 edge_weights = dependency_utils.Bayesian_estimate(
@@ -378,12 +388,12 @@ class Metric:
 
             self._time_taken_notears = time() - notears_time_start
 
-            if((self._model_name == "linear-model" and "Learn" in self.encoding)):
+            if ((self._model_name == "linear-model" and "Learn" in self.encoding)):
                 dependency = dependency_utils.Dependency(
                     [], {}, {}, self._num_attributes)
             else:
 
-                if(self._verbose):
+                if (self._verbose):
                     print("\n\nBefore encoding dependency")
                     print("Attribute variables:", self._attributes)
                     print("Auxiliary variables:", self._auxiliary_variables)
@@ -397,25 +407,27 @@ class Metric:
                     print("sensitive feature: ", self._sensitive_attributes)
 
                     # print("Neg classifier:", self._classifier_neg)
-                    if(self.encoding != "Enum-correlation"):
+                    if (self.encoding != "Enum-correlation"):
                         print("probabilities:", self._probs)
                     print("Dependency edges:", edges)
                     print("Original edges", self._graph_edges)
                     print("\n")
 
-                dependency = dependency_utils.Dependency(edges, edge_weights, self._probs, variable_header=self._num_attributes if self._num_attributes_neg is None else max(
-                    self._num_attributes, self._num_attributes_neg))
+                dependency = dependency_utils.Dependency(edges, edge_weights, self._probs,
+                                                         variable_header=self._num_attributes if self._num_attributes_neg is None else max(
+                                                             self._num_attributes, self._num_attributes_neg))
 
                 # redefine
                 # sensitive attribute can appear in auxuliary variable when it is a dependent node in the causal graph
                 # we avoid this case
                 self._attributes = list(set(
-                    [var for var in self._attributes if var not in dependency.auxiliary_variables] + dependency.attributes))
+                    [var for var in self._attributes if
+                     var not in dependency.auxiliary_variables] + dependency.attributes))
                 self._probs = dependency.probs
                 self._auxiliary_variables += [
                     var for var in dependency.auxiliary_variables if var not in all_sensitive_attributes]
 
-                if(self._verbose):
+                if (self._verbose):
                     """
                     print(dependency)
                     print("Attribute variables:", self._attributes)
@@ -427,17 +439,18 @@ class Metric:
                     print("\nMapping", dependency.introduced_variables_map)
                     print("\n\n\n")
 
-            if(self.encoding == "Enum-dependency"):
+            if (self.encoding == "Enum-dependency"):
                 self._encode_path_specific_causal_fairness(
                     variable_map=dependency.introduced_variables_map)
                 max_value, min_value = self._run_Enum(
                     dependency_constraints=dependency.CNF)
 
-            elif(self.encoding == "Learn-efficient-dependency" or self.encoding == "Learn-efficient-correlation"):
+            elif (self.encoding == "Learn-efficient-dependency" or self.encoding == "Learn-efficient-correlation"):
 
-                if(not ((self._model_name == "linear-model" and "Learn" in self.encoding))):
+                if (not ((self._model_name == "linear-model" and "Learn" in self.encoding))):
                     self._attributes_neg = list(set(
-                        [var for var in self._attributes_neg if var not in dependency.auxiliary_variables] + dependency.attributes))
+                        [var for var in self._attributes_neg if
+                         var not in dependency.auxiliary_variables] + dependency.attributes))
                     self._auxiliary_variables_neg += [
                         var for var in dependency.auxiliary_variables if var not in all_sensitive_attributes]
 
@@ -446,7 +459,7 @@ class Metric:
                 max_value, min_value = self._run_Learn_efficient(
                     dependency_constraints=dependency.CNF, edge_weights=edge_weights)
 
-            elif(self.encoding == "Learn-dependency" or self.encoding == "Learn-correlation"):
+            elif (self.encoding == "Learn-dependency" or self.encoding == "Learn-correlation"):
                 self._encode_path_specific_causal_fairness(
                     variable_map=dependency.introduced_variables_map)
                 max_value, min_value = self._run_Learn(
@@ -455,28 +468,28 @@ class Metric:
             else:
                 raise ValueError(self.encoding)
 
-        elif(self.encoding == "Enum-correlation"):
+        elif (self.encoding == "Enum-correlation"):
 
             max_value, min_value = self._run_Enum_correlation()
 
         # Base encoding
-        elif(self.encoding == "Enum"):
+        elif (self.encoding == "Enum"):
             self._encode_path_specific_causal_fairness()
             max_value, min_value = self._run_Enum()
 
-        elif(self.encoding == "Learn-efficient"):
+        elif (self.encoding == "Learn-efficient"):
             self._encode_path_specific_causal_fairness()
             max_value, min_value = self._run_Learn_efficient()
 
-        elif(self.encoding == "Learn"):
+        elif (self.encoding == "Learn"):
             self._encode_path_specific_causal_fairness()
             max_value, min_value = self._run_Learn()
         else:
             raise ValueError
 
-        if(self._execution_error == True):
+        if (self._execution_error == True):
             # print("Never reaches here")
-            if(self._verbose):
+            if (self._verbose):
                 print("Execution error occured")
             self.statistical_parity_difference = None
             self.disparate_impact_ratio = None
@@ -484,24 +497,24 @@ class Metric:
             return
 
         self.statistical_parity_difference = max_value - min_value
-        if(max_value == min_value):
+        if (max_value == min_value):
             self.disparate_impact_ratio = 1
-        elif(max_value == 0):
+        elif (max_value == 0):
             self.disparate_impact_ratio = float("inf")
         else:
-            self.disparate_impact_ratio = float(min_value/max_value)
+            self.disparate_impact_ratio = float(min_value / max_value)
 
     def _run_Enum(self, dependency_constraints=[]):
 
-        if(self._verbose > 1):
+        if (self._verbose > 1):
             print("\nProbabilities:")
             print(self._probs)
 
         # prepare for combination
         _sensitive_attributes = []
         for _group in self._sensitive_attributes:
-            if(len(_group) == 1):
-                _group = [_group[0], -1*_group[0]]
+            if (len(_group) == 1):
+                _group = [_group[0], -1 * _group[0]]
             _sensitive_attributes.append(_group)
 
         # For each combination, update answer
@@ -509,27 +522,29 @@ class Metric:
         max_value = 0
         _combinations = list(itertools.product(*_sensitive_attributes))
         for configuration in _combinations:
-            if(self._verbose):
+            if (self._verbose):
                 print("configuration: ", configuration, ":",
                       self._get_group_from_configuration(configuration))
 
             fv = Fairness_verifier(timeout=float(
-                self._timeout/len(_combinations)))
-            fv.encoding_Enum_SSAT(self._classifier, self._attributes, self._sensitive_attributes, self._auxiliary_variables, self._probs, self._filename,
-                                  dependency_constraints=dependency_constraints, sensitive_attributes_assignment=list(configuration), verbose=self._verbose)
+                self._timeout / len(_combinations)))
+            fv.encoding_Enum_SSAT(self._classifier, self._attributes, self._sensitive_attributes,
+                                  self._auxiliary_variables, self._probs, self._filename,
+                                  dependency_constraints=dependency_constraints,
+                                  sensitive_attributes_assignment=list(configuration), verbose=self._verbose)
             flag = fv.invoke_SSAT_solver(self._filename, verbose=self._verbose)
 
             # print(fv.formula)
 
-            if(flag == True):
+            if (flag == True):
                 self._execution_error = True
                 break
 
-            if(min_value > fv.sol_prob):
+            if (min_value > fv.sol_prob):
                 min_value = fv.sol_prob
                 self.least_favored_group = self._get_group_from_configuration(
                     configuration)
-            if(max_value < fv.sol_prob):
+            if (max_value < fv.sol_prob):
                 max_value = fv.sol_prob
                 self.most_favored_group = self._get_group_from_configuration(
                     configuration)
@@ -542,21 +557,21 @@ class Metric:
         result = {}
         for var in configuration:
             if var > 0:
-                if(self._model_name == "decision-tree"):
+                if (self._model_name == "decision-tree"):
                     (feature, threshold) = self._variable_attribute_map[var]
                     result[feature] = ("<", threshold)
-                elif(self._model_name == "linear-model"):
+                elif (self._model_name == "linear-model"):
                     feature, _, threshold, _, _ = self._variable_attribute_map[var]
                     result[feature] = ("==", threshold)
 
                 else:
                     raise ValueError
             else:
-                if(self._model_name == "decision-tree"):
+                if (self._model_name == "decision-tree"):
                     (feature,
                      threshold) = self._variable_attribute_map[-1 * var]
                     result[feature] = (">=", threshold)
-                elif(self._model_name == "linear-model"):
+                elif (self._model_name == "linear-model"):
                     feature, _, threshold, _, _ = self._variable_attribute_map[-1 * var]
                     result[feature] = ("!=", threshold)
 
@@ -570,28 +585,29 @@ class Metric:
         max_value = None
         min_value = None
 
-        if(self._model_name == "linear-model"):
+        if (self._model_name == "linear-model"):
 
             sensitive_flatten = [
                 abs(var) for group in self._sensitive_attributes for var in group]
             converted_weight = {}
             for idx, weight in enumerate(self._linear_model.weights):
-                if(idx + 1 not in sensitive_flatten):
+                if (idx + 1 not in sensitive_flatten):
                     converted_weight[idx + 1] = weight
             for group in self._sensitive_attributes:
-                if(len(group) == 1):
+                if (len(group) == 1):
                     converted_weight[group[0]
-                                     ] = self._linear_model.weights[group[0] - 1]
+                    ] = self._linear_model.weights[group[0] - 1]
                 else:
                     converted_weight[tuple(group)] = [
                         self._linear_model.weights[var - 1] for var in group]
 
             # Maximum probability
             fv = SubSetSumCount(weights=converted_weight, probs=self._probs, sum=-1 * self._linear_model.bias,
-                                choice_variables=self._sensitive_attributes, conditional_probs=edge_weights, verbose=self._verbose)
+                                choice_variables=self._sensitive_attributes, conditional_probs=edge_weights,
+                                verbose=self._verbose)
             fv.compute()
 
-            if(fv.execution_error == True):
+            if (fv.execution_error == True):
                 self._execution_error = True
                 return None, None
             else:
@@ -602,20 +618,20 @@ class Metric:
 
                 max_value = fv.sol_prob
                 self.most_favored_group = self._get_group(fv)
-                if(self._verbose):
+                if (self._verbose):
                     print("Most favored group:", self.most_favored_group)
                 self.sensitive_group_statistics.append((list(self.most_favored_group.items(
                 )), fv.sol_prob, len(self._linear_model.weights), len(edge_weights)))
 
-            # Minimum probability
-            # fv = SubSetSumCount(weights = converted_weight, probs = self._probs, sum = -1 * self._linear_model.bias, choice_variables=self._sensitive_attributes, find_maximum=False, conditional_probs=edge_weights, verbose=False)
+                # Minimum probability
+                # fv = SubSetSumCount(weights = converted_weight, probs = self._probs, sum = -1 * self._linear_model.bias, choice_variables=self._sensitive_attributes, find_maximum=False, conditional_probs=edge_weights, verbose=False)
 
                 fv.sol_prob = fv.sol_prob_min
                 fv.assignment_to_exists_variables = fv.assignment_to_exists_variables_min
 
                 min_value = fv.sol_prob
                 self.least_favored_group = self._get_group(fv)
-                if(self._verbose):
+                if (self._verbose):
                     print("Least favored group:", self.least_favored_group)
 
                 self.sensitive_group_statistics.append((list(self.least_favored_group.items(
@@ -624,35 +640,39 @@ class Metric:
             return max_value, min_value
 
         # maximum probability
-        fv = Fairness_verifier(timeout=float(self._timeout/2))
-        fv.encoding_Learn_SSAT(self._classifier, self._attributes, self._sensitive_attributes, self._auxiliary_variables, self._probs,
-                               self._filename, dependency_constraints=dependency_constraints, find_maximization=True,  verbose=self._verbose)
+        fv = Fairness_verifier(timeout=float(self._timeout / 2))
+        fv.encoding_Learn_SSAT(self._classifier, self._attributes, self._sensitive_attributes,
+                               self._auxiliary_variables, self._probs,
+                               self._filename, dependency_constraints=dependency_constraints, find_maximization=True,
+                               verbose=self._verbose)
         flag = fv.invoke_SSAT_solver(
             self._filename, find_maximization=True, verbose=self._verbose)
 
         # print(fv.formula)
 
-        if(flag == True):
+        if (flag == True):
             self._execution_error = True
             return None, None
         else:
             max_value = fv.sol_prob
             self.most_favored_group = self._get_group(fv)
-            if(self._verbose):
+            if (self._verbose):
                 print("Most favored group:", self.most_favored_group)
             self.sensitive_group_statistics.append(
                 (list(self.most_favored_group.items()), fv.sol_prob, fv.num_variables, fv.num_clauses))
 
         # minimum probability
-        fv = Fairness_verifier(timeout=float(self._timeout/2))
-        fv.encoding_Learn_SSAT(self._classifier_neg, self._attributes_neg, self._sensitive_attributes_neg, self._auxiliary_variables_neg,
-                               self._probs, self._filename, dependency_constraints=dependency_constraints, find_maximization=True,  verbose=self._verbose)
+        fv = Fairness_verifier(timeout=float(self._timeout / 2))
+        fv.encoding_Learn_SSAT(self._classifier_neg, self._attributes_neg, self._sensitive_attributes_neg,
+                               self._auxiliary_variables_neg,
+                               self._probs, self._filename, dependency_constraints=dependency_constraints,
+                               find_maximization=True, verbose=self._verbose)
         flag = fv.invoke_SSAT_solver(
             self._filename, find_maximization=False, verbose=self._verbose)
 
         min_value = fv.sol_prob
         self.least_favored_group = self._get_group(fv)
-        if(self._verbose):
+        if (self._verbose):
             print("Least favored group:", self.least_favored_group)
 
         self.sensitive_group_statistics.append(
@@ -666,34 +686,38 @@ class Metric:
         min_value = None
 
         # maximum probability
-        fv = Fairness_verifier(timeout=float(self._timeout/2))
-        fv.encoding_Learn_SSAT(self._classifier, self._attributes, self._sensitive_attributes, self._auxiliary_variables, self._probs,
-                               self._filename, dependency_constraints=dependency_constraints, find_maximization=True, verbose=self._verbose)
+        fv = Fairness_verifier(timeout=float(self._timeout / 2))
+        fv.encoding_Learn_SSAT(self._classifier, self._attributes, self._sensitive_attributes,
+                               self._auxiliary_variables, self._probs,
+                               self._filename, dependency_constraints=dependency_constraints, find_maximization=True,
+                               verbose=self._verbose)
         flag = fv.invoke_SSAT_solver(
             self._filename, find_maximization=True, verbose=self._verbose)
-        if(flag == True):
+        if (flag == True):
             self._execution_error = True
             return None, None
         else:
             max_value = fv.sol_prob
             self.most_favored_group = self._get_group(fv)
-            if(self._verbose):
+            if (self._verbose):
                 print("Most favored group:", self.most_favored_group)
             self.sensitive_group_statistics.append(
                 (list(self.most_favored_group.items()), fv.sol_prob, fv.num_variables, fv.num_clauses))
 
         # maximum probability by complementing the classifier
-        fv = Fairness_verifier(timeout=float(self._timeout/2))
-        fv.encoding_Learn_SSAT(self._classifier, self._attributes, self._sensitive_attributes, self._auxiliary_variables, self._probs,
-                               self._filename,  dependency_constraints=dependency_constraints, find_maximization=False, verbose=self._verbose)
+        fv = Fairness_verifier(timeout=float(self._timeout / 2))
+        fv.encoding_Learn_SSAT(self._classifier, self._attributes, self._sensitive_attributes,
+                               self._auxiliary_variables, self._probs,
+                               self._filename, dependency_constraints=dependency_constraints, find_maximization=False,
+                               verbose=self._verbose)
         flag = fv.invoke_SSAT_solver(
             self._filename, find_maximization=False, verbose=self._verbose)
-        if(flag == True):
+        if (flag == True):
             self._execution_error = True
         else:
             min_value = fv.sol_prob
             self.least_favored_group = self._get_group(fv)
-            if(self._verbose):
+            if (self._verbose):
                 print("Least favored group:", self.least_favored_group)
             self.sensitive_group_statistics.append(
                 (list(self.least_favored_group.items()), fv.sol_prob, fv.num_variables, fv.num_clauses))
@@ -702,19 +726,19 @@ class Metric:
 
     def _get_group(self, fairness_verifier):
 
-        if(fairness_verifier.assignment_to_exists_variables is None):
+        if (fairness_verifier.assignment_to_exists_variables is None):
             return {}
         configuration = []
         for group in self._sensitive_attributes:
-            if(len(group) == 1):
-                if(group[0] in fairness_verifier.assignment_to_exists_variables):
+            if (len(group) == 1):
+                if (group[0] in fairness_verifier.assignment_to_exists_variables):
                     configuration.append(group[0])
                 else:
                     configuration.append(-1 * group[0])
-            elif(len(group) > 1):
+            elif (len(group) > 1):
                 reach = 0
                 for var in group:
-                    if(var in fairness_verifier.assignment_to_exists_variables):
+                    if (var in fairness_verifier.assignment_to_exists_variables):
                         configuration.append(var)
                         reach += 1
                 assert reach == 1
@@ -727,30 +751,30 @@ class Metric:
         # Our goal is to learn corresponding mediator attributes once all parameters are computed and adjust probabilities
         # accordingly.
         self._mediator_attributes = []
-        if(self.given_major_group == None):
+        if (self.given_major_group == None):
             self._execution_error = True
             return
 
-        if(len(self.given_mediator_attributes) == 0 or len(self.given_major_group) == 0):
+        if (len(self.given_mediator_attributes) == 0 or len(self.given_major_group) == 0):
             return
 
         for var in self._variable_attribute_map:
-            if(type(self._variable_attribute_map[var]) == tuple):
-                if(self._model_name == "decision-tree"):
+            if (type(self._variable_attribute_map[var]) == tuple):
+                if (self._model_name == "decision-tree"):
                     (_feature, _threshold) = self._variable_attribute_map[var]
-                    if(_feature in self.given_mediator_attributes):
+                    if (_feature in self.given_mediator_attributes):
                         self._mediator_attributes.append(var)
-                elif(self._model_name == "linear-model"):
+                elif (self._model_name == "linear-model"):
                     _feature, _, _threshold_1, _comparator_2, _threshold_2 = self._variable_attribute_map[
                         var]
-                    if(_feature in self.given_mediator_attributes):
+                    if (_feature in self.given_mediator_attributes):
                         self._mediator_attributes.append(var)
                 else:
                     raise ValueError(self._model_name)
             else:
                 raise ValueError(self._model_name)
 
-        if(self._verbose):
+        if (self._verbose):
             print("\n\n\nInfo on mediator attributes")
             print(self.given_mediator_attributes)
             print("Attributes in Justicia:", self._mediator_attributes)
@@ -761,74 +785,74 @@ class Metric:
         mask = (True)
         for attribute in self.given_major_group:
             comparator, threshold = self.given_major_group[attribute]
-            if(comparator == "=="):
+            if (comparator == "=="):
                 mask = mask & (self._data[attribute] == threshold)
-            elif(comparator == "!="):
+            elif (comparator == "!="):
                 mask = mask & (self._data[attribute] != threshold)
-            elif(comparator == ">"):
+            elif (comparator == ">"):
                 mask = mask & (self._data[attribute] > threshold)
-            elif(comparator == ">="):
+            elif (comparator == ">="):
                 mask = mask & (self._data[attribute] >= threshold)
-            elif(comparator == "<"):
+            elif (comparator == "<"):
                 mask = mask & (self._data[attribute] < threshold)
-            elif(comparator == "<="):
+            elif (comparator == "<="):
                 mask = mask & (self._data[attribute] <= threshold)
             else:
                 raise ValueError(comparator)
 
         # compute probabilities of mediator variables for the major group
         mediator_probs = None
-        if(self._model_name == "decision-tree"):
+        if (self._model_name == "decision-tree"):
             mediator_probs = self._saved_dt_model.compute_probability(
                 self._data[mask], verbose=False)
-        elif(self._model_name == "linear-model"):
+        elif (self._model_name == "linear-model"):
             mediator_probs = utils.calculate_probs_linear_classifier_wrap(
                 self._data[mask], self._column_info)
         else:
             raise ValueError
 
-        if(self._verbose):
+        if (self._verbose):
             print("Following intervention on probabilities")
         # In self._probs, update probabilities of mediator variables
         for mediator_attribute in self._mediator_attributes:
-            if(mediator_attribute in variable_map):
+            if (mediator_attribute in variable_map):
                 for each_map in variable_map[mediator_attribute]:
-                    if(self._verbose):
+                    if (self._verbose):
                         print(mediator_attribute, "(" + str(each_map) + ")", ":",
                               self._probs[each_map], "->", mediator_probs[mediator_attribute])
                     self._probs[each_map] = mediator_probs[mediator_attribute]
             else:
-                if(self._verbose):
+                if (self._verbose):
                     print(mediator_attribute, ":",
                           self._probs[mediator_attribute], "->", mediator_probs[mediator_attribute])
                 self._probs[mediator_attribute] = mediator_probs[mediator_attribute]
 
-        if(self._verbose):
+        if (self._verbose):
             print("\n\n\n")
 
     def _transform(self, orig_df):
 
-        if(self._model_name == "decision-tree"):
+        if (self._model_name == "decision-tree"):
             return orig_df
 
         df = pd.DataFrame()
         for variable in self._variable_attribute_map:
-            if(type(self._variable_attribute_map[variable]) == tuple):
-                if(self._model_name == "decision-tree"):
+            if (type(self._variable_attribute_map[variable]) == tuple):
+                if (self._model_name == "decision-tree"):
                     (_feature,
                      _threshold) = self._variable_attribute_map[variable]
                     df[variable] = (orig_df[_feature] <=
                                     _threshold).astype(int)
-                elif(self._model_name == "linear-model"):
+                elif (self._model_name == "linear-model"):
                     _feature, _, _threshold_1, _comparator_2, _threshold_2 = self._variable_attribute_map[
                         variable]
-                    if(_comparator_2 == "<"):
+                    if (_comparator_2 == "<"):
                         df[variable] = ((orig_df[_feature] >= _threshold_1) & (
-                            orig_df[_feature] < _threshold_2)).astype(int)
-                    elif(_comparator_2 == "<="):
+                                orig_df[_feature] < _threshold_2)).astype(int)
+                    elif (_comparator_2 == "<="):
                         df[variable] = ((orig_df[_feature] >= _threshold_1) & (
-                            orig_df[_feature] <= _threshold_2)).astype(int)
-                    elif(_comparator_2 == "=="):
+                                orig_df[_feature] <= _threshold_2)).astype(int)
+                    elif (_comparator_2 == "=="):
                         df[variable] = (orig_df[_feature] ==
                                         _threshold_1).astype(int)
 
@@ -850,26 +874,26 @@ class Metric:
 
         mask = (True)
         negate_mask = False
-        if(dominating_var < 0):
+        if (dominating_var < 0):
             # we need to negate the mask
             negate_mask = True
             dominating_var = -1 * dominating_var
 
-        if(type(self._variable_attribute_map[dominating_var]) == tuple):
-            if(self._model_name == "decision-tree"):
+        if (type(self._variable_attribute_map[dominating_var]) == tuple):
+            if (self._model_name == "decision-tree"):
                 (_feature,
                  _threshold) = self._variable_attribute_map[dominating_var]
                 mask = mask & (self._data[_feature] <= _threshold)
-            elif(self._model_name == "linear-model"):
+            elif (self._model_name == "linear-model"):
                 _feature, _, _threshold_1, _comparator_2, _threshold_2 = self._variable_attribute_map[
                     dominating_var]
-                if(_comparator_2 == "<"):
+                if (_comparator_2 == "<"):
                     mask = mask & (self._data[_feature] >= _threshold_1) & (
-                        self._data[_feature] < _threshold_2)
-                elif(_comparator_2 == "<="):
+                            self._data[_feature] < _threshold_2)
+                elif (_comparator_2 == "<="):
                     mask = mask & (self._data[_feature] >= _threshold_1) & (
-                        self._data[_feature] <= _threshold_2)
-                elif(_comparator_2 == "=="):
+                            self._data[_feature] <= _threshold_2)
+                elif (_comparator_2 == "=="):
                     mask = mask & (self._data[_feature] == _threshold_1)
                 else:
                     raise ValueError(_comparator_2)
@@ -879,7 +903,7 @@ class Metric:
         else:
             raise ValueError(self._model_name)
 
-        if(negate_mask):
+        if (negate_mask):
             mask = ~mask
 
         return mask
@@ -890,7 +914,7 @@ class Metric:
         edge_weights = {}
         dic = {}
         for (a, b) in edges:
-            if(a in dic):
+            if (a in dic):
                 dic[a].append(b)
             else:
                 dic[a] = [b]
@@ -898,7 +922,7 @@ class Metric:
         for key in dic:
             mask = (True)
 
-            if(isinstance(key, tuple)):
+            if (isinstance(key, tuple)):
                 # multuple parents
                 for each_var in key:
                     mask = mask & self._get_df_mask(each_var)
@@ -907,10 +931,10 @@ class Metric:
             else:
                 mask = mask & self._get_df_mask(key)
 
-            if(self._model_name == "decision-tree"):
+            if (self._model_name == "decision-tree"):
                 marginal_probs = self._saved_dt_model.compute_probability(
                     self._data[mask], verbose=False, selected_columns=dic[key])
-            elif(self._model_name == "linear-model"):
+            elif (self._model_name == "linear-model"):
                 marginal_probs = utils.calculate_probs_linear_classifier_wrap(
                     self._data[mask], self._column_info, selected_columns=dic[key])
             else:
@@ -996,15 +1020,15 @@ class Metric:
     def _run_Enum_correlation(self):
         _sensitive_attributes = []
         for _group in self._sensitive_attributes:
-            if(len(_group) == 1):
-                _group = [_group[0], -1*_group[0]]
+            if (len(_group) == 1):
+                _group = [_group[0], -1 * _group[0]]
             _sensitive_attributes.append(_group)
 
         min_value = 1
         max_value = 0
         _combinations = list(itertools.product(*_sensitive_attributes))
         for configuration in _combinations:
-            if(self._verbose):
+            if (self._verbose):
                 print("configuration: ", configuration, ":",
                       self._get_group_from_configuration(configuration))
                 # ":", [self._variable_attribute_map[var] if var > 0 else "not " + self._variable_attribute_map[-1 * var] for var in configuration]
@@ -1014,36 +1038,38 @@ class Metric:
             for _attribute in configuration:
                 mask = mask & self._get_df_mask(_attribute)
 
-            if(self._model_name == "decision-tree"):
+            if (self._model_name == "decision-tree"):
                 self._probs = self._saved_dt_model.compute_probability(
                     self._data[mask], verbose=False)
-            elif(self._model_name == "linear-model"):
+            elif (self._model_name == "linear-model"):
                 self._probs = utils.calculate_probs_linear_classifier_wrap(
                     self._data[mask], self._column_info)
             else:
                 raise ValueError
 
-            if(self._verbose):
+            if (self._verbose):
                 print(self._probs)
 
             self._encode_path_specific_causal_fairness()
 
             fv = Fairness_verifier(timeout=float(
-                self._timeout/len(_combinations)))
-            fv.encoding_Enum_SSAT(self._classifier, self._attributes, self._sensitive_attributes, self._auxiliary_variables,
-                                  self._probs, self._filename, sensitive_attributes_assignment=list(configuration), verbose=self._verbose)
+                self._timeout / len(_combinations)))
+            fv.encoding_Enum_SSAT(self._classifier, self._attributes, self._sensitive_attributes,
+                                  self._auxiliary_variables,
+                                  self._probs, self._filename, sensitive_attributes_assignment=list(configuration),
+                                  verbose=self._verbose)
             flag = fv.invoke_SSAT_solver(self._filename, verbose=self._verbose)
 
-            if(flag == True):
+            if (flag == True):
                 self._execution_error = True
                 max_value == min_value
                 break
 
-            if(min_value > fv.sol_prob):
+            if (min_value > fv.sol_prob):
                 min_value = fv.sol_prob
                 self.least_favored_group = self._get_group_from_configuration(
                     configuration)
-            if(max_value < fv.sol_prob):
+            if (max_value < fv.sol_prob):
                 max_value = fv.sol_prob
                 self.most_favored_group = self._get_group_from_configuration(
                     configuration)
@@ -1053,13 +1079,13 @@ class Metric:
         return max_value, min_value
 
     def _retrieve_model_name(self):
-        if(isinstance(self.model, DecisionTreeClassifier)):
+        if (isinstance(self.model, DecisionTreeClassifier)):
             return "decision-tree"
-        if(isinstance(self.model, SVC)):
+        if (isinstance(self.model, SVC)):
             return "linear-model"
-        if(isinstance(self.model, LogisticRegression)):
+        if (isinstance(self.model, LogisticRegression)):
             return "linear-model"
-        if(isinstance(self.model, Poison_Model)):
+        if (isinstance(self.model, Poison_Model)):
             return "linear-model"
         raise ValueError(str(self.model) + " not supported in Justicia")
 
@@ -1094,24 +1120,24 @@ class Metric:
                 # reverse edge
                 new_edges.append((b, a))
                 deleted_edges.append((a, b))
-                if(self._verbose):
+                if (self._verbose):
                     print("Reversed edge: ", b, "->", a)
                 continue
             for sensitive_attribute in self.given_sensitive_attributes:
                 if b.startswith(sensitive_attribute) and "_" in b:
                     new_edges.append((b, a))
                     deleted_edges.append((a, b))
-                    if(self._verbose):
+                    if (self._verbose):
                         print("Reversed edge: ", b, "->", a)
 
             # assert reach_count < 2, str(self.given_sensitive_attributes) + " has more than one matching for " + str(b)
 
         # refinement
-        if(len(new_edges) > 0):
+        if (len(new_edges) > 0):
             self._given_dependency_graph.remove_edges_from(deleted_edges)
             self._given_dependency_graph.add_edges_from(new_edges)
 
-        if(self._verbose):
+        if (self._verbose):
             print("\nRefining given dependency graph")
             print(self._given_dependency_graph.edges())
 
@@ -1119,11 +1145,11 @@ class Metric:
         attribute_dic = {}
         for attribute in attribute_variable_map:
             _feature = None
-            if(type(attribute) == tuple):
-                if(self._model_name in ["decision-tree"]):
+            if (type(attribute) == tuple):
+                if (self._model_name in ["decision-tree"]):
                     (_feature, _threshold) = attribute
 
-                elif(self._model_name == "linear-model"):
+                elif (self._model_name == "linear-model"):
                     _feature, _, _threshold_1, _comparator_2, _threshold_2 = attribute
                 else:
                     raise ValueError(self._model_name)
@@ -1131,8 +1157,8 @@ class Metric:
                 _feature = attribute
 
             for node in self._given_dependency_graph.nodes():
-                if(_feature.startswith(node)):
-                    if(node in attribute_dic):
+                if (_feature.startswith(node)):
+                    if (node in attribute_dic):
                         attribute_dic[node].append(
                             attribute_variable_map[attribute])
                     else:
@@ -1145,7 +1171,7 @@ class Metric:
         # Consider all combinations of discretized variables
         edges = []
         for a, b in self._given_dependency_graph.edges():
-            if(a in attribute_dic and b in attribute_dic):
+            if (a in attribute_dic and b in attribute_dic):
                 for var_a in attribute_dic[a]:
                     for var_b in attribute_dic[b]:
                         edges.append((var_a, var_b))
