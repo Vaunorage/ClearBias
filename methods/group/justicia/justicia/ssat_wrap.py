@@ -1,10 +1,59 @@
 import os
 import subprocess
-from pysat.formula import CNF
 import numpy as np
-from pysat.pb import *
+import itertools
 import warnings
 
+
+def _encode_exactly_one(lits):
+    """
+    Encodes the constraint that exactly one of the literals in lits is true.
+    This is a replacement for pysat's PBEnc.equals.
+    It generates a set of CNF clauses using the simple pairwise encoding.
+    """
+    clauses = []
+    # At-least-one constraint: (l1 or l2 or ... or ln)
+    if lits:
+        clauses.append(list(lits))
+
+    # At-most-one constraint: (-li or -lj) for all i != j
+    for lit1, lit2 in itertools.combinations(lits, 2):
+        clauses.append([-lit1, -lit2])
+    
+    # This encoding does not introduce new variables.
+    return clauses
+
+
+def _negate_cnf(clauses, top_id):
+    """
+    Negates a CNF formula using Tseitin transformation.
+    This is a replacement for pysat's CNF.negate.
+    F = C1 and C2 and ... and Cn
+    -F = -C1 or -C2 or ... or -Cn
+    Let d_i <-> -C_i. The new formula is (d1 or d2 or ... or dn) and clauses for all equivalences.
+    """
+    negated_clauses = []
+    
+    # Introduce one new auxiliary variable for the negation of each original clause
+    aux_vars = [top_id + 1 + i for i, _ in enumerate(clauses)]
+    new_top_id = top_id + len(clauses)
+
+    for aux_var, clause in zip(aux_vars, clauses):
+        # Add clauses for aux_var <-> ~C_i, where C_i = (l1 or l2 or ...)
+        # This is equivalent to aux_var <-> (-l1 and -l2 and ...)
+        # 1. (aux_var -> -l_j) for all l_j in C_i  =>  (-aux_var or -l_j)
+        for lit in clause:
+            negated_clauses.append([-aux_var, -lit])
+            
+        # 2. ((-l1 and -l2 and ...) -> aux_var)  =>  (l1 or l2 or ... or aux_var)
+        negated_clauses.append([aux_var] + clause)
+
+    # Add the clause that at least one of the negations must be true
+    # (d1 or d2 or ... or dn)
+    if aux_vars:
+        negated_clauses.append(aux_vars)
+    
+    return negated_clauses, new_top_id
 
 class Fairness_verifier():
 
@@ -48,9 +97,14 @@ class Fairness_verifier():
             print(("").join(lines))
             f.close()
 
-        f = open(str(dir_path) + "/" + str(filename) + "_out.log", "r")
-        lines = f.readlines()
-        f.close()
+        try:
+            f = open(str(dir_path) + "/" + str(filename) + "_out.log", "r")
+            lines = f.readlines()
+            f.close()
+        except FileNotFoundError:
+            lines = []
+            self.execution_error = True
+            warnings.warn(f"Output log not found: {filename}_out.log")
 
         # os.system("rm " + str(dir_path) + "/" +str(filename) + "_out")
 
@@ -65,7 +119,7 @@ class Fairness_verifier():
             if(read_optimal_assignment):
                 try:
                     self.assignment_to_exists_variables = list(
-                        map(int, line[:-2].strip().split(" ")))
+                        map(int, line.strip().split(" ")))
                 except:
                     warnings.warn(
                         "Assignment extraction failure: existential variable is probably not in CNF")
@@ -99,7 +153,7 @@ class Fairness_verifier():
                 except:
                     self.execution_error = True
 
-        if(not find_maximization):
+        if(not find_maximization and self.sol_prob is not None):
             self.sol_prob = 1 - self.sol_prob
         if(verbose):
             print("Probability:", self.sol_prob)
@@ -130,8 +184,8 @@ class Fairness_verifier():
 
         self.instance = "Enum"
 
-        self.num_variables = np.array(
-            attributes + [abs(_var) for _group in sensitive_attributes for _var in _group] + auxiliary_variables).max()
+        all_vars = attributes + [abs(_var) for _group in sensitive_attributes for _var in _group] + auxiliary_variables
+        self.num_variables = np.array(all_vars).max() if all_vars else 0
         self.formula = ""
 
         # random quantification over non-sensitive attributes
@@ -148,15 +202,12 @@ class Fairness_verifier():
         self._formula_for_equal_one_constraints = ""
         for _group in sensitive_attributes:
             if(len(_group) > 1):  # when categorical attribute is not Boolean
-                equal_one_constraint = PBEnc.equals(
-                    lits=_group, weights=[1 for _ in _group],  bound=1, top_id=self.num_variables)
-                for clause in equal_one_constraint.clauses:
+                # Using custom exactly-one encoder instead of pysat
+                equal_one_clauses = _encode_exactly_one(_group)
+                for clause in equal_one_clauses:
                     self._formula_for_equal_one_constraints += self._construct_clause(
                         clause)
-                auxiliary_variables += [i for i in range(
-                    self.num_variables + 1, equal_one_constraint.nv + 1)]
-                self.num_variables = max(
-                    equal_one_constraint.nv, self.num_variables)
+                # Note: _encode_exactly_one does not introduce new variables, so no update to self.num_variables or auxiliary_variables is needed here.
 
         # other variables (auxiliary) are exist quantified
         for var in auxiliary_variables:
@@ -199,8 +250,8 @@ class Fairness_verifier():
         # attributes, sensitive_attributes and auxiliary_variables is a list of variables
         # probs is the list of i.i.d. probabilities of attributes that are not sensitive
 
-        self.num_variables = np.array(
-            attributes + [abs(_var) for _group in sensitive_attributes for _var in _group] + auxiliary_variables).max()
+        all_vars = attributes + [abs(_var) for _group in sensitive_attributes for _var in _group] + auxiliary_variables
+        self.num_variables = np.array(all_vars).max() if all_vars else 0
         self.formula = ""
 
         # the sensitive attribute is exist quantified
@@ -226,15 +277,11 @@ class Fairness_verifier():
 
         # Negate the classifier
         if(not find_maximization):
-            _classifier = CNF(from_clauses=classifier)
-            _negated_classifier = _classifier.negate(topv=self.num_variables)
-            classifier = _negated_classifier.clauses
-            # print(auxiliary_variables, self.num_variables, _negated_classifier.auxvars)
-            auxiliary_variables += [i for i in range(
-                self.num_variables + 1, _negated_classifier.nv + 1)]
-            # print(auxiliary_variables)
-            self.num_variables = max(
-                _negated_classifier.nv, self.num_variables)
+            # Using custom CNF negation instead of pysat
+            negated_clauses, new_top_id = _negate_cnf(classifier, self.num_variables)
+            auxiliary_variables += [i for i in range(self.num_variables + 1, new_top_id + 1)]
+            self.num_variables = new_top_id
+            classifier = negated_clauses
 
         """
         The following should not work as negation of dependency constraints does not make sense
@@ -263,15 +310,12 @@ class Fairness_verifier():
         self._formula_for_equal_one_constraints = ""
         for _group in sensitive_attributes:
             if(len(_group) > 1):  # when categorical attribute is not Boolean
-                equal_one_constraint = PBEnc.equals(
-                    lits=_group, weights=[1 for _ in _group],  bound=1, top_id=self.num_variables)
-                for clause in equal_one_constraint.clauses:
+                # Using custom exactly-one encoder instead of pysat
+                equal_one_clauses = _encode_exactly_one(_group)
+                for clause in equal_one_clauses:
                     self._formula_for_equal_one_constraints += self._construct_clause(
                         clause)
-                auxiliary_variables += [i for i in range(
-                    self.num_variables + 1, equal_one_constraint.nv + 1)]
-                self.num_variables = max(
-                    equal_one_constraint.nv, self.num_variables)
+                # Note: _encode_exactly_one does not introduce new variables, so no update to self.num_variables or auxiliary_variables is needed here.
 
         # other variables (auxiliary) are exist quantified
         for var in auxiliary_variables:
