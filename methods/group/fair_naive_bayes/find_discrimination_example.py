@@ -58,11 +58,11 @@ def find_discrimination_example():
             # If the attribute is already binary, just copy it.
             binarized_df[attr_name] = df[attr_name]
         else:
-            # For non-binary columns, we binarize around the median.
-            # This is a simple, transparent strategy for the example.
-            median = df[attr_name].median()
-            binarized_df[attr_name] = (df[attr_name] > median).astype(int)
-            print(f"  - Binarized '{attr_name}' by splitting at its median value ({median:.2f})")
+            # For non-binary columns, we binarize at the 75th percentile (top quartile).
+            # This may help find patterns in the upper range of an attribute.
+            quantile_val = df[attr_name].quantile(0.75)
+            binarized_df[attr_name] = (df[attr_name] > quantile_val).astype(int)
+            print(f"  - Binarized '{attr_name}' by splitting at its 75th percentile value ({quantile_val:.2f})")
 
     # --- 3. Manually construct metadata needed for parameter learning ---
     # This information was previously read from a .net.txt file in the old approach.
@@ -88,7 +88,7 @@ def find_discrimination_example():
     root_params, leaf_params = convert_result_to_parameters(prob_dict, sensitive_var_ids, bn_dict, target_name)
 
     # --- 5. Find Discriminating Patterns ---
-    delta = 0.001  # Fairness threshold (lowered to detect weaker signals)
+    delta = 0.01  # Fairness threshold
     k = 5        # Number of patterns to find
     print(f"\nSearching for the top {k} discriminating patterns with a threshold of {delta}...")
     
