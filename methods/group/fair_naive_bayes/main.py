@@ -89,18 +89,20 @@ def run_naive_bayes(data: DiscriminationData):
         logger.info("\nNo discriminating patterns found with the given threshold.")
     else:
         logger.info(f"\n--- Top {len(raw_patterns)} Discriminating Patterns Found ---")
+        all_attributes = data.attr_columns
         for i, pattern in enumerate(raw_patterns):
-            base_features = [f"{bn_dict.get(fid, f'ID:{fid}')}={val}" for fid, val in pattern.base]
-            sens_features = [f"{bn_dict.get(fid, f'ID:{fid}')}={val}" for fid, val in pattern.sens]
+            pattern_info = {attr: None for attr in all_attributes}
+            pattern_info['case_id'] = i + 1
 
-            pattern_info = {
-                'pattern_id': i + 1,
-                'subgroup_base': ', '.join(base_features) or 'N/A',
-                'subgroup_sensitive': ', '.join(sens_features),
-                'discrimination_score': pattern.score,
-                'p_unfavorable_sensitive': pattern.pDXY,
-                'p_unfavorable_others': pattern.pD_XY,
-            }
+            subgroup_features = pattern.base + pattern.sens
+            for fid, val in subgroup_features:
+                feature_name = bn_dict.get(fid)
+                if feature_name in pattern_info:
+                    pattern_info[feature_name] = val
+
+            pattern_info['discrimination_score'] = pattern.score
+            pattern_info['p_unfavorable_sensitive'] = pattern.pDXY
+            pattern_info['p_unfavorable_others'] = pattern.pD_XY
             pattern_results.append(pattern_info)
 
     res_df = pd.DataFrame(pattern_results)
