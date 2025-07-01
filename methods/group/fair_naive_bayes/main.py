@@ -91,19 +91,23 @@ def run_naive_bayes(data: DiscriminationData):
         logger.info(f"\n--- Top {len(raw_patterns)} Discriminating Patterns Found ---")
         all_attributes = data.attr_columns
         for i, pattern in enumerate(raw_patterns):
-            pattern_info = {attr: None for attr in all_attributes}
-            pattern_info['case_id'] = i + 1
-
+            case_id = i + 1
             subgroup_features = pattern.base + pattern.sens
-            for fid, val in subgroup_features:
-                feature_name = bn_dict.get(fid)
-                if feature_name in pattern_info:
-                    pattern_info[feature_name] = val
 
-            pattern_info['discrimination_score'] = pattern.score
-            pattern_info['p_unfavorable_sensitive'] = pattern.pDXY
-            pattern_info['p_unfavorable_others'] = pattern.pD_XY
-            pattern_results.append(pattern_info)
+            for fid, val in subgroup_features:
+                # Create a new row for each feature in the subgroup
+                row = {attr: None for attr in all_attributes}
+                row['case_id'] = case_id
+
+                feature_name = bn_dict.get(fid)
+                if feature_name in row:
+                    row[feature_name] = val
+
+                # Add other pattern-level info to each row
+                row['discrimination_score'] = pattern.score
+                row['p_unfavorable_sensitive'] = pattern.pDXY
+                row['p_unfavorable_others'] = pattern.pD_XY
+                pattern_results.append(row)
 
     res_df = pd.DataFrame(pattern_results)
 
