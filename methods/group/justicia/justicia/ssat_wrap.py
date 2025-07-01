@@ -36,10 +36,6 @@ class Fairness_verifier():
 
     def invoke_SSAT_solver(self, filename, find_maximization=True, verbose=True):
 
-        # print("\n\n")
-        # print(self.formula)
-        # print("\n\n")
-
         dir_path = os.path.dirname(os.path.realpath(filename))
 
         # Execute and read output
@@ -47,21 +43,34 @@ class Fairness_verifier():
             filename) + \
               "\" 1>" + str(dir_path) + "/" + str(filename) + "_out.log" + \
               " 2>" + str(dir_path) + "/" + str(filename) + "_err.log"
+        
+        if verbose:
+            print(f"Executing command: {cmd}")
+
         os.system(cmd)
 
-        if (verbose):
-            f = open(str(dir_path) + "/" + str(filename) + "_err.log", "r")
-            lines = f.readlines()
-            if (len(lines) > 0):
-                print("Error print of SSAT (if any)")
-            print(("").join(lines))
-            f.close()
+        if verbose:
+            err_log_path = os.path.join(dir_path, f"{os.path.basename(filename)}_err.log")
+            try:
+                with open(err_log_path, "r") as f:
+                    err_content = f.read()
+                    if err_content:
+                        print("Error print of SSAT (if any):")
+                        print(err_content)
+            except FileNotFoundError:
+                print(f"Error log file not found at: {err_log_path}")
 
-        f = open(str(dir_path) + "/" + str(filename) + "_out.log", "r")
-        lines = f.readlines()
-        f.close()
-
-        # os.system("rm " + str(dir_path) + "/" +str(filename) + "_out")
+        lines = []
+        out_log_path = os.path.join(dir_path, f"{os.path.basename(filename)}_out.log")
+        try:
+            with open(out_log_path, "r") as f:
+                lines = f.readlines()
+            if not lines and verbose:
+                print(f"Output log file is empty: {out_log_path}")
+        except FileNotFoundError:
+            if verbose:
+                print(f"Output log file not found: {out_log_path}")
+            self.execution_error = True
 
         # process output
         upper_bound = None
@@ -109,7 +118,9 @@ class Fairness_verifier():
                     self.execution_error = True
 
         if (not find_maximization):
-            self.sol_prob = 1 - self.sol_prob
+            if self.sol_prob is not None:
+                self.sol_prob = 1 - self.sol_prob
+        
         if (verbose):
             print("Probability:", self.sol_prob)
             print("\n===================================\n")
