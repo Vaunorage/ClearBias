@@ -47,9 +47,9 @@ dependencies:
     - pyrulelearn
     - pysat
     - pgmpy
-    - feature-engine
+    - feature-engine==0.13.0
     - python-sat
     - gpkit
     - Cython
     - xarray<2023.1.0  # Add xarray with version constraint for pysat compatibility
-    - Orange
+    - Orange3
