@@ -41,7 +41,7 @@ dependencies = [
     "prettytable>=3.16.0",
     "pydot>=4.0.1",
     "imbalanced-learn>=0.13.0",
-    "pyrulelearn>=1.1.1",
+
     "pysat>=3.2.2",
     "pgmpy>=1.0.0",
     "feature-engine>=1.8.3",

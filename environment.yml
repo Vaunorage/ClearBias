@@ -44,7 +44,7 @@ dependencies:
     - divexplorer
     - gurobipy
     - ete3
-    - pyrulelearn
+
     - pysat
     - pgmpy
     - feature-engine==0.13.0

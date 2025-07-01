@@ -1,4 +1,4 @@
-from pyrulelearn.imli import imli
+
 import methods.group.justicia.justicia.utils as utils
 from sklearn.model_selection import train_test_split, StratifiedKFold, KFold
 from sklearn import metrics
