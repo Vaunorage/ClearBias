@@ -87,7 +87,8 @@ class Metric:
             pass
 
     def __repr__(self):
-
+        if hasattr(self, '_model_name'):
+            return "\nJusticia\n - model: {}\n".format(self._model_name) + '\n'.join(" - %s: %s" % (item, value) for (item, value) in vars(self).items() if (not item.startswith("_") and item != "model"))
         return "\nJusticia\n" + '\n'.join(" - %s: %s" % (item, value) for (item, value) in vars(self).items() if not item.startswith("_"))
 
     def compute(self):
