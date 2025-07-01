@@ -286,23 +286,6 @@ class Metric:
                 self._sensitive_attributes_neg = dt_neg.sensitive_attributes
                 self._auxiliary_variables_neg = dt_neg.auxiliary_variables
 
-        elif(self._model_name == "CNF"):
-            self._attributes, self._sensitive_attributes, self._probs, self._variable_attribute_map, self._column_info = utils.get_statistics_from_df(
-                self._data, self.given_sensitive_attributes, verbose=self._verbose)
-            __classifier = self.model.get_selected_column_index()
-            self._classifier = [[] for _ in __classifier]
-            for idx in range(len(__classifier)):
-                for (_var, _phase) in __classifier[idx]:
-                    if(_phase >= 0):
-                        self._classifier[idx].append(_var + 1)
-                    else:
-                        self._classifier[idx].append(-1 * (_var + 1))
-            self._auxiliary_variables = []
-            self._num_attributes = len(
-                self._attributes + list(chain.from_iterable(self._sensitive_attributes)))
-
-            assert self._num_attributes == len(self._data.columns)
-
         else:
             print(self._model_name, "is not defined")
             raise ValueError
@@ -558,10 +541,7 @@ class Metric:
         result = {}
         for var in configuration:
             if var > 0:
-                if(self._model_name in ["CNF"]):
-                    feature, threshold = self._variable_attribute_map[var]
-                    result[feature] = ("==", threshold)
-                elif(self._model_name == "decision-tree"):
+                if(self._model_name == "decision-tree"):
                     (feature, threshold) = self._variable_attribute_map[var]
                     result[feature] = ("<", threshold)
                 elif(self._model_name == "linear-model"):
@@ -571,10 +551,7 @@ class Metric:
                 else:
                     raise ValueError
             else:
-                if(self._model_name in ["CNF"]):
-                    feature, threshold = self._variable_attribute_map[-1 * var]
-                    result[feature] = ("!=", threshold)
-                elif(self._model_name == "decision-tree"):
+                if(self._model_name == "decision-tree"):
                     (feature,
                      threshold) = self._variable_attribute_map[-1 * var]
                     result[feature] = (">=", threshold)
@@ -767,16 +744,10 @@ class Metric:
                         var]
                     if(_feature in self.given_mediator_attributes):
                         self._mediator_attributes.append(var)
-                elif(self._model_name in ["CNF"]):
-                    _feature, _threshold = self._variable_attribute_map[var]
-                    if(_feature in self.given_mediator_attributes):
-                        self._mediator_attributes.append(var)
                 else:
                     raise ValueError(self._model_name)
             else:
                 raise ValueError(self._model_name)
-                if(self._variable_attribute_map[var] in self.given_mediator_attributes):
-                    self._mediator_attributes.append(var)
 
         if(self._verbose):
             print("\n\n\nInfo on mediator attributes")
@@ -809,7 +780,7 @@ class Metric:
         if(self._model_name == "decision-tree"):
             mediator_probs = self._saved_dt_model.compute_probability(
                 self._data[mask], verbose=False)
-        elif(self._model_name in ["linear-model", "CNF"]):
+        elif(self._model_name == "linear-model"):
             mediator_probs = utils.calculate_probs_linear_classifier_wrap(
                 self._data[mask], self._column_info)
         else:
@@ -836,7 +807,7 @@ class Metric:
 
     def _transform(self, orig_df):
 
-        if(self._model_name == "CNF"):
+        if(self._model_name == "decision-tree"):
             return orig_df
 
         df = pd.DataFrame()
@@ -862,17 +833,11 @@ class Metric:
 
                     else:
                         raise ValueError(_comparator_2)
-                elif(self._model_name == "CNF"):
-                    (_feature,
-                     _threshold) = self._variable_attribute_map[variable]
-                    df[variable] = (orig_df[_feature] ==
-                                    _threshold).astype(int)
                 else:
                     raise ValueError(self._model_name)
             else:
                 raise ValueError(self._model_name)
-                df[variable] = (
-                    self._data[self._variable_attribute_map[variable]] == 1).astype(int)
+
         # reorder columns
         df = df[[i + 1 for i in range(len(self._variable_attribute_map))]]
 
@@ -944,7 +909,7 @@ class Metric:
             if(self._model_name == "decision-tree"):
                 marginal_probs = self._saved_dt_model.compute_probability(
                     self._data[mask], verbose=False, selected_columns=dic[key])
-            elif(self._model_name in ["linear-model", "CNF"]):
+            elif(self._model_name == "linear-model"):
                 marginal_probs = utils.calculate_probs_linear_classifier_wrap(
                     self._data[mask], self._column_info, selected_columns=dic[key])
             else:
@@ -995,7 +960,7 @@ class Metric:
             
             if(self._model_name == "decision-tree"):
                 marginal_probs = self._saved_dt_model.compute_probability(self._data[mask], verbose=False)
-            elif(self._model_name in ["linear-model", "CNF"]):
+            elif(self._model_name == "linear-model"):
                 marginal_probs = utils.calculate_probs_linear_classifier_wrap(self._data[mask], self._column_info)
             else:
                 raise ValueError
@@ -1051,7 +1016,7 @@ class Metric:
             if(self._model_name == "decision-tree"):
                 self._probs = self._saved_dt_model.compute_probability(
                     self._data[mask], verbose=False)
-            elif(self._model_name in ["linear-model", "CNF"]):
+            elif(self._model_name == "linear-model"):
                 self._probs = utils.calculate_probs_linear_classifier_wrap(
                     self._data[mask], self._column_info)
             else:
