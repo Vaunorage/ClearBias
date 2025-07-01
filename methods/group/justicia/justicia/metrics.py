@@ -96,7 +96,7 @@ class Metric:
         self._compute()
         self.time_taken += time() - start_time
 
-        return self
+        return self._meta_sensitive_groups
 
     def compute_eqo(self, y):
         """
