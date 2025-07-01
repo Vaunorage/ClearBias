@@ -5,6 +5,7 @@ from methods.utils import train_sklearn_model
 from justicia.metrics import Metric
 import justicia.utils
 
+
 def find_discrimination_with_justicia(dataset_name='adult', model_type='rf'):
     """
     Loads a dataset, trains a model, and uses Justicia to find discrimination.
@@ -15,7 +16,6 @@ def find_discrimination_with_justicia(dataset_name='adult', model_type='rf'):
 
     discrimination_data, data_schema = get_real_data(dataset_name, use_cache=True)
 
-
     model, _, X_test, _, y_test, _, metrics = train_sklearn_model(
         data=discrimination_data.training_dataframe,
         model_type=model_type,
@@ -23,8 +23,6 @@ def find_discrimination_with_justicia(dataset_name='adult', model_type='rf'):
         sensitive_attrs=discrimination_data.protected_attributes
     )
     accuracy = metrics['accuracy']
-
-
 
     # Justicia works with the test set
     test_df = X_test.copy()
@@ -37,10 +35,8 @@ def find_discrimination_with_justicia(dataset_name='adult', model_type='rf'):
     sensitive_attributes = discrimination_data.protected_attributes
 
     # Run Justicia
-    metric = Metric(model=model, data=test_df, sensitive_attributes=sensitive_attributes)
+    metric = Metric(model=model, data=test_df, sensitive_attributes=sensitive_attributes, verbose=False)
     metric.compute()
-
-
 
 
 if __name__ == '__main__':

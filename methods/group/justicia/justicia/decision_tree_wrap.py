@@ -24,7 +24,7 @@ import pickle
 
 class dtWrapper():
 
-    def __init__(self, DecisionTreeClassifier, data, data_features_original, sensitive_attributes, negate=False,  verbose=True):
+    def __init__(self, DecisionTreeClassifier, data, data_features_original, sensitive_attributes, negate=False,  verbose=False):
 
         self.nodes = []
         self.data = data
@@ -219,7 +219,7 @@ class dtWrapper():
 
         return probs, constraints
 
-    def tree_to_code(self, tree, feature_names, negate, verbose=True):
+    def tree_to_code(self, tree, feature_names, negate, verbose=False):
 
         tree_ = tree.tree_
         feature_name = [
