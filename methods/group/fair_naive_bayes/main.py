@@ -30,7 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger('FairNaiveBayes')
 
 
-def run_naive_bayes(data: DiscriminationData, schema: DataSchema):
+def run_naive_bayes(data: DiscriminationData):
     """
     An example script that binarizes data, calculates Naive Bayes parameters, and then runs the
     PatternFinder to find discriminating patterns.
@@ -51,7 +51,7 @@ def run_naive_bayes(data: DiscriminationData, schema: DataSchema):
     target_name = 'outcome'
     binarized_df[target_name] = df[target_name]
 
-    for attr_name in schema.attr_names:
+    for attr_name in data.attr_columns:
         if df[attr_name].nunique() <= 2:
             binarized_df[attr_name] = df[attr_name]
         else:
@@ -60,13 +60,11 @@ def run_naive_bayes(data: DiscriminationData, schema: DataSchema):
             logger.info(f"  - Binarized '{attr_name}' by splitting at its median value ({median:.2f})")
 
     # --- 3. Manually construct metadata needed for parameter learning ---
-    feature_names = schema.attr_names
+    feature_names = data.attr_columns
     bn_dict = {i: name for i, name in enumerate(feature_names)}
-    sensitive_var_ids = [i for i, name in enumerate(feature_names) if
-                         schema.protected_attr[schema.attr_names.index(name)]]
     target_value = 1
 
-    sensitive_names = [bn_dict[i] for i in sensitive_var_ids]
+    sensitive_names = data.protected_attributes
     logger.info(f"Sensitive attributes identified: {sensitive_names}")
 
     # --- 4. Calculate Naive Bayes parameters from the binarized data ---
@@ -74,14 +72,14 @@ def run_naive_bayes(data: DiscriminationData, schema: DataSchema):
     params_feature_names = list(feature_names)
     params_dict = get_params_dict(binarized_df, params_feature_names, target_name)
     prob_dict = maximum_likelihood_from_data(params_dict, target_name)
-    root_params, leaf_params = convert_result_to_parameters(prob_dict, sensitive_var_ids, bn_dict, target_name)
+    root_params, leaf_params = convert_result_to_parameters(prob_dict, data.sensitive_indices, bn_dict, target_name)
 
     # --- 5. Find Discriminating Patterns ---
     delta = 0.01
     k = 5
     logger.info(f"\nSearching for the top {k} discriminating patterns with a threshold of {delta}...")
 
-    pf = PatternFinder(root_params, leaf_params, target_value, sensitive_var_ids)
+    pf = PatternFinder(root_params, leaf_params, target_value, data.sensitive_indices)
     raw_patterns = pf.get_discriminating_patterns(delta, k)
 
     # --- 6. Process and Format Results ---
@@ -139,8 +137,8 @@ def run_naive_bayes(data: DiscriminationData, schema: DataSchema):
 
 
 if __name__ == '__main__':
-    data, schema = generate_optimal_discrimination_data(use_cache=True)
-    res_df, metrics = run_naive_bayes(data, schema)
+    data = generate_optimal_discrimination_data(use_cache=True)
+    res_df, metrics = run_naive_bayes(data)
 
     if not res_df.empty:
         print("\n--- Discrimination Results ---")

@@ -26,6 +26,7 @@ dependencies:
   - pip
   - pip:
     - aif360
+    - ucimlrepo
     - boto
     - doubleml
     - hdbscan
