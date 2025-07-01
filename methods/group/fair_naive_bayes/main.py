@@ -49,9 +49,10 @@ def run_naive_bayes(data: DiscriminationData):
     # --- 2. Binarize the data ---
     binarized_df = pd.DataFrame()
     target_name = 'outcome'
-    binarized_df[target_name] = df[target_name]
 
-    for attr_name in data.attr_columns:
+    # Binarize all attributes and the target column
+    all_columns = data.attr_columns + [target_name]
+    for attr_name in all_columns:
         if df[attr_name].nunique() <= 2:
             binarized_df[attr_name] = df[attr_name]
         else:
