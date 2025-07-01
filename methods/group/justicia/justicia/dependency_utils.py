@@ -7,8 +7,8 @@ from numpy import genfromtxt
 import itertools
 from operator import add
 from pgmpy.estimators import ParameterEstimator
-from pgmpy.models import BayesianModel
-from pgmpy.estimators import BayesianEstimator, BicScore
+from pgmpy.models import BayesianNetwork as BayesianModel
+from pgmpy.estimators import BayesianEstimator, BIC as BicScore
 import igraph as ig
 import warnings
 from pgmpy.estimators import PC, HillClimbSearch, ExhaustiveSearch

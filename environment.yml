@@ -52,3 +52,4 @@ dependencies:
     - gpkit
     - Cython
     - xarray<2023.1.0  # Add xarray with version constraint for pysat compatibility
+    - Orange
