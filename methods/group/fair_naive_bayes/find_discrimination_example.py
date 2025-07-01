@@ -25,83 +25,44 @@ from methods.group.fair_naive_bayes.parameter_learner.data_processor import (
 from methods.group.fair_naive_bayes.pattern_finder.pattern_finder import PatternFinder
 
 
-def get_toy_data():
-    """
-    Generates a simple synthetic dataset with built-in discrimination
-    for testing purposes.
-    """
-    print("Loading toy dataset...")
-    # Create a biased dataset
-    # Discrimination: Males with high experience are favored for the positive outcome.
-    data = {
-        'gender':   [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], # 10 male, 10 female
-        'experience': [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0], # 5 high/5 low for each gender
-        'outcome':    [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]  # 4/5 high-exp males get outcome=1, 1/5 high-exp females get outcome=1
-    }
-    df = pd.DataFrame(data)
-
-    # The schema needs to match the structure expected by the rest of the script.
-    # It's a simple dictionary-like object with attribute names and protected status.
-    class ToySchema:
-        def __init__(self):
-            self.attr_names = ['gender', 'experience']
-            self.protected_attr = [True, False] # gender is protected
-
-    schema = ToySchema()
-
-    # The get_real_data returns a 'Data' object which has a 'dataframe' attribute
-    class ToyData:
-        def __init__(self, df):
-            self.dataframe = df
-
-    return ToyData(df), schema
-
-
-def find_discrimination_example(use_toy_data=False):
+def find_discrimination_example():
     """
     An example script that loads the 'adult' dataset using get_real_data,
     binarizes the data, calculates Naive Bayes parameters, and then runs the
     PatternFinder to find discriminating patterns.
     """
-    print("--- Running Discrimination Finder Example ---")
+    print("--- Running Discrimination Finder Example with get_real_data ---")
 
-    # --- 1. Load data ---
-    if use_toy_data:
-        data, schema = get_toy_data()
+    # --- 1. Load data using get_real_data ---
+    dataset_name = 'adult'
+    print(f"Loading '{dataset_name}' dataset using get_real_data...")
+    try:
+        data, schema = get_real_data(dataset_name, use_cache=True)
         df = data.dataframe
-    else:
-        dataset_name = 'adult'
-        print(f"Loading '{dataset_name}' dataset using get_real_data...")
-        try:
-            data, schema = get_real_data(dataset_name, use_cache=True)
-            df = data.dataframe
-        except Exception as e:
-            print(f"Error loading data: {e}")
-            print("Please ensure the data can be fetched or is cached correctly.")
-            return
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        print("Please ensure the data can be fetched or is cached correctly.")
+        return
+
+    print("Dataset loaded. Binarizing data for the Naive Bayes model...")
 
     # --- 2. Binarize the data ---
+    # The PatternFinder's underlying model requires all features to be binary (0 or 1).
+    # We will perform a simple binarization for this example.
+    binarized_df = pd.DataFrame()
     target_name = 'outcome' # As defined in the data_generator
-    if use_toy_data:
-        print("Toy data is already binarized.")
-        binarized_df = df
-    else:
-        print("Binarizing data for the Naive Bayes model...")
-        # The PatternFinder's underlying model requires all features to be binary (0 or 1).
-        # We will perform a simple binarization for this example.
-        binarized_df = pd.DataFrame()
-        binarized_df[target_name] = df[target_name]
+    binarized_df[target_name] = df[target_name]
 
-        for attr_name in schema.attr_names:
-            if df[attr_name].nunique() <= 2:
-                # If the attribute is already binary, just copy it.
-                binarized_df[attr_name] = df[attr_name]
-            else:
-                # For non-binary columns, we binarize around the median.
-                # This is a simple, transparent strategy for the example.
-                median = df[attr_name].median()
-                binarized_df[attr_name] = (df[attr_name] > median).astype(int)
-                print(f"  - Binarized '{attr_name}' by splitting at its median value ({median:.2f})")
+    for attr_name in schema.attr_names:
+        if df[attr_name].nunique() <= 2:
+            # If the attribute is already binary, just copy it.
+            binarized_df[attr_name] = df[attr_name]
+        else:
+            # For non-binary columns, we binarize around the median.
+            # This is a simple, transparent strategy for the example.
+            median = df[attr_name].median()
+            binarized_df[attr_name] = (df[attr_name] > median).astype(int)
+            print(f"  - Binarized '{attr_name}' by splitting at its median value ({median:.2f})")
 
     # --- 3. Manually construct metadata needed for parameter learning ---
     # This information was previously read from a .net.txt file in the old approach.
@@ -156,5 +117,4 @@ def find_discrimination_example(use_toy_data=False):
 
 
 if __name__ == '__main__':
-    # Set use_toy_data to True to run with the synthetic dataset
-    find_discrimination_example(use_toy_data=True)
+    find_discrimination_example()
