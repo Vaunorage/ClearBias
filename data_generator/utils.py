@@ -382,19 +382,20 @@ def plot_correlation_matrices(input_correlation_matrix, generated_data, figsize=
     # Get attribute columns from the generated data
     attr_columns = [col for col in generated_data.dataframe.columns if col.startswith('Attr')]
     generated_correlation_matrix = generated_data.dataframe[attr_columns].corr(method='spearman')
-    
+
     # Convert input correlation matrix to DataFrame if it's a numpy array
     if isinstance(input_correlation_matrix, np.ndarray):
         # Create column names that match the size of the input matrix
-        input_cols = [f'Attr{i+1}_X' if i < input_correlation_matrix.shape[0] - sum(generated_data.schema.protected_attr) else f'Attr{i-input_correlation_matrix.shape[0]+sum(generated_data.schema.protected_attr)+1}_T' 
-                     for i in range(input_correlation_matrix.shape[0])]
+        input_cols = [f'Attr{i + 1}_X' if i < input_correlation_matrix.shape[0] - sum(
+            generated_data.schema.protected_attr) else f'Attr{i - input_correlation_matrix.shape[0] + sum(generated_data.schema.protected_attr) + 1}_T'
+                      for i in range(input_correlation_matrix.shape[0])]
         input_correlation_matrix = pd.DataFrame(input_correlation_matrix, columns=input_cols, index=input_cols)
-    
+
     # Get common columns between input and generated matrices
     common_cols = sorted(set(attr_columns) & set(input_correlation_matrix.columns))
     if not common_cols:
         raise ValueError("No common attributes found between input and generated correlation matrices")
-    
+
     # Filter both matrices to use only common columns
     input_correlation_matrix = input_correlation_matrix.loc[common_cols, common_cols]
     generated_correlation_matrix = generated_correlation_matrix.loc[common_cols, common_cols]
@@ -453,3 +454,242 @@ def plot_correlation_matrices(input_correlation_matrix, generated_data, figsize=
     print(f"Cosine similarity: {cosine_sim:.4f}")
     print(f"Mean squared error: {mse:.4f}")
     print(f"Correlation coefficient: {correlation:.4f}")
+
+
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.stats import ttest_ind  # Correctly imported for statistical testing
+from dataclasses import dataclass, field
+from typing import Dict, Any, List
+
+
+# To make this script runnable, we'll define a minimal version
+# of your DiscriminationData dataclass. You can replace this with an
+# import from your own module.
+@dataclass
+class DiscriminationData:
+    """A minimal placeholder for your DiscriminationData class."""
+    dataframe: pd.DataFrame
+    y_true_col: str
+    y_pred_col: str
+    attributes: Dict[str, bool] = field(default_factory=dict)
+    categorical_columns: List[str] = field(default_factory=list)
+
+
+def visualize_injected_discrimination(
+        data: DiscriminationData,
+        sample_size: int = 5000,
+        top_n_biased_groups: int = 4,
+        p_value_threshold: float = 0.05
+):
+    """
+    Creates a set of visualizations to show injected discrimination by empirically
+    detecting bias from the difference between 'y_true' and 'y_pred'.
+
+    This function is self-contained and identifies bias without needing access
+    to the generator's internal parameters.
+
+    Args:
+        data (DiscriminationData): The generated data object.
+        sample_size (int): Number of data points to sample for plotting.
+        top_n_biased_groups (int): Number of most biased groups to highlight.
+        p_value_threshold (float): The statistical significance level to determine if a
+                                   group's prediction error is different from zero.
+    """
+    df = data.dataframe.copy()  # Use a copy to avoid modifying the original object
+    try:
+        y_true_col = data.y_true_col
+        y_pred_col = data.y_pred_col
+    except AttributeError:
+        print("Error: `DiscriminationData` object must have `y_true_col` and `y_pred_col` attributes.")
+        return
+
+    # --- 1. EMPIRICALLY IDENTIFY BIASED GROUPS ---
+
+    # Calculate the prediction error for each individual
+    df['prediction_error'] = df[y_true_col] - df[y_pred_col]
+
+    # For each group, determine if the mean prediction error is statistically
+    # different from zero. A t-test is perfect for this.
+    def check_group_bias(group_df: pd.DataFrame) -> pd.Series:
+        # We need at least a few samples to run a meaningful test
+        if len(group_df) < 10:
+            return pd.Series({'is_biased': False, 'mean_error': 0.0})
+
+        # Perform an independent t-test comparing the group's error distribution
+        # to a zero-error distribution. This is statistically equivalent to a
+        # one-sample t-test against a population mean of 0.
+        ttest_result = ttest_ind(group_df['prediction_error'], [0] * len(group_df), equal_var=False)
+
+        is_biased = ttest_result.pvalue < p_value_threshold
+        mean_error = group_df['prediction_error'].mean()
+
+        return pd.Series({'is_biased': is_biased, 'mean_error': mean_error})
+
+    print("Empirically identifying biased groups by testing if mean(y_true - y_pred) is non-zero...")
+    group_stats = df.groupby('group_key').apply(check_group_bias)
+
+    # Map the results back to the main dataframe
+    df['is_group_biased'] = df['group_key'].map(group_stats['is_biased'])
+
+    # Find the top N most biased groups for highlighting
+    # We use the absolute mean error to find the most biased, regardless of direction
+    biased_stats = group_stats[group_stats['is_biased']].copy()
+    biased_stats['abs_error'] = biased_stats['mean_error'].abs()
+    top_biased_groups = biased_stats.nlargest(top_n_biased_groups, 'abs_error').index.tolist()
+
+    # Create a categorical column for plotting
+    def get_group_category(row: pd.Series) -> str:
+        if row['group_key'] in top_biased_groups:
+            return f"Biased Group (Top {top_n_biased_groups})"
+        elif row['is_group_biased']:
+            return "Biased Group (Other)"
+        else:
+            return "Unbiased Group"
+
+    df['group_category'] = df.apply(get_group_category, axis=1)
+
+    # --- DIAGNOSTIC PRINTS ---
+    print("\nValue counts in the full dataset before sampling:")
+    print(df['group_category'].value_counts())
+
+    # --- Stratified Sampling ---
+    if len(df) > sample_size and 'group_category' in df.columns and df['group_category'].nunique() > 1:
+        try:
+            plot_df = df.groupby('group_category', group_keys=False).apply(
+                lambda x: x.sample(int(np.ceil(sample_size * len(x) / len(df))) if len(x) > 0 else 0),
+                include_groups=False
+            ).sample(frac=1).reset_index(drop=True)
+        except Exception as e:
+            print(f"Stratified sampling failed: {e}. Falling back to random sampling.")
+            plot_df = df.sample(n=sample_size, random_state=42)
+    else:
+        plot_df = df.copy()
+
+    if plot_df.empty:
+        print("No data available for plotting after sampling. Exiting.")
+        return
+
+    print("\nValue counts in the sampled data for plotting:")
+    print(plot_df['group_category'].value_counts())
+
+    # --- 2. Create Visualizations ---
+    sns.set_theme(style="whitegrid")
+
+    # ----- PLOT 1: Distribution of Prediction Errors -----
+    plt.figure(figsize=(12, 7))
+    sns.kdeplot(data=plot_df, x='prediction_error', hue='is_group_biased', fill=True, common_norm=False,
+                palette={True: "coral", False: "steelblue"})
+    plt.title('Distribution of Prediction Error (y_true - y_pred)\nfor Empirically Biased vs. Unbiased Groups',
+              fontsize=16)
+    plt.xlabel('Prediction Error', fontsize=12)
+    plt.ylabel('Density', fontsize=12)
+    plt.axvline(0, color='k', linestyle='--', label='No Error')
+    plt.legend(title='Is Group Biased?')
+    plt.show()
+
+    # ----- PLOT 2: Violin Plot of True vs. Predicted Outcomes -----
+    plot_df_melted = pd.melt(
+        plot_df,
+        id_vars=['group_category'],
+        value_vars=[y_true_col, y_pred_col],
+        var_name='Outcome Type',
+        value_name='Outcome Value'
+    )
+    plot_df_melted['Outcome Type'] = plot_df_melted['Outcome Type'].map(
+        {y_true_col: 'Ground Truth', y_pred_col: 'Prediction'})
+
+    plt.figure(figsize=(14, 8))
+    sns.violinplot(
+        data=plot_df_melted,
+        x='group_category',
+        y='Outcome Value',
+        hue='Outcome Type',
+        split=True,
+        inner="quart",
+        palette={"Ground Truth": "skyblue", "Prediction": "lightcoral"},
+        order=["Unbiased Group", f"Biased Group (Top {top_n_biased_groups})", "Biased Group (Other)"]
+    )
+    plt.title('Comparison of Ground Truth vs. Predicted Outcomes by Subgroup Type', fontsize=16)
+    plt.xlabel('Subgroup Category', fontsize=12)
+    plt.ylabel('Outcome', fontsize=12)
+    plt.xticks(rotation=10)
+    plt.legend(title='Outcome Type', loc='upper left')
+    plt.show()
+
+    # ----- PLOT 3: Scatter Plot of Prediction vs. Ground Truth -----
+    g = sns.FacetGrid(plot_df, col="group_category", hue="group_category",
+                      col_wrap=3, height=5,
+                      col_order=["Unbiased Group", f"Biased Group (Top {top_n_biased_groups})", "Biased Group (Other)"])
+    g.map(sns.scatterplot, y_pred_col, y_true_col, alpha=0.6)
+    for ax in g.axes.flatten():
+        if ax is not None:
+            min_val = min(ax.get_xlim()[0], ax.get_ylim()[0])
+            max_val = max(ax.get_xlim()[1], ax.get_ylim()[1])
+            ax.plot([min_val, max_val], [min_val, max_val], ls="--", c=".3")
+            ax.set_xlabel("Prediction", fontsize=11)
+            ax.set_ylabel("Ground Truth", fontsize=11)
+
+    g.fig.suptitle('Ground Truth vs. Prediction for Different Subgroup Types', y=1.03, fontsize=16)
+    g.add_legend()
+    plt.show()
+
+
+# if __name__ == '__main__':
+#     # ==================================================================
+#     # This block demonstrates how to use the function.
+#     # It creates a sample DataFrame that mimics your generator's output.
+#     # ==================================================================
+#     print("Creating a sample dataset for demonstration...")
+#
+#     # Define some group keys
+#     group_keys = ['unbiased_A', 'unbiased_B', 'biased_pos_strong', 'biased_neg_weak', 'biased_pos_weak']
+#
+#     # Define biases for each group
+#     biases = {
+#         'unbiased_A': 0.0,
+#         'unbiased_B': 0.0,
+#         'biased_pos_strong': 0.3,
+#         'biased_neg_weak': -0.15,
+#         'biased_pos_weak': 0.1
+#     }
+#
+#     # Generate sample data
+#     records = []
+#     for group in group_keys:
+#         for i in range(1000):  # 1000 individuals per group
+#             pred = np.random.rand()  # A random prediction between 0 and 1
+#             bias = biases[group]
+#             noise = np.random.normal(0, 0.05)  # Add some noise
+#
+#             true_val = pred + bias + noise
+#             # Clip values to be within [0, 1] range
+#             true_val = np.clip(true_val, 0, 1)
+#
+#             records.append({
+#                 'group_key': group,
+#                 'y_pred': pred,
+#                 'y_true': true_val
+#             })
+#
+#     sample_df = pd.DataFrame(records)
+#
+#     # Create the wrapper object, similar to your DiscriminationData
+#     mock_data_obj = DiscriminationData(
+#         dataframe=sample_df,
+#         y_true_col='y_true',
+#         y_pred_col='y_pred'
+#     )
+#
+#     print("\nSample dataset created. Now running visualization...")
+#     print("-" * 50)
+#
+#     # Call the visualization function with the mock data
+#     visualize_injected_discrimination(
+#         data=mock_data_obj,
+#         sample_size=4000,
+#         top_n_biased_groups=2,
+#         p_value_threshold=0.01  # Use a stricter p-value for clean separation
+#     )

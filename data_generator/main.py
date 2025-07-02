@@ -146,9 +146,19 @@ def calculate_actual_uncertainties(data):
     y = data.dataframe[data.outcome_column].values  # Convert to numpy array
 
     # Initialize base random forest for comparison
-    urf = UncertaintyRandomForest(n_estimators=50, random_state=42)
-    urf.fit(X, y)
-    mean_pred, base_epistemic, base_aleatoric = urf.predict_with_uncertainty(X)
+    if pd.api.types.is_numeric_dtype(y) and pd.Series(y).nunique() > 20:  # Heuristic for continuous
+        from sklearn.ensemble import RandomForestRegressor
+        regr = RandomForestRegressor(n_estimators=50, random_state=42)
+        regr.fit(X, y)
+        # For regressor, we can use prediction variance as a measure of uncertainty
+        # This is a simplification; proper uncertainty quantification is more complex
+        predictions = np.array([tree.predict(X) for tree in regr.estimators_])
+        base_epistemic = np.std(predictions, axis=0)
+        base_aleatoric = np.zeros_like(base_epistemic) # Placeholder for aleatoric
+    else:
+        urf = UncertaintyRandomForest(n_estimators=50, random_state=42)
+        urf.fit(X, y)
+        mean_pred, base_epistemic, base_aleatoric = urf.predict_with_uncertainty(X)
 
     # Initialize result columns
     data.dataframe['calculated_epistemic_random_forest'] = base_epistemic
@@ -509,6 +519,8 @@ class DiscriminationData:
     max_group_size: int
     hiddenlayers_depth: int
     schema: DataSchema
+    y_true_col: str
+    y_pred_col: str
     outcome_column: str = 'outcome'
     relevance_metrics: pd.DataFrame = field(default_factory=pd.DataFrame)
     attr_possible_values: Dict[str, List[int]] = field(default_factory=dict)
@@ -1541,6 +1553,54 @@ class OptimalDataGenerator:
         self.groups: Dict[str, GroupDefinition] = {}
         self.generated_subgroup_data: Dict[str, pd.DataFrame] = {}
 
+    def _generate_outcomes_with_analytical_predictions(self, df: pd.DataFrame,
+                                                       subgroup: 'SubgroupDefinition',
+                                                       W: np.ndarray) -> pd.DataFrame:
+        """
+        Generate outcomes with analytical predictions for y_true and y_pred.
+
+        MODIFIED LOGIC: Bias is now added in the probability space to ensure a
+        direct and controllable difference, avoiding the sigmoid dampening effect.
+        """
+        feature_columns = self.data_schema.attr_names
+        X = df[feature_columns].values
+        X_std = (X - np.mean(X, axis=0)) / (np.std(X, axis=0) + 1e-8)
+        weights = W[-1] if W.ndim > 1 else W
+
+        # --- Step 1: Generate the base "unaware" prediction logit ---
+        y_pred_logit = np.dot(X_std, weights)
+
+        # --- Step 2: Add uncertainty/noise to the logit ---
+        # This simulates the "wobble" or confidence of the unaware model.
+        epistemic_noise = np.random.normal(0, subgroup.uncertainty_params['epistemic'], size=len(df))
+        y_pred_logit_noisy = y_pred_logit + epistemic_noise
+
+        # --- Step 3: Convert the noisy logit to a probability ---
+        # This is our final "y_pred".
+        y_pred_prob = 1 / (1 + np.exp(-y_pred_logit_noisy))
+        df['y_pred'] = y_pred_prob
+
+        # --- Step 4: Directly apply the bias to the prediction probability to get the true outcome ---
+        # This ensures the bias term has a direct, linear effect.
+        y_true_prob_biased = y_pred_prob + subgroup.bias
+
+        # --- Step 5: Add aleatoric (irreducible) noise to the true outcome ---
+        aleatoric_noise = np.random.normal(0, subgroup.uncertainty_params['aleatoric'], size=len(df))
+        y_true_prob_noisy = y_true_prob_biased + aleatoric_noise
+
+        # --- Step 6: Clip the final true outcome to ensure it remains a valid probability [0, 1] ---
+        df['y_true'] = np.clip(y_true_prob_noisy, 0, 1)
+
+        # For compatibility, set the main 'outcome' column to the true outcome
+        df['outcome'] = df['y_true']
+
+        # Store the injected parameters for verification
+        df['subgroup_bias_injected'] = subgroup.bias
+        df['epistemic_param_injected'] = subgroup.uncertainty_params['epistemic']
+        df['aleatoric_param_injected'] = subgroup.uncertainty_params['aleatoric']
+
+        return df
+
     def calculate_optimal_subgroups(self,
                                     target_nb_groups: int,
                                     min_subgroups: int = None,
@@ -1886,54 +1946,10 @@ class OptimalDataGenerator:
         return filled_df
 
     def _generate_outcomes_with_uncertainty(self, df: pd.DataFrame,
-                                            subgroup: SubgroupDefinition,
+                                            subgroup: 'SubgroupDefinition',
                                             W: np.ndarray) -> pd.DataFrame:
-        """Generate outcomes with epistemic and aleatoric uncertainty."""
-        # Extract features and standardize
-        feature_columns = self.data_schema.attr_names
-        X = df[feature_columns].values
-        X = (X - np.mean(X, axis=0)) / (np.std(X, axis=0) + 1e-8)
-
-        # Use the last layer of W as weights
-        weights = W[-1] if W.ndim > 1 else W
-
-        # Get uncertainty parameters
-        epistemic_uncertainty = subgroup.uncertainty_params['epistemic']
-        aleatoric_uncertainty = subgroup.uncertainty_params['aleatoric']
-
-        # Generate ensemble predictions
-        n_estimators = 50
-        ensemble_preds = []
-
-        for i in range(n_estimators):
-            # Add epistemic uncertainty through weight perturbation
-            weight_noise = np.random.normal(0, epistemic_uncertainty, size=weights.shape)
-            perturbed_weights = weights * (1 + weight_noise)
-
-            # Compute base prediction
-            base_pred = np.dot(X, perturbed_weights) + subgroup.bias
-
-            # Add aleatoric uncertainty
-            noisy_pred = base_pred + np.random.normal(0, aleatoric_uncertainty, size=len(df))
-
-            # Convert to probability
-            probs = 1 / (1 + np.exp(-noisy_pred))
-            ensemble_preds.append(probs)
-
-        # Calculate final predictions and uncertainties
-        ensemble_preds = np.array(ensemble_preds).T
-        final_predictions = np.mean(ensemble_preds, axis=1)
-        calculated_epistemic = np.var(ensemble_preds, axis=1)
-        calculated_aleatoric = np.mean(ensemble_preds * (1 - ensemble_preds), axis=1)
-
-        # Add to dataframe
-        df['outcome'] = final_predictions
-        df['epis_uncertainty'] = calculated_epistemic
-        df['alea_uncertainty'] = calculated_aleatoric
-        df['calculated_epistemic'] = calculated_epistemic
-        df['calculated_aleatoric'] = calculated_aleatoric
-
-        return df
+        """Use the new analytical predictions method."""
+        return self._generate_outcomes_with_analytical_predictions(df, subgroup, W)
 
     def generate_dataset(self, groups: List[GroupDefinition], W: np.ndarray,
                          min_group_size: int = 10, max_group_size: int = 100,
@@ -2114,6 +2130,23 @@ def generate_optimal_discrimination_data(
         min_diff_subgroup_size, max_diff_subgroup_size
     )
 
+    # ### NEW: Process both y_true and y_pred if needed
+    if categorical_outcome:
+        # Create bins based on the distribution of the "true" outcome
+        min_val = dataset['y_true'].min()
+        max_val = dataset['y_true'].max()
+        bins = np.linspace(min_val, max_val, nb_categories_outcome + 1)
+
+        # Bin both columns using the same bins for consistency
+        dataset['y_true_cat'] = np.digitize(dataset['y_true'], bins) - 1
+        dataset['y_pred_cat'] = np.digitize(dataset['y_pred'], bins) - 1
+
+        # The main 'outcome' column will be the categorical version of the true label
+        dataset['outcome'] = dataset['y_true_cat']
+    else:
+        # For continuous outcomes, just use the probabilities directly
+        dataset['outcome'] = dataset['y_true']
+
     # Step 4: Process outcome column
     outcome_column = 'outcome'
     if categorical_outcome:
@@ -2139,6 +2172,8 @@ def generate_optimal_discrimination_data(
         outcome_column=outcome_column,
         attr_possible_values=attr_possible_values,
         schema=data_schema,
+        y_true_col='y_true_cat' if categorical_outcome else 'y_true',
+        y_pred_col='y_pred_cat' if categorical_outcome else 'y_pred',
         generation_arguments={
             'nb_groups': nb_groups,
             'nb_subgroups': len(subgroups),
@@ -2150,8 +2185,7 @@ def generate_optimal_discrimination_data(
             'max_group_size': max_group_size,
             'categorical_outcome': categorical_outcome,
             'nb_categories_outcome': nb_categories_outcome,
-            'approach': 'optimal_subgroup_generation',
-            'schema_generated': data_schema is None  # Track if schema was auto-generated
+            'approach': 'optimal_subgroup_generation_with_analytical_predictions'  # Updated
         }
     )
 
@@ -2168,6 +2202,7 @@ def generate_optimal_discrimination_data(
     print(f"- Efficiency: {len(groups) / len(subgroups):.1f} groups per subgroup")
 
     return data
+
 
 def generate_data(
         gen_order: List[int] = None,
@@ -2233,6 +2268,7 @@ def generate_data(
         categorical_outcome=categorical_outcome,
         nb_categories_outcome=nb_categories_outcome
     )
+
 
 def is_numeric_type(series):
     """
@@ -2906,3 +2942,15 @@ def load_discrimination_data(db_path: str, analysis_id: str) -> Optional['Discri
     if result:
         return pickle.loads(result[0])
     return None
+
+if __name__ == '__main__':
+    # Generate test data
+    data = generate_optimal_discrimination_data(nb_groups=10, nb_attributes=5)
+
+    # Verify new columns exist
+    assert 'y_true' in data.dataframe.columns
+    assert 'y_pred' in data.dataframe.columns
+    assert hasattr(data, 'y_true_col')
+    assert hasattr(data, 'y_pred_col')
+
+    print("Integration successful!")

@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 
 from data_generator.utils import plot_distribution_comparison, print_distribution_stats, visualize_df, \
     create_parallel_coordinates_plot, plot_and_print_metric_distributions, unique_individuals_ratio, \
-    individuals_in_multiple_groups, plot_correlation_matrices
+    individuals_in_multiple_groups, plot_correlation_matrices, visualize_injected_discrimination
 from methods.utils import get_groups
 
 # data, schema = generate_from_real_data('bank')
@@ -356,6 +356,23 @@ data1 = generate_optimal_discrimination_data(
 
 print(f"Generated {len(data1.dataframe)} samples in {data1.nb_groups} groups")
 
+#%%
+data_obj = generate_optimal_discrimination_data(
+    nb_groups=50,
+    nb_attributes=10,
+    prop_protected_attr=0.3,
+    min_group_size=50,
+    max_group_size=200,
+    categorical_outcome=True # Continuous outcomes are easier to visualize
+)
+
+# 2. Visualize the results
+print("\nCreating visualizations...")
+visualize_injected_discrimination(
+    data=data_obj,
+    sample_size=10000,
+    top_n_biased_groups=4
+)
 # %%
 import pandas as pd
 from path import HERE
@@ -387,3 +404,5 @@ print(f"Unique Individuals Ratio: {unique_ratio}, duplicate : {duplicates_count}
 
 # %%
 plot_correlation_matrices(schema.correlation_matrix, data1)
+
+

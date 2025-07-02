@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from data_generator.main import generate_data
+from data_generator.main import generate_data, DiscriminationData
 from methods.subgroup.gerryfair import clean, auditor, model
 
 
@@ -57,23 +57,9 @@ def prepare_data_for_gerryfair(data, protected_attrs):
     return X, X_prime, y
 
 
-def main():
+def run_gerryfair(ge: DiscriminationData, C = 10, gamma = 0.01, max_iters=25):
     print("Generating synthetic data...")
-    ge = generate_data(
-        nb_attributes=6,
-        min_number_of_classes=2,
-        max_number_of_classes=4,
-        prop_protected_attr=0.1,
-        nb_groups=100,
-        max_group_size=100,
-        categorical_outcome=True,
-        nb_categories_outcome=4,
-        use_cache=True
-    )
 
-    # Get the data and access attributes directly from the DiscriminationData object
-    data = ge.dataframe
-    
     # Extract protected attributes directly from the DiscriminationData object
     protected_attrs = ge.protected_attributes
     print(f"Protected attributes: {protected_attrs}")
@@ -99,15 +85,12 @@ def main():
 
     # Train a simple model (GerryFair's model)
     print("\nTraining a model...")
-    C = 10
-    gamma = 0.01
     fair_model = model.Model(C=C, printflag=True, gamma=gamma, fairness_def='FP')
-    fair_model.set_options(max_iters=25)
+    fair_model.set_options(max_iters=max_iters)
 
     # Train the model
     errors, fp_difference = fair_model.train(X_train, X_prime_train, y_train)
 
-    # Generate predictions
     print("\nGenerating predictions...")
     train_predictions = fair_model.predict(X_train)
     test_predictions = fair_model.predict(X_test)
@@ -145,4 +128,18 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    ge = generate_data(
+        nb_attributes=6,
+        min_number_of_classes=2,
+        max_number_of_classes=4,
+        prop_protected_attr=0.1,
+        nb_groups=100,
+        max_group_size=100,
+        categorical_outcome=True,
+        nb_categories_outcome=4,
+        use_cache=True
+    )
+
+    # Get the data and access attributes directly from the DiscriminationData object
+    data = ge.dataframe
+    run_gerryfair()
