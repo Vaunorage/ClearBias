@@ -2,11 +2,8 @@ import pandas as pd
 from pandas import json_normalize
 
 from data_generator.main import generate_optimal_discrimination_data, get_real_data, DiscriminationData
-from methods.subgroup.divexplorer.divexplorer.divexplorer.FP_Divergence import FP_Divergence
-from methods.subgroup.divexplorer.divexplorer.divexplorer.FP_DivergenceExplorer import FP_DivergenceExplorer
-
-
-
+from methods.subgroup.divexplorer.divexplorer.FP_Divergence import FP_Divergence
+from methods.subgroup.divexplorer.divexplorer.FP_DivergenceExplorer import FP_DivergenceExplorer
 
 
 def run_divexploer(data_obj: DiscriminationData, K=5):
@@ -43,7 +40,8 @@ def run_divexploer(data_obj: DiscriminationData, K=5):
 
     top_k_df['items'] = top_k_df['itemsets'].apply(parse_itemset)
 
-    df_final = pd.concat([top_k_df.drop(columns=['itemsets', 'items'], axis=1), json_normalize(top_k_df['items'])], axis=1)
+    df_final = pd.concat([top_k_df.drop(columns=['itemsets', 'items'], axis=1), json_normalize(top_k_df['items'])],
+                         axis=1)
 
     return df_final
 
