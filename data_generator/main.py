@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from scipy.stats import spearmanr
 from sdv.metadata import SingleTableMetadata
 from sdv.single_table import GaussianCopulaSynthesizer
+from sklearn.tree import DecisionTreeClassifier
 from sdv.sampling import Condition
 from tqdm import tqdm
 
@@ -154,7 +155,7 @@ def calculate_actual_uncertainties(data):
         # This is a simplification; proper uncertainty quantification is more complex
         predictions = np.array([tree.predict(X) for tree in regr.estimators_])
         base_epistemic = np.std(predictions, axis=0)
-        base_aleatoric = np.zeros_like(base_epistemic) # Placeholder for aleatoric
+        base_aleatoric = np.zeros_like(base_epistemic)  # Placeholder for aleatoric
     else:
         urf = UncertaintyRandomForest(n_estimators=50, random_state=42)
         urf.fit(X, y)
@@ -555,12 +556,26 @@ class DiscriminationData:
         return self.dataframe[list(self.attributes) + [self.outcome_column]]
 
     @property
+    def training_dataframe_with_ypred(self):
+        if self.y_pred_col in self.dataframe.columns:
+            return self.dataframe[list(self.attributes) + [self.outcome_column, self.y_pred_col]]
+        else:
+            raise ValueError(f"Column {self.outcome_column} not found in dataframe")
+
+    @property
     def xdf(self):
         return self.dataframe[list(self.attributes)]
 
     @property
     def ydf(self):
         return self.dataframe[self.outcome_column]
+
+    @property
+    def y_pred(self):
+        if self.y_pred_col in self.dataframe.columns:
+            return self.dataframe[self.y_pred_col]
+        else:
+            raise ValueError(f"Column {self.y_pred_col} not found in dataframe")
 
     @property
     def input_bounds(self):
@@ -1555,7 +1570,7 @@ class OptimalDataGenerator:
 
     def _generate_outcomes_with_analytical_predictions(self, df: pd.DataFrame,
                                                        subgroup: 'SubgroupDefinition',
-                                                       W: np.ndarray) -> pd.DataFrame:
+                                                       W: np.ndarray, classifier=None) -> pd.DataFrame:
         """
         Generate outcomes with analytical predictions for y_true and y_pred.
 
@@ -1576,9 +1591,13 @@ class OptimalDataGenerator:
         y_pred_logit_noisy = y_pred_logit + epistemic_noise
 
         # --- Step 3: Convert the noisy logit to a probability ---
-        # This is our final "y_pred".
-        y_pred_prob = 1 / (1 + np.exp(-y_pred_logit_noisy))
-        df['y_pred'] = y_pred_prob
+        if classifier:
+            X_pred = df[self.data_schema.attr_names]
+            df['y_pred'] = classifier.predict(X_pred)
+        else:
+            # This is our final "y_pred".
+            y_pred_prob = 1 / (1 + np.exp(-y_pred_logit_noisy))
+            df['y_pred'] = y_pred_prob
 
         # --- Step 4: Directly apply the bias to the prediction probability to get the true outcome ---
         # This ensures the bias term has a direct, linear effect.
@@ -1881,7 +1900,7 @@ class OptimalDataGenerator:
         scored_combinations.sort(key=lambda x: x[0], reverse=True)
         return [combo for _, combo in scored_combinations[:target_count]]
 
-    def generate_subgroup_data(self, subgroup: SubgroupDefinition, W: np.ndarray) -> pd.DataFrame:
+    def generate_subgroup_data(self, subgroup: SubgroupDefinition, W: np.ndarray, classifier=None) -> pd.DataFrame:
         """Generate data for a single subgroup using SDV synthesizer and uncertainty calculation."""
         # Check if we already generated this subgroup
         if subgroup.subgroup_id in self.generated_subgroup_data:
@@ -1911,7 +1930,7 @@ class OptimalDataGenerator:
 
         # Generate outcomes with uncertainty
         subgroup_data = self._generate_outcomes_with_uncertainty(
-            subgroup_data, subgroup, W
+            subgroup_data, subgroup, W, classifier
         )
 
         # Add subgroup metadata
@@ -1947,14 +1966,15 @@ class OptimalDataGenerator:
 
     def _generate_outcomes_with_uncertainty(self, df: pd.DataFrame,
                                             subgroup: 'SubgroupDefinition',
-                                            W: np.ndarray) -> pd.DataFrame:
+                                            W: np.ndarray, classifier=None) -> pd.DataFrame:
         """Use the new analytical predictions method."""
-        return self._generate_outcomes_with_analytical_predictions(df, subgroup, W)
+        return self._generate_outcomes_with_analytical_predictions(df, subgroup, W, classifier)
 
     def generate_dataset(self, groups: List[GroupDefinition], W: np.ndarray,
                          min_group_size: int = 10, max_group_size: int = 100,
                          min_diff_subgroup_size: float = 0.0,
-                         max_diff_subgroup_size: float = 0.5) -> pd.DataFrame:
+                         max_diff_subgroup_size: float = 0.5,
+                         classifier=None) -> pd.DataFrame:
         """Generate the complete dataset with all groups."""
         all_dataframes = []
 
@@ -1980,8 +2000,8 @@ class OptimalDataGenerator:
             sg2_copy.size = sg2_size
 
             # Generate data for each subgroup
-            sg1_data = self.generate_subgroup_data(sg1_copy, W)
-            sg2_data = self.generate_subgroup_data(sg2_copy, W)
+            sg1_data = self.generate_subgroup_data(sg1_copy, W, classifier)
+            sg2_data = self.generate_subgroup_data(sg2_copy, W, classifier)
 
             # Take only the required number of rows
             sg1_data = sg1_data.head(sg1_size).copy()
@@ -2051,6 +2071,7 @@ def generate_optimal_discrimination_data(
         W: Optional[np.ndarray] = None,
         categorical_outcome: bool = True,
         nb_categories_outcome: int = 6,
+        classifier=None,
         **kwargs
 ) -> 'DiscriminationData':
     """
@@ -2127,7 +2148,8 @@ def generate_optimal_discrimination_data(
     print("Step 3: Generating complete dataset...")
     dataset = generator.generate_dataset(
         groups, W, min_group_size, max_group_size,
-        min_diff_subgroup_size, max_diff_subgroup_size
+        min_diff_subgroup_size, max_diff_subgroup_size,
+        classifier=classifier
     )
 
     # ### NEW: Process both y_true and y_pred if needed
@@ -2236,7 +2258,8 @@ def generate_data(
         categorical_distribution: Dict[str, List[float]] = None,
         categorical_influence: float = 0.5,
         data_schema: 'DataSchema' = None,
-        predefined_groups: List['GroupDefinition'] = None
+        predefined_groups: List['GroupDefinition'] = None,
+        classifier=None
 ) -> 'DiscriminationData':
     """
     Drop-in replacement for your original generate_data function using optimal approach.
@@ -2266,7 +2289,8 @@ def generate_data(
         max_diff_subgroup_size=max_diff_subgroup_size,
         W=W,
         categorical_outcome=categorical_outcome,
-        nb_categories_outcome=nb_categories_outcome
+        nb_categories_outcome=nb_categories_outcome,
+        classifier=classifier
     )
 
 
@@ -2709,6 +2733,12 @@ def generate_from_real_data(dataset_name, use_cache=False, predefined_groups=Non
 
     schema.synthesizer = synthesizer
 
+    # Train a classifier on the real data to be used for generating predictions
+    X_real = enc_df[schema.attr_names]
+    y_real = enc_df['outcome']
+    dt_classifier = DecisionTreeClassifier()
+    dt_classifier.fit(X_real, y_real)
+
     # Generate data using our function that uses the trained synthesizer
     data = generate_data(
         gen_order=schema.gen_order,
@@ -2716,6 +2746,7 @@ def generate_from_real_data(dataset_name, use_cache=False, predefined_groups=Non
         data_schema=schema,
         use_cache=False,  # We're already handling cache at this level
         predefined_groups=predefined_groups,
+        classifier=dt_classifier,  # Pass the trained classifier
         *args, **kwargs
     )
 
@@ -2815,16 +2846,24 @@ def get_real_data(
         lambda x: '|'.join(list(x.astype(str))), axis=1
     )
 
+    # Train a classifier and add predictions
+    X = enc_df[schema.attr_names]
+    y = enc_df['outcome']
+    dt = DecisionTreeClassifier()
+    dt.fit(X, y)
+    enc_df['y_pred'] = dt.predict(X)
+
     # Create DiscriminationData without generating synthetic data
     data = DiscriminationData(
         dataframe=enc_df,
-        categorical_columns=list(schema.attr_names) + ['outcome'],
+        categorical_columns=list(schema.attr_names) + ['outcome', 'y_pred'],
         attributes={k: v for k, v in zip(schema.attr_names, schema.protected_attr)},
         collisions=0,
         nb_groups=1,  # Just one "group" for the entire dataset
         max_group_size=len(enc_df),
         hiddenlayers_depth=0,
-        outcome_column='outcome',
+        y_true_col='outcome',
+        y_pred_col='y_pred',
         attr_possible_values=attr_possible_values,
         schema=schema
     )
@@ -2942,6 +2981,7 @@ def load_discrimination_data(db_path: str, analysis_id: str) -> Optional['Discri
     if result:
         return pickle.loads(result[0])
     return None
+
 
 if __name__ == '__main__':
     # Generate test data
