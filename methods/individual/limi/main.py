@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import time
 from tqdm import tqdm
 
 from sklearn.model_selection import train_test_split
@@ -13,7 +14,7 @@ from sklearn.decomposition import PCA
 from imblearn.over_sampling import RandomOverSampler
 import warnings
 
-from data_generator.main import get_real_data
+from data_generator.main import get_real_data, DiscriminationData
 from methods.utils import train_sklearn_model
 
 warnings.filterwarnings('ignore')
@@ -171,10 +172,8 @@ class LatentImitator:
         return found_instances
 
 
-if __name__ == '__main__':
-    # 1. Load data
-    discrimination_data, data_schema = get_real_data('adult', use_cache=True)
-
+def run_limi(discrimination_data: DiscriminationData, lambda_val=0.3, n_test_samples=2000, n_approx_samples=50000):
+    start_time = time.time()
     print("\nTraining the black-box model (RandomForest)...")
     # RandomForestClassifier has `predict_proba`, so it's a suitable model for this corrected code.
     model, X_train, X_test, y_train, y_test, feature_names, metrics = train_sklearn_model(
@@ -193,34 +192,153 @@ if __name__ == '__main__':
     generator_pca.fit(X_train)
     print(f"Generator created with latent space dimension: {LATENT_DIM}")
 
-    # 4. Identify Protected Attribute Columns
-    protected_attribute = discrimination_data.protected_attributes[0]
-    X = discrimination_data.xdf
-    protected_attr_categories = X[protected_attribute].unique()
-    print(f"Protected attribute '{protected_attribute}' maps to columns: {discrimination_data.sensitive_indices}")
-
     # 5. Initialize and run LIMI
     print("\n--- Initializing Latent Imitator (LIMI) ---")
     limi_tester = LatentImitator(
         black_box_model=model,
         generator=generator_pca,
         protected_attribute_indices=tuple(discrimination_data.sensitive_indices),
-        lambda_val=0.3
+        lambda_val=lambda_val
     )
 
-    discriminatory_instances = limi_tester.test(n_test_samples=2000, n_approx_samples=50000)
+    discriminatory_instances = limi_tester.test(n_test_samples=n_test_samples, n_approx_samples=n_approx_samples)
 
     # 6. Analyze Results
     print("\n--- LIMI Test Results ---")
     print(f"Total discriminatory instances found: {len(discriminatory_instances)}")
-
+    
+    # Track metrics for compatibility with other methods
+    tot_inputs = set()  # Total inputs tested
+    all_discriminations = []  # Discriminatory pairs found
+    dsn_by_attr_value = {'total': {'TSN': 0, 'DSN': 0}}
+    
+    # Initialize counters for protected attributes
+    for attr in discrimination_data.protected_attributes:
+        for val in discrimination_data.training_dataframe[attr].unique():
+            key = f"{attr}={val}"
+            dsn_by_attr_value[key] = {'TSN': 0, 'DSN': 0}
+    
     if discriminatory_instances:
-        print("\nExample of a discriminatory instance:")
-        instance = discriminatory_instances[0]
-        df_orig = pd.DataFrame([instance['original_input']], columns=discrimination_data.feature_names)
-        df_mod = pd.DataFrame([instance['modified_input']], columns=discrimination_data.feature_names)
-        res_df = pd.concat([df_orig, df_mod])
-        res_df['nature'] = ['original', 'modified']
+        for instance in discriminatory_instances:
+            # Extract original and modified inputs and their predictions
+            org_input = instance['original_input']
+            mod_input = instance['modified_input']
+            org_pred = instance['original_prediction']
+            mod_pred = instance['modified_prediction']
+            
+            # Add to total inputs
+            tot_inputs.add(tuple(org_input))
+            tot_inputs.add(tuple(mod_input))
+            
+            # Add to discriminatory pairs
+            all_discriminations.append((org_input, org_pred, mod_input, mod_pred))
+            
+            # Update counts for protected attributes
+            for i, attr in enumerate(discrimination_data.protected_attributes):
+                attr_idx = discrimination_data.feature_names.index(attr)
+                org_val = org_input[attr_idx]
+                mod_val = mod_input[attr_idx]
+                
+                # Update counts for this attribute value
+                key_org = f"{attr}={org_val}"
+                key_mod = f"{attr}={mod_val}"
+                
+                if key_org in dsn_by_attr_value:
+                    dsn_by_attr_value[key_org]['TSN'] += 1
+                    dsn_by_attr_value[key_org]['DSN'] += 1
+                
+                if key_mod in dsn_by_attr_value:
+                    dsn_by_attr_value[key_mod]['TSN'] += 1
+                
+                # Update total counts
+                dsn_by_attr_value['total']['TSN'] += 2  # Both original and modified
+                dsn_by_attr_value['total']['DSN'] += 1  # One discriminatory pair
+    
+    # Calculate metrics and create result dataframe in the same format as exp_ga
+    end_time = time.time()
+    total_time = end_time - start_time
+    
+    # Calculate metrics
+    tsn = len(tot_inputs)  # Total Sample Number
+    dsn = len(all_discriminations)  # Discriminatory Sample Number
+    sur = dsn / tsn if tsn > 0 else 0  # Success Rate
+    dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
+    
+    # Update SUR and DSS for each attribute value
+    for k, v in dsn_by_attr_value.items():
+        if k != 'total':
+            dsn_by_attr_value[k]['SUR'] = dsn_by_attr_value[k]['DSN'] / dsn_by_attr_value[k]['TSN'] if \
+                dsn_by_attr_value[k]['TSN'] != 0 else 0
+            dsn_by_attr_value[k]['DSS'] = dss
+    
+    # Create metrics dict
+    metrics = {
+        'TSN': tsn,
+        'DSN': dsn,
+        'SUR': sur,
+        'DSS': dss,
+        'total_time': total_time,
+        'dsn_by_attr_value': dsn_by_attr_value
+    }
+    
+    # Log results
+    print("\nFinal Results:")
+    print(f"Total inputs tested: {tsn}")
+    print(f"Total discriminatory pairs: {dsn}")
+    print(f"Success rate (SUR): {sur:.4f}")
+    print(f"Avg. search time per discriminatory sample (DSS): {dss:.4f} seconds")
+    print(f"Total time: {total_time:.2f} seconds")
+    
+    # Generate result dataframe in the same format as exp_ga
+    res_df = []
+    case_id = 0
+    
+    for org, org_res, counter_org, counter_org_res in all_discriminations:
+        # Create dataframes for original and modified inputs
+        indv1 = pd.DataFrame([list(org)], columns=discrimination_data.feature_names)
+        indv2 = pd.DataFrame([list(counter_org)], columns=discrimination_data.feature_names)
+        
+        # Create individual keys
+        indv_key1 = "|".join(str(x) for x in indv1[discrimination_data.feature_names].iloc[0])
+        indv_key2 = "|".join(str(x) for x in indv2[discrimination_data.feature_names].iloc[0])
+        
+        # Add additional columns
+        indv1['indv_key'] = indv_key1
+        indv1['outcome'] = org_res
+        indv2['indv_key'] = indv_key2
+        indv2['outcome'] = counter_org_res
+        
+        # Create couple_key and diff_outcome
+        couple_key = f"{indv_key1}-{indv_key2}"
+        diff_outcome = abs(org_res - counter_org_res)
+        
+        # Combine into a single dataframe
+        df_res = pd.concat([indv1, indv2])
+        df_res['couple_key'] = couple_key
+        df_res['diff_outcome'] = diff_outcome
+        df_res['case_id'] = case_id
+        res_df.append(df_res)
+        case_id += 1
+    
+    if len(res_df) != 0:
+        res_df = pd.concat(res_df)
+        # Add metrics to result dataframe
+        res_df['TSN'] = tsn
+        res_df['DSN'] = dsn
+        res_df['SUR'] = sur
+        res_df['DSS'] = dss
+    else:
+        # Create empty dataframe with correct columns if no discriminatory instances found
+        res_df = pd.DataFrame(columns=discrimination_data.feature_names + 
+                             ['indv_key', 'outcome', 'couple_key', 'diff_outcome', 'case_id',
+                              'TSN', 'DSN', 'SUR', 'DSS'])
+    
+    return res_df, metrics
 
-        print(res_df)
-        print("\n(Note: Other features like age, hours-per-week, etc., are nearly identical between the two inputs)")
+
+if __name__ == '__main__':
+    discrimination_data, data_schema = get_real_data('adult', use_cache=True)
+
+    results_df, metrics = run_limi(discrimination_data)
+    print(results_df)
+    print(f"\nTesting Metrics: {metrics}")
