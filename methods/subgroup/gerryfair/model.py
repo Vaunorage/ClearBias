@@ -43,6 +43,7 @@ class Model:
         # print output variables
         errors = []
         fairness_violations = []
+        subgroups_history = []
 
         iteration = 1
         while iteration < self.max_iters:
@@ -53,6 +54,7 @@ class Model:
             # auditor's best response: find group, update costs
             metric_baseline = auditor.get_baseline(y, predictions) 
             group = auditor.get_group(predictions, metric_baseline)
+            subgroups_history.append(group)
             costs_0, costs_1 = auditor.update_costs(costs_0, costs_1, group, self.C, iteration, self.gamma)
 
             # outputs
@@ -67,7 +69,7 @@ class Model:
                 iteration = self.max_iters
 
         self.classifiers = history.classifiers
-        return errors, fairness_violations
+        return errors, fairness_violations, subgroups_history
 
     def print_outputs(self, iteration, error, group):
         print('iteration: {}'.format(int(iteration)))
@@ -150,8 +152,8 @@ class Model:
         ''' Trains a subgroup-fair model using provided data and specified parameters. '''
 
         if alg == "fict":
-            err, fairness_violations = self.fictitious_play(X, X_prime, y)
-            return err, fairness_violations
+            err, fairness_violations, subgroups_history = self.fictitious_play(X, X_prime, y)
+            return err, fairness_violations, subgroups_history
         else:
             raise Exception("Specified algorithm is invalid")
 
