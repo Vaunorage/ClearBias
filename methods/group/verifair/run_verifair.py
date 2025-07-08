@@ -86,11 +86,9 @@ def _run_single_verifair_analysis(model, X_test, analysis_attribute, group_a_val
 
 
 # --- Main Analysis Function ---
-def find_discrimination_with_verifair(dataset_name='adult',
-                                      analysis_attribute=None, group_a_value=None, group_b_value=None,
-                                      analyze_all_combinations=False,
-                                      c=0.15, Delta=0.0, delta=0.5 * 1e-10,
-                                      n_samples=1, n_max=100000, is_causal=False, log_iters=1000):
+def find_discrimination_with_verifair(dataset_name='adult', analysis_attribute=None, group_a_value=None,
+                                      group_b_value=None, analyze_all_combinations=False, c=0.15, Delta=0.0,
+                                      delta=0.5 * 1e-10, n_samples=1, n_max=100000, is_causal=False, log_iters=1000):
     """
     Loads a dataset, trains a model, and uses VeriFair to find discrimination.
 
@@ -185,7 +183,9 @@ if __name__ == '__main__':
     # To automatically analyze all combinations of protected attributes:
     summary_df = find_discrimination_with_verifair(
         dataset_name='adult',
-        analyze_all_combinations=True
+        analysis_attribute=None, group_a_value=None,
+        group_b_value=None, analyze_all_combinations=False, c=0.15, Delta=0.0,
+        delta=0.5 * 1e-10, n_samples=1, n_max=1000, is_causal=False, log_iters=1000
     )
 
     log('Script finished.', INFO)

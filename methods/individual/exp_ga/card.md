@@ -35,3 +35,142 @@ The performance of ExpGA was evaluated based on its **efficiency** and **effecti
 *   **Fairness Improvement through Retraining:**
     *   By augmenting the training data with the discriminatory samples found by ExpGA and retraining the model, the model's fairness was considerably improved.
     *   After retraining, **over 97% of the original discriminatory samples were no longer misclassified**, while the model's accuracy on normal, non-discriminatory samples remained nearly unchanged.
+
+# ExpGA Algorithm Implementation
+
+## Input Parameters of ExpGA Algorithm
+
+The ExpGA (Explainable Genetic Algorithm) is a fairness testing algorithm that identifies discriminatory instances in machine learning models by examining how protected attributes influence model predictions. Here's a detailed breakdown of its input parameters:
+
+## Required Parameters
+
+### `data: DiscriminationData`
+A data object containing the dataset with features, labels, and metadata about protected attributes
+- Contains information about feature names, protected attributes, input bounds, and sensitive indices
+
+### `threshold_rank: float`
+Threshold value that determines when a protected attribute is considered influential
+- Used during seed selection to identify promising instances for discrimination testing
+- **Example**: `threshold_rank=0.5` means attributes with influence above 50% are considered significant
+
+### `max_global: int`
+Maximum number of global samples to generate during the initial discovery phase
+- Controls how many samples are created for each protected attribute
+- **Example**: `max_global=20000` will generate up to 20,000 samples distributed across protected attributes
+
+### `max_local: int`
+Maximum number of iterations for the genetic algorithm's local search phase
+- Controls how many generations the GA will evolve to find discriminatory instances
+- **Example**: `max_local=100` will run up to 100 generations of evolution
+
+## Optional Parameters
+
+### `model_type: str = 'rf'`
+Type of machine learning model to train and test (default: Random Forest)
+
+### `cross_rate: float = 0.9`
+Crossover rate for the genetic algorithm (range: 0.0 to 1.0)
+
+### `mutation: float = 0.1`
+Mutation rate for the genetic algorithm (range: 0.0 to 1.0)
+
+### `max_runtime_seconds: float = None`
+Maximum runtime in seconds before early termination
+
+### `max_tsn: int = None`
+Maximum number of test samples (TSN) before early termination
+
+### `random_seed: int = 100`
+Seed for random number generation to ensure reproducibility
+
+### `one_attr_at_a_time: bool = False`
+- If `True`, tests discrimination by varying one protected attribute at a time
+- If `False`, tests all combinations of protected attributes
+
+### `db_path: str = None`
+Path to SQLite database for storing results
+
+### `analysis_id: str = None`
+Identifier for the analysis run in the database
+
+### `use_gpu: bool = False`
+Whether to use GPU acceleration for model training and inference
+
+### `**model_kwargs`
+Additional keyword arguments passed to the model training function
+
+## Output
+
+The algorithm returns a tuple with two elements:
+
+### `res_df: pd.DataFrame`
+A DataFrame containing the discriminatory instances found with the following structure:
+
+- **attr_columns**: All feature columns from the original dataset
+- **indv_key**: A string key identifying each individual instance (pipe-separated feature values)
+- **outcome**: The model's prediction for this instance
+- **couple_key**: A key linking pairs of instances that demonstrate discrimination (format: "indv_key1-indv_key2")
+- **diff_outcome**: The absolute difference in outcomes between the paired instances
+- **case_id**: A unique identifier for each discriminatory case
+- **TSN**: Total Sample Number (total instances tested)
+- **DSN**: Discriminatory Sample Number (instances showing discrimination)
+- **SUR**: Success Rate (DSN/TSN)
+- **DSS**: Discriminatory Sample Search time (time per discriminatory sample)
+
+### `metrics: Metrics`
+A dictionary with the following fairness metrics:
+
+- **TSN**: Total number of test samples evaluated
+- **DSN**: Number of discriminatory instances found
+- **SUR**: Success Rate (DSN/TSN)
+- **DSS**: Average search time per discriminatory sample (seconds)
+- **total_time**: Total execution time (seconds)
+- **dsn_by_attr_value**: Detailed breakdown of discrimination by protected attribute
+
+## Example Output DataFrame
+
+```python
+# Example output DataFrame (res_df)
+example_df = pd.DataFrame({
+    # Original instance features
+    'age': [35, 35, 42, 42],
+    'gender': [0, 1, 1, 1],
+    'race': [1, 1, 0, 1],
+    'income': [50000, 50000, 65000, 65000],
+    
+    # Additional columns
+    'indv_key': ['35|0|1|50000', '35|1|1|50000', '42|1|0|65000', '42|1|1|65000'],
+    'outcome': [0, 1, 1, 0],
+    'couple_key': ['35|0|1|50000-35|1|1|50000', '35|0|1|50000-35|1|1|50000', 
+                  '42|1|0|65000-42|1|1|65000', '42|1|0|65000-42|1|1|65000'],
+    'diff_outcome': [1, 1, 1, 1],
+    'case_id': [0, 0, 1, 1],
+    
+    # Metrics added to all rows
+    'TSN': [5000, 5000, 5000, 5000],
+    'DSN': [2, 2, 2, 2],
+    'SUR': [0.0004, 0.0004, 0.0004, 0.0004],
+    'DSS': [12.5, 12.5, 12.5, 12.5]
+})
+```
+
+In this example, each discriminatory case includes two rows: the original instance and the modified instance with different protected attribute values. The pairs show that changing protected attributes (gender in case 0, race in case 1) led to different model outcomes, indicating potential discrimination.
+
+## Example Metrics Dictionary
+
+```python
+example_metrics = {
+    'TSN': 5000,
+    'DSN': 2,
+    'SUR': 0.0004,
+    'DSS': 12.5,
+    'total_time': 25.0,
+    'dsn_by_attr_value': {
+        'gender': {'TSN': 2500, 'DSN': 1, 'SUR': 0.0004, 'DSS': 12.5},
+        'race': {'TSN': 2500, 'DSN': 1, 'SUR': 0.0004, 'DSS': 12.5},
+        'total': 2
+    }
+}
+```
+
+The metrics provide an overall summary of the testing process and detailed information about discrimination by each protected attribute.

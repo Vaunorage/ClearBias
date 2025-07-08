@@ -47,3 +47,131 @@ The method's performance was evaluated against 6 other state-of-the-art fairness
         -   **32.81%** on Individual Fairness (IF_o)
         -   **9.86%** on Group Fairness (SPD)
         -   **28.38%** on Group Fairness (AOD)
+
+# LIMI (Latent Imitator) Algorithm Documentation
+
+## Implementation
+
+The LIMI (Latent Imitator) algorithm is designed to find discriminatory instances in machine learning models by exploring the latent space.
+
+## Input Parameters
+
+### discrimination_data: DiscriminationData
+A structured object containing:
+- **training_dataframe**: The dataset used for training
+- **outcome_column**: Target variable column name
+- **protected_attributes**: List of sensitive attributes (e.g., race, gender)
+- **sensitive_indices**: Indices of protected attributes in the feature array
+- **feature_names**: Names of all features in the dataset
+
+### lambda_val (default: 0.3)
+- Controls the step size for probing around the surrogate decision boundary
+- Higher values create larger steps in the latent space when searching for discriminatory instances
+
+### n_test_samples (default: 2000)
+- Number of random latent vectors generated for testing
+- Increasing this value improves the chance of finding discriminatory instances
+
+### n_approx_samples (default: 50000)
+- Number of samples used to approximate the decision boundary in latent space
+- Higher values lead to more accurate boundary approximation
+
+## Algorithm Process
+
+### 1. Black-box Model Training
+- Trains a RandomForest classifier on the provided data
+- This model will be tested for fairness
+
+### 2. Generator Creation
+- Uses PCA to create a "generator" that simulates a GAN's latent space
+- The latent dimension is set to `min(10, n_features-1)`
+
+### 3. Latent Boundary Approximation
+- Generates synthetic samples in latent space
+- Filters for high-confidence samples (confidence > 0.7)
+- Balances the dataset using RandomOverSampler
+- Trains a linear SVM as a surrogate model
+
+### 4. Candidate Probing
+- Finds candidate points near the surrogate boundary
+- Uses the `lambda_val` parameter to determine step size
+
+### 5. Verification and Generation
+- Generates data from latent candidates
+- Swaps protected attribute values to check for discrimination
+- Records instances where predictions change after swapping
+
+## Output
+
+The algorithm returns two elements:
+
+1. **results_df**: A pandas DataFrame containing discriminatory instances
+2. **metrics**: A dictionary with testing metrics
+
+## Results DataFrame Structure
+
+The `results_df` contains pairs of instances where changing protected attributes led to different predictions:
+
+- All original feature columns from the input data
+- **indv_key**: A string representation of the instance's feature values
+- **outcome**: The model's prediction for this instance (0 or 1)
+- **couple_key**: Identifier linking original and modified instances in a discriminatory pair
+- **diff_outcome**: Absolute difference in predictions (always 1 for discriminatory pairs)
+- **case_id**: Unique identifier for each discriminatory case
+- **TSN**: Total Sample Number - total instances tested
+- **DSN**: Discriminatory Sample Number - number of discriminatory pairs found
+- **SUR**: Success Rate - ratio of DSN to TSN
+- **DSS**: Discriminatory Sample Search time - average time to find a discriminatory instance
+
+## Metrics Dictionary
+
+The metrics dictionary contains:
+
+- **TSN**: Total number of samples tested
+- **DSN**: Number of discriminatory samples found
+- **SUR**: Success Rate (DSN/TSN)
+- **DSS**: Average time to find a discriminatory instance
+- **total_time**: Total execution time
+- **dsn_by_attr_value**: Detailed metrics broken down by protected attribute values
+
+## Example Output
+
+When running the algorithm on the Adult dataset, the output might look like:
+
+### Example results_df (first few rows):
+
+| age | workclass | education | education-num | marital-status | occupation | race | sex | capital-gain | capital-loss | hours-per-week | native-country | indv_key | outcome | couple_key | diff_outcome | case_id | TSN | DSN | SUR | DSS |
+|-----|-----------|-----------|---------------|----------------|------------|------|-----|--------------|--------------|----------------|----------------|----------|---------|------------|--------------|---------|-----|-----|-----|-----|
+| 42 | Private | Masters | 14 | Married-civ-spouse | Exec-managerial | White | Male | 15024 | 0 | 60 | United-States | 42\|Private\|Masters\|14\|Married-civ-spouse\|Exec-managerial\|White\|Male\|15024\|0\|60\|United-States | 1 | 42\|Private\|Masters\|14\|Married-civ-spouse\|Exec-managerial\|White\|Male\|15024\|0\|60\|United-States-42\|Private\|Masters\|14\|Married-civ-spouse\|Exec-managerial\|White\|Female\|15024\|0\|60\|United-States | 1 | 0 | 1024 | 47 | 0.046 | 12.34 |
+| 42 | Private | Masters | 14 | Married-civ-spouse | Exec-managerial | White | Female | 15024 | 0 | 60 | United-States | 42\|Private\|Masters\|14\|Married-civ-spouse\|Exec-managerial\|White\|Female\|15024\|0\|60\|United-States | 0 | 42\|Private\|Masters\|14\|Married-civ-spouse\|Exec-managerial\|White\|Male\|15024\|0\|60\|United-States-42\|Private\|Masters\|14\|Married-civ-spouse\|Exec-managerial\|White\|Female\|15024\|0\|60\|United-States | 1 | 0 | 1024 | 47 | 0.046 | 12.34 |
+
+### Example metrics:
+
+```json
+{
+    "TSN": 1024,
+    "DSN": 47,
+    "SUR": 0.046,
+    "DSS": 12.34,
+    "total_time": 580.0,
+    "dsn_by_attr_value": {
+        "total": {"TSN": 94, "DSN": 47},
+        "sex=Male": {"TSN": 47, "DSN": 47, "SUR": 1.0, "DSS": 12.34},
+        "sex=Female": {"TSN": 47, "DSN": 0, "SUR": 0.0, "DSS": 12.34},
+        "race=White": {"TSN": 38, "DSN": 38, "SUR": 1.0, "DSS": 12.34},
+        "race=Black": {"TSN": 9, "DSN": 9, "SUR": 1.0, "DSS": 12.34}
+    }
+}
+```
+
+## Key Insights from Example
+
+- Each discriminatory instance is represented by two rows in the DataFrame (original and modified)
+- The rows are paired by the `couple_key` and `case_id`
+- The `outcome` column shows that changing from Male to Female changed the prediction from 1 to 0
+- The metrics show 47 discriminatory pairs found out of 1024 tested samples (4.6% success rate)
+- The `dsn_by_attr_value` provides a breakdown of discrimination by protected attribute values
+
+## Summary
+
+The LIMI algorithm is particularly effective at finding individual fairness violations where changing protected attributes causes different model predictions despite other features remaining the same.
