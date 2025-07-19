@@ -680,6 +680,38 @@ def check_for_error_condition(dsn_by_attr_value, discrimination_data: Discrimina
     return new_df['discrimination'].any(), new_df[new_df['discrimination']], max_discrimination, instance, tested_inp
 
 
+def make_subgroup_metrics_and_dataframe(res_df, tsn, dsn, start_time, logger=None):
+    end_time = time.time()
+    total_time = end_time - start_time
+
+    sur = dsn / tsn if tsn > 0 else 0
+    dss = total_time / dsn if dsn > 0 else float('inf')
+
+    metrics = {
+        'TSN': tsn,
+        'DSN': dsn,
+        'SUR': sur,
+        'DSS': dss,
+        'total_time': total_time
+    }
+
+    if logger:
+        logger.info("\nFinal Results:")
+        logger.info(f"Total inputs tested: {tsn}")
+        logger.info(f"Total discriminatory samples in slices: {dsn}")
+        logger.info(f"Success rate (SUR): {sur:.4f}")
+        logger.info(f"Avg. search time per discriminatory sample (DSS): {dss:.4f} seconds")
+        logger.info(f"Total time: {total_time:.2f} seconds")
+
+    if not res_df.empty:
+        res_df['TSN'] = tsn
+        res_df['DSN'] = dsn
+        res_df['SUR'] = sur
+        res_df['DSS'] = dss
+
+    return res_df, metrics
+
+
 def make_final_metrics_and_dataframe(discrimination_data, tot_inputs, all_discriminations,
                                      dsn_by_attr_value, start_time, logger=None):
     end_time = time.time()
@@ -707,13 +739,14 @@ def make_final_metrics_and_dataframe(discrimination_data, tot_inputs, all_discri
         'dsn_by_attr_value': dsn_by_attr_value
     }
 
-    logger.info("\nFinal Results:")
-    logger.info(f"Total inputs tested: {tsn}")
-    logger.info(f"Total discriminatory pairs: {dsn}")
-    logger.info(f"Success rate (SUR): {sur:.4f}")
-    logger.info(f"Avg. search time per discriminatory sample (DSS): {dss:.4f} seconds")
-    logger.info(f"Discrimination by attribute value: {dsn_by_attr_value}")
-    logger.info(f"Total time: {total_time:.2f} seconds")
+    if logger:
+        logger.info("\nFinal Results:")
+        logger.info(f"Total inputs tested: {tsn}")
+        logger.info(f"Total discriminatory pairs: {dsn}")
+        logger.info(f"Success rate (SUR): {sur:.4f}")
+        logger.info(f"Avg. search time per discriminatory sample (DSS): {dss:.4f} seconds")
+        logger.info(f"Discrimination by attribute value: {dsn_by_attr_value}")
+        logger.info(f"Total time: {total_time:.2f} seconds")
 
     # Generate result dataframe
     res_df = []

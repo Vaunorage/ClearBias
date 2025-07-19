@@ -1,14 +1,13 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import signal
 import os
-
-import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
+
+from methods.individual.exp_ga.algo import Metrics
 from methods.subgroup.slicefinder.slice_finder import SliceFinder, Slice
 from methods.subgroup.slicefinder.decision_tree import DecisionTree, Node
 from typing import List, Dict, Any, Optional
 import pandas as pd
-import numpy as np
 from methods.subgroup.slicefinder.slice_finder import Slice
 
 
@@ -194,7 +193,7 @@ def run_slicefinder(
         # Display options
         verbose: bool = True,
         drop_na: bool = True
-):
+) -> Tuple[Dict, Metrics]:
     """
     Run SliceFinder analysis using lattice search and/or decision tree approaches.
 
@@ -233,12 +232,9 @@ def run_slicefinder(
 
     Returns:
     --------
-    dict : Dictionary containing results from both approaches
-        - 'lattice_slices': List of slices from lattice search (if run)
-        - 'dt_slices': List of slices from decision tree (if run)
-        - 'model': The trained model used
-        - 'data': The processed data (X, y)
-        - 'summary': Summary statistics
+    tuple : A tuple containing:
+        - dict: Dictionary containing results from both approaches
+        - Metrics: A TypedDict containing performance metrics (TSN, DSN, etc.)
     """
 
     # Validate approach parameter
@@ -377,7 +373,45 @@ def run_slicefinder(
         if max_runtime_seconds is not None and os.name != 'nt':
             signal.alarm(0)
 
-    return results
+    # Calculate metrics
+    tsn = len(X)
+    dsn_lattice = 0
+    if results['lattice_slices'] is not None and not results['lattice_slices'].empty:
+        dsn_lattice = len(results['lattice_slices'])
+
+    dsn_dt = 0
+    if results['dt_slices'] is not None and not results['dt_slices'].empty:
+        dsn_dt = len(results['dt_slices'])
+
+    dsn = dsn_lattice + dsn_dt
+
+    metrics = Metrics(
+        TSN=tsn,
+        DSN=dsn,
+        DSS=dsn / tsn if tsn > 0 else 0.0,  # Discrimination Success Score
+        SUR=0.0  # SUR is not applicable here, set to 0
+    )
+
+    results['summary'] = {
+        'total_samples': tsn,
+        'lattice_slices_found': dsn_lattice,
+        'dt_slices_found': dsn_dt,
+        'total_slices_found': dsn
+    }
+
+    # Return results
+    if verbose:
+        print("\n===== ANALYSIS COMPLETE =====")
+        if results['lattice_slices'] is not None:
+            print(f"Found {dsn_lattice} slices using lattice search.")
+        if results['dt_slices'] is not None:
+            print(f"Found {dsn_dt} slices using decision tree.")
+
+    # Add model and data to results for further inspection
+    results['model'] = model
+    results['data'] = (X, y)
+
+    return results, metrics
 
 
 # Example usage:
@@ -388,7 +422,7 @@ if __name__ == "__main__":
     data_obj, schema = get_real_data('adult', use_cache=True)
 
     # Run with both approaches (default)
-    results = run_slicefinder(data_obj, approach="lattice", model=None, max_depth=5,
+    results = run_slicefinder(data_obj, approach="lattice", model=None, max_depth=2,
                               n_estimators=1, k=2, epsilon=0.3, degree=2,
                               max_workers=4, dt_max_depth=3, min_size=100,
                               min_effect_size=0.3, verbose=True, drop_na=True,

@@ -2,10 +2,16 @@ import pandas as pd
 from pandas import json_normalize
 import signal
 from contextlib import contextmanager
+import time
+import logging
 
 from data_generator.main import generate_optimal_discrimination_data, get_real_data, DiscriminationData
 from methods.subgroup.divexplorer.divexplorer.FP_Divergence import FP_Divergence
 from methods.subgroup.divexplorer.divexplorer.FP_DivergenceExplorer import FP_DivergenceExplorer
+from methods.utils import make_final_metrics_and_dataframe
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -23,16 +29,10 @@ def timeout(time):
         signal.alarm(0)
 
 
-def run_divexploer(data_obj: DiscriminationData, K=5, max_runtime_seconds=60):
-    def parse_itemset(itemset_str):
-        """Convert itemset string to dictionary"""
-        items = {e.split('=')[0]: e.split('=')[1] for e in itemset_str}
-
-        for attribute in data_obj.attributes:
-            if attribute not in items:
-                items[attribute] = None
-
-        return items
+def run_divexploer(data_obj: DiscriminationData, K=5, max_runtime_seconds=60, min_support=0.05):
+    start_time = time.time()
+    all_discriminations = []
+    dsn_by_attr_value = {}
 
     try:
         with timeout(max_runtime_seconds):
@@ -42,29 +42,30 @@ def run_divexploer(data_obj: DiscriminationData, K=5, max_runtime_seconds=60):
                                              true_class_name=data_obj.outcome_column,
                                              predicted_class_name=data_obj.y_pred_col)
 
-            FP_fm = fp_diver.getFrequentPatternDivergence(min_support=0.05)
+            FP_fm = fp_diver.getFrequentPatternDivergence(min_support=min_support)
 
             fp_divergence_fpr = FP_Divergence(FP_fm, "d_fpr")
-            fp_divergence_fnr = FP_Divergence(FP_fm, "d_fnr")
-
             top_k_fpr = fp_divergence_fpr.getDivergenceTopKDf(K=K, th_redundancy=0)
-            top_k_fpr['metric'] = 'fpr'
-            top_k_fpr.rename(columns={'d_fpr': 'value'}, inplace=True)
+            for _, row in top_k_fpr.iterrows():
+                all_discriminations.append(row['itemsets'])
 
+            fp_divergence_fnr = FP_Divergence(FP_fm, "d_fnr")
             top_k_fnr = fp_divergence_fnr.getDivergenceTopKDf(K=K, th_redundancy=0)
-            top_k_fnr['metric'] = 'fnr'
-            top_k_fnr.rename(columns={'d_fnr': 'value'}, inplace=True)
+            for _, row in top_k_fnr.iterrows():
+                all_discriminations.append(row['itemsets'])
 
-            top_k_df = pd.concat([top_k_fpr, top_k_fnr])
-
-            top_k_df['items'] = top_k_df['itemsets'].apply(parse_itemset)
-
-            df_final = pd.concat([top_k_df.drop(columns=['itemsets', 'items'], axis=1), json_normalize(top_k_df['items'])],
-                                 axis=1)
-
-            return df_final
     except TimeoutError:
-        return pd.DataFrame() # Return empty dataframe if timeout is reached
+        logger.info("Divexplorer timed out")
+
+    # Mocking some values that are not directly available from divexplorer
+    tot_inputs = set()
+    for i in range(len(data_obj.training_dataframe)):
+        tot_inputs.add(tuple(data_obj.training_dataframe.iloc[i]))
+
+    res_df, metrics = make_final_metrics_and_dataframe(data_obj, tot_inputs, all_discriminations, dsn_by_attr_value,
+                                                       start_time, logger=logger)
+
+    return res_df, metrics
 
 
 if __name__ == '__main__':
@@ -75,4 +76,6 @@ if __name__ == '__main__':
     #                                                 use_cache=True)
     data_obj, schema = get_real_data('adult', use_cache=False)
 
-    res = run_divexploer(data_obj, max_runtime_seconds=60)
+    res, metrics = run_divexploer(data_obj, max_runtime_seconds=60)
+    print(res)
+    print(metrics)

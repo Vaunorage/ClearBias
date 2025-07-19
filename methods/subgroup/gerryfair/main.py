@@ -1,7 +1,13 @@
 import pandas as pd
 from pathlib import Path
+import time
+import logging
 from data_generator.main import DiscriminationData, get_real_data
 from methods.subgroup.gerryfair import clean, model
+from methods.utils import make_final_metrics_and_dataframe
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def prepare_data_for_gerryfair(data, protected_attrs, outcome_col):
@@ -57,6 +63,7 @@ def prepare_data_for_gerryfair(data, protected_attrs, outcome_col):
 
 
 def run_gerryfair(ge: DiscriminationData, C=10, gamma=0.01, max_iters=3):
+    start_time = time.time()
     print("Generating synthetic data...")
 
     # Extract protected attributes directly from the DiscriminationData object
@@ -91,21 +98,39 @@ def run_gerryfair(ge: DiscriminationData, C=10, gamma=0.01, max_iters=3):
     fn_errors, fn_difference, fn_subgroups_history = fair_model_fn.train(X_train, X_prime_train, y_train)
 
     print("\n--- History of Subgroups Found During Training ---")
-    final_vals = []
-    for i, group_obj in enumerate(fp_subgroups_history+fn_subgroups_history):
-        print(f"\nIteration {i + 1}:")
-        print(f"  Fairness Violation: {group_obj.weighted_disparity}")
-        group_coeffs = {k: v for k, v in zip(ge.protected_attributes, group_obj.func.b1.coef_)}
-        print(f"  Group Characteristics (coefficients for protected attributes): {group_coeffs}")
-        final_val = {**group_coeffs, **{e: None for e in ge.non_protected_attributes}, **group_obj.to_dict()}
-        final_vals.append(final_val)
-    final_vals = pd.DataFrame(final_vals)
+    all_discriminations = set()
+    dsn_by_attr_value = {}
+
+    for i, group_obj in enumerate(fp_subgroups_history + fn_subgroups_history):
+        # A subgroup is defined by a linear separator. We can't directly map it to a single input vector.
+        # As a proxy, we'll count the subgroup itself as one discriminatory instance.
+        # We'll create a representative tuple for the subgroup to add to all_discriminations.
+        group_coeffs = tuple(group_obj.func.b1.coef_)
+        all_discriminations.add(group_coeffs)
+
+    # Since GerryFair operates on subgroups, we consider the entire training set as the input space.
+    tot_inputs = {tuple(row) for _, row in X_train.iterrows()}
+
+    # We can't directly attribute subgroup discrimination to specific attribute values in the same way as individual fairness.
+    # For now, we will pass an empty dictionary for dsn_by_attr_value.
+
+    res_df, metrics = make_final_metrics_and_dataframe(
+        ge,
+        tot_inputs,
+        all_discriminations,
+        dsn_by_attr_value,
+        start_time,
+        logger=logger
+    )
 
     print("\nAudit complete!")
-    return final_vals
+    return res_df, metrics
 
 
 if __name__ == "__main__":
     ge, schema = get_real_data('adult', use_cache=False)
-    res = run_gerryfair(ge, C=10, gamma=0.001, max_iters=4)
-    print(res)
+    res_df, metrics = run_gerryfair(ge, C=10, gamma=0.001, max_iters=4)
+    print("\n--- Results ---")
+    print(res_df)
+    print(f"\n--- Metrics ---")
+    print(metrics)

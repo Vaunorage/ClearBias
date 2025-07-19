@@ -15,7 +15,7 @@ from imblearn.over_sampling import RandomOverSampler
 import warnings
 
 from data_generator.main import get_real_data, DiscriminationData
-from methods.utils import train_sklearn_model
+from methods.utils import train_sklearn_model, make_final_metrics_and_dataframe
 
 warnings.filterwarnings('ignore')
 
@@ -275,85 +275,9 @@ def run_limi(discrimination_data: DiscriminationData, lambda_val=0.3, n_test_sam
                 dsn_by_attr_value['total']['TSN'] += 2  # Both original and modified
                 dsn_by_attr_value['total']['DSN'] += 1  # One discriminatory pair
     
-    # Calculate metrics and create result dataframe in the same format as exp_ga
-    end_time = time.time()
-    total_time = end_time - start_time
-    
-    # Calculate metrics
-    tsn = len(tot_inputs)  # Total Sample Number
-    dsn = len(all_discriminations)  # Discriminatory Sample Number
-    sur = dsn / tsn if tsn > 0 else 0  # Success Rate
-    dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
-    
-    # Update SUR and DSS for each attribute value
-    for k, v in dsn_by_attr_value.items():
-        if k != 'total':
-            dsn_by_attr_value[k]['SUR'] = dsn_by_attr_value[k]['DSN'] / dsn_by_attr_value[k]['TSN'] if \
-                dsn_by_attr_value[k]['TSN'] != 0 else 0
-            dsn_by_attr_value[k]['DSS'] = dss
-    
-    # Create metrics dict
-    metrics = {
-        'TSN': tsn,
-        'DSN': dsn,
-        'SUR': sur,
-        'DSS': dss,
-        'total_time': total_time,
-        'dsn_by_attr_value': dsn_by_attr_value
-    }
-    
-    # Log results
-    print("\nFinal Results:")
-    print(f"Total inputs tested: {tsn}")
-    print(f"Total discriminatory pairs: {dsn}")
-    print(f"Success rate (SUR): {sur:.4f}")
-    print(f"Avg. search time per discriminatory sample (DSS): {dss:.4f} seconds")
-    print(f"Total time: {total_time:.2f} seconds")
-    
-    # Generate result dataframe in the same format as exp_ga
-    res_df = []
-    case_id = 0
-    
-    for org, org_res, counter_org, counter_org_res in all_discriminations:
-        # Create dataframes for original and modified inputs
-        indv1 = pd.DataFrame([list(org)], columns=discrimination_data.feature_names)
-        indv2 = pd.DataFrame([list(counter_org)], columns=discrimination_data.feature_names)
-        
-        # Create individual keys
-        indv_key1 = "|".join(str(x) for x in indv1[discrimination_data.feature_names].iloc[0])
-        indv_key2 = "|".join(str(x) for x in indv2[discrimination_data.feature_names].iloc[0])
-        
-        # Add additional columns
-        indv1['indv_key'] = indv_key1
-        indv1['outcome'] = org_res
-        indv2['indv_key'] = indv_key2
-        indv2['outcome'] = counter_org_res
-        
-        # Create couple_key and diff_outcome
-        couple_key = f"{indv_key1}-{indv_key2}"
-        diff_outcome = abs(org_res - counter_org_res)
-        
-        # Combine into a single dataframe
-        df_res = pd.concat([indv1, indv2])
-        df_res['couple_key'] = couple_key
-        df_res['diff_outcome'] = diff_outcome
-        df_res['case_id'] = case_id
-        res_df.append(df_res)
-        case_id += 1
-    
-    if len(res_df) != 0:
-        res_df = pd.concat(res_df)
-        # Add metrics to result dataframe
-        res_df['TSN'] = tsn
-        res_df['DSN'] = dsn
-        res_df['SUR'] = sur
-        res_df['DSS'] = dss
-    else:
-        # Create empty dataframe with correct columns if no discriminatory instances found
-        res_df = pd.DataFrame(columns=discrimination_data.feature_names + 
-                             ['indv_key', 'outcome', 'couple_key', 'diff_outcome', 'case_id',
-                              'TSN', 'DSN', 'SUR', 'DSS'])
-    
+    res_df, metrics = make_final_metrics_and_dataframe(discrimination_data, tot_inputs, all_discriminations, dsn_by_attr_value,
+                                                       start_time)
+
     return res_df, metrics
 
 

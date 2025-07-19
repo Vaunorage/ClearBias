@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 import re
+import time
+import logging
 from pandas import json_normalize
 from sliceline.slicefinder import Slicefinder
 from sklearn.linear_model import LogisticRegression
@@ -9,6 +11,9 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 
 from data_generator.main import DiscriminationData, get_real_data
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def parse_sliceline_itemset(itemset_str, all_attributes):
     """Convert sliceline itemset string to dictionary"""
@@ -31,10 +36,11 @@ def parse_sliceline_itemset(itemset_str, all_attributes):
     return items
 
 
-def run_sliceline(data_obj: DiscriminationData, K=5, alpha=0.95, max_l=3, max_runtime_seconds=60):
+def run_sliceline(data_obj: DiscriminationData, K=5, alpha=0.95, max_l=3, max_runtime_seconds=60, logger=None):
     """
     Finds top K slices with high FPR and FNR using Sliceline.
     """
+    start_time = time.time()
     df = data_obj.training_dataframe_with_ypred.copy()
     X = df[data_obj.attr_columns]
     y_true = df[data_obj.outcome_column]
@@ -68,19 +74,65 @@ def run_sliceline(data_obj: DiscriminationData, K=5, alpha=0.95, max_l=3, max_ru
         
     if not all_results:
         print("Sliceline did not find any significant slices.")
-        return pd.DataFrame()
+        return pd.DataFrame(), {}
 
     df_final = pd.concat(all_results, ignore_index=True)
 
-    return df_final
+    tsn = len(df)
+    dsn = df_final['size'].sum()
+
+    return make_subgroup_metrics_and_dataframe(df_final, tsn, dsn, start_time, logger=logger)
+
+def make_subgroup_metrics_and_dataframe(df_final, tsn, dsn, start_time, logger):
+    """
+    Processes the sliceline results, calculates metrics, and formats the output.
+    """
+    runtime = time.time() - start_time
+    if df_final.empty:
+        return pd.DataFrame(), {"runtime": runtime, "tsn": tsn, "dsn": 0, "sur": 0, "dss": float('inf')}
+
+    # Format the dataframe
+    df_final['slice'] = df_final.apply(
+        lambda row: ', '.join([f"{col}={row[col]}" for col in row.index if
+                                row[col] is not None and col not in ['slice_size', 'slice_mean', 'effect_size',
+                                                                    'metric', 'size']]), axis=1)
+
+    df_final = df_final.rename(columns={'size': 'slice_size', 'effect_size': 'slice_impact'})
+    df_final['slice_impact'] = df_final['slice_impact'].round(3)
+    df_final['slice_mean'] = df_final['slice_mean'].round(3)
+
+    # Calculate metrics
+    sur = dsn / tsn if tsn > 0 else 0
+    dss = runtime / dsn if dsn > 0 else float('inf')
+
+    metrics = {
+        "runtime": runtime,
+        "tsn": tsn,
+        "dsn": dsn,
+        "sur": sur,
+        "dss": dss
+    }
+
+    if logger:
+        logger.info(f"Sliceline completed in {runtime:.2f} seconds.")
+        logger.info(f"Total inputs tested (TSN): {tsn}")
+        logger.info(f"Discriminatory samples in slices (DSN): {dsn}")
+        logger.info(f"Success Rate (SUR): {sur:.4f}")
+        logger.info(f"Discriminatory Sample Search time (DSS): {dss:.4f}")
+
+    # Select and reorder columns for the final dataframe
+    res = df_final[['slice', 'slice_size', 'slice_mean', 'slice_impact', 'metric']]
+
+    return res, metrics
 
 
 if __name__ == '__main__':
     # Load data
     data_obj, schema = get_real_data('adult', use_cache=False)
     # Run sliceline
-    res = run_sliceline(data_obj, K=2, max_runtime_seconds=30)
-    
+    res, metrics = run_sliceline(data_obj, K=2, max_runtime_seconds=30, logger=logger)
+
     if not res.empty:
         print("Top Slices found by Sliceline:")
         print(res)
+        print(f"\nMetrics: {metrics}")
