@@ -1,3 +1,4 @@
+import time
 from pfwrapper import PyPatternFinder
 from collections import namedtuple
 
@@ -14,10 +15,12 @@ DivergentPattern = namedtuple('DivergentPattern',
 
 class PatternFinder:
     def __init__(self, root_params, leaf_params,
-                 target_value, sensitive_var_ids):
+                 target_value, sensitive_var_ids, start_time=None, max_runtime_seconds=None):
         self.pattern_finder = PyPatternFinder(root_params, leaf_params,
                                               target_value, sensitive_var_ids)
         self.num_visited = -1
+        self.start_time = start_time
+        self.max_runtime_seconds = max_runtime_seconds
 
     def convert_pattern(self, p):
         return DivergentPattern(base=p['base'], sens=p['sens'], 
@@ -26,21 +29,38 @@ class PatternFinder:
                                 score=p['kld'])
 
     def find_any_divergent(self, threshold, num_patterns):
+        if self.max_runtime_seconds is not None and self.start_time is not None:
+            if time.time() - self.start_time > self.max_runtime_seconds:
+                print("Timeout reached before starting pattern search.")
+                return []
         patterns, self.num_visited = self.pattern_finder.get_divergent_patterns(threshold, num_patterns, True)
         patterns = [self.convert_pattern(p) for p in patterns]
         return patterns
 
     def find_any_discriminating(self, threshold, num_patterns):
+        if self.max_runtime_seconds is not None and self.start_time is not None:
+            if time.time() - self.start_time > self.max_runtime_seconds:
+                print("Timeout reached before starting pattern search.")
+                return []
         patterns, self.num_visited = self.pattern_finder.get_discriminating_patterns(threshold, num_patterns, True)
         patterns = [self.convert_pattern(p) for p in patterns]
         return patterns        
 
     def get_divergent_patterns(self, threshold, num_patterns):
+        if self.max_runtime_seconds is not None and self.start_time is not None:
+            if time.time() - self.start_time > self.max_runtime_seconds:
+                print("Timeout reached before starting pattern search.")
+                return []
         patterns, self.num_visited = self.pattern_finder.get_divergent_patterns(threshold, num_patterns)
         patterns = [self.convert_pattern(p) for p in patterns]
         return patterns
 
     def get_discriminating_patterns(self, threshold, num_patterns):
+        if self.max_runtime_seconds is not None and self.start_time is not None:
+            if time.time() - self.start_time > self.max_runtime_seconds:
+                print("Timeout reached before starting pattern search.")
+                return []
+
         patterns, self.num_visited = self.pattern_finder.get_discriminating_patterns(threshold, num_patterns)
         patterns = [self.convert_pattern(p) for p in patterns]
         return patterns        

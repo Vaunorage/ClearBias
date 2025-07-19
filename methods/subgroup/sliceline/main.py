@@ -31,7 +31,7 @@ def parse_sliceline_itemset(itemset_str, all_attributes):
     return items
 
 
-def run_sliceline(data_obj: DiscriminationData, K=5, alpha=0.95, max_l=3):
+def run_sliceline(data_obj: DiscriminationData, K=5, alpha=0.95, max_l=3, max_runtime_seconds=60):
     """
     Finds top K slices with high FPR and FNR using Sliceline.
     """
@@ -47,20 +47,20 @@ def run_sliceline(data_obj: DiscriminationData, K=5, alpha=0.95, max_l=3):
     all_results = []
 
     # Find slices for False Positives
-    slice_finder_fp = Slicefinder(k=K, alpha=alpha, max_l=max_l)
+    slice_finder_fp = Slicefinder(k=K, alpha=alpha, max_l=max_l, max_time=max_runtime_seconds)
     slice_finder_fp.fit(X, errors_fp)
-    
-    if getattr(slice_finder_fp, 'top_slices_').any():
+
+    if getattr(slice_finder_fp, 'top_slices_', None) and slice_finder_fp.top_slices_.any():
         top_k_fpr = pd.DataFrame(slice_finder_fp.top_slices_, columns=data_obj.attr_columns)
         top_k_fpr = pd.concat([top_k_fpr, pd.DataFrame(slice_finder_fp.top_slices_statistics_)])
         top_k_fpr['metric'] = 'fpr'
         all_results.append(top_k_fpr)
 
     # Find slices for False Negatives
-    slice_finder_fn = Slicefinder(k=K, alpha=alpha, max_l=max_l)
+    slice_finder_fn = Slicefinder(k=K, alpha=alpha, max_l=max_l, max_time=max_runtime_seconds)
     slice_finder_fn.fit(X, errors_fn)
 
-    if getattr(slice_finder_fn, 'top_slices_').any():
+    if getattr(slice_finder_fn, 'top_slices_', None) and slice_finder_fn.top_slices_.any():
         top_k_fnr = pd.DataFrame(slice_finder_fn.top_slices_, columns=data_obj.attr_columns)
         top_k_fnr = pd.concat([top_k_fnr, pd.DataFrame(slice_finder_fn.top_slices_statistics_)])
         top_k_fnr['metric'] = 'fnr'
@@ -79,7 +79,7 @@ if __name__ == '__main__':
     # Load data
     data_obj, schema = get_real_data('adult', use_cache=False)
     # Run sliceline
-    res = run_sliceline(data_obj, K=2)
+    res = run_sliceline(data_obj, K=2, max_runtime_seconds=30)
     
     if not res.empty:
         print("Top Slices found by Sliceline:")

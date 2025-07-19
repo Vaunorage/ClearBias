@@ -1,8 +1,7 @@
 import pandas as pd
-import numpy as np
 from pathlib import Path
-from data_generator.main import generate_data, DiscriminationData, get_real_data
-from methods.subgroup.gerryfair import clean, auditor, model
+from data_generator.main import DiscriminationData, get_real_data
+from methods.subgroup.gerryfair import clean, model
 
 
 def prepare_data_for_gerryfair(data, protected_attrs, outcome_col):

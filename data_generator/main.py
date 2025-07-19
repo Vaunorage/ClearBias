@@ -47,15 +47,6 @@ def bin_array_values(array, num_bins):
     return binned_indices
 
 
-def coefficient_of_variation(data):
-    mean = np.mean(data)
-    std_dev = np.std(data)
-    if mean == 0 or np.isnan(mean) or np.isnan(std_dev):
-        return 0  # or another appropriate value
-    cv = (std_dev / mean) * 100
-    return cv
-
-
 def calculate_subgroup_key_similarity_binary_overlap(data):
     """
     Calculate similarity based on binary representation overlap.
@@ -294,6 +285,24 @@ class DataCache:
         self.metadata_file = self.cache_dir / "metadata.json"
         self.metadata = self._load_metadata()
 
+    def generate_cache_key(self, params: dict) -> str:
+        # Sort the parameters to ensure consistent ordering
+        ordered_params = dict(sorted(params.items()))
+
+        # Convert numpy arrays and other complex types to serializable format
+        def make_serializable(obj):
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, (list, tuple, dict, str, int, float, bool, type(None))):
+                return obj
+            return str(obj)
+
+        serializable_params = {k: make_serializable(v) for k, v in ordered_params.items()}
+
+        # Create a hash of the parameters
+        param_str = json.dumps(serializable_params, sort_keys=True)
+        return hashlib.md5(param_str.encode()).hexdigest()
+
     def _load_metadata(self) -> dict:
         """Load metadata from file or create if doesn't exist."""
         if self.metadata_file.exists():
@@ -311,7 +320,7 @@ class DataCache:
         return self.cache_dir / f"{cache_key}.pkl"
 
     def save(self, data, params: dict):
-        cache_key = generate_cache_key(params)
+        cache_key = self.generate_cache_key(params)
         cache_path = self.get_cache_path(cache_key)
 
         # Save the data
@@ -327,7 +336,7 @@ class DataCache:
         self._save_metadata()
 
     def load(self, params: dict) -> Optional:
-        cache_key = generate_cache_key(params)
+        cache_key = self.generate_cache_key(params)
         cache_path = self.get_cache_path(cache_key)
 
         if cache_path.exists():
@@ -338,25 +347,6 @@ class DataCache:
                 print(f"Error loading cached data: {e}")
                 return None
         return None
-
-
-def generate_cache_key(params: dict) -> str:
-    # Sort the parameters to ensure consistent ordering
-    ordered_params = dict(sorted(params.items()))
-
-    # Convert numpy arrays and other complex types to serializable format
-    def make_serializable(obj):
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        elif isinstance(obj, (list, tuple, dict, str, int, float, bool, type(None))):
-            return obj
-        return str(obj)
-
-    serializable_params = {k: make_serializable(v) for k, v in ordered_params.items()}
-
-    # Create a hash of the parameters
-    param_str = json.dumps(serializable_params, sort_keys=True)
-    return hashlib.md5(param_str.encode()).hexdigest()
 
 
 @dataclass
@@ -1275,267 +1265,6 @@ def suppress_stdout():
         yield
     finally:
         sys.stdout = old_stdout
-
-
-def create_group(granularity, intersectionality,
-                 possibility, data_schema, attr_categories, W,
-                 subgroup_bias, corr_matrix_randomness,
-                 categorical_influence,
-                 min_similarity, max_similarity, min_alea_uncertainty, max_alea_uncertainty,
-                 min_epis_uncertainty, max_epis_uncertainty, min_frequency, max_frequency,
-                 min_diff_subgroup_size, max_diff_subgroup_size, min_group_size, max_group_size,
-                 predefined_group=None, subgroup1_vals=None, subgroup2_vals=None, collision_tracker=None):
-    """
-    Create a group with two subgroups having specific attribute values.
-
-    Args:
-        granularity: Number of non-protected attributes used
-        intersectionality: Number of protected attributes used
-        possibility: List of attribute indices to use
-        data_schema: Data schema containing attribute information
-        attr_categories: List of possible categories for each attribute
-        W: Weight matrix for outcome generation
-        subgroup_bias: Bias to apply to subgroup 2
-        corr_matrix_randomness: Randomness in correlation matrix
-        categorical_influence: Influence of categorical attributes
-        min_similarity, max_similarity: Range for similarity parameter
-        min_alea_uncertainty, max_alea_uncertainty: Range for aleatoric uncertainty
-        min_epis_uncertainty, max_epis_uncertainty: Range for epistemic uncertainty
-        min_frequency, max_frequency: Range for frequency parameter
-        min_diff_subgroup_size, max_diff_subgroup_size: Range for difference in subgroup sizes
-        min_group_size, max_group_size: Range for group sizes
-        predefined_group: Optional GroupDefinition for predefined groups
-        subgroup1_vals: Optional pre-generated values for subgroup 1
-        subgroup2_vals: Optional pre-generated values for subgroup 2
-
-    Returns:
-        DataFrame with generated group data
-    """
-    attr_categories, sets_attr, correlation_matrix, gen_order, categorical_distribution, attr_names = (
-        data_schema.attr_categories, data_schema.protected_attr, data_schema.correlation_matrix, data_schema.gen_order,
-        data_schema.categorical_distribution, data_schema.attr_names)
-
-    # Separate non-protected and protected attributes and reorder them
-    non_protected_columns = [attr for attr, protected in zip(attr_names, sets_attr) if not protected]
-    protected_columns = [attr for attr, protected in zip(attr_names, sets_attr) if protected]
-
-    # Reorder attr_names so that non-protected attributes come first
-    attr_names = non_protected_columns + protected_columns
-
-    # Adjust attr_categories and sets_attr in the same order
-    attr_categories = [attr_categories[attr_names.index(attr)] for attr in attr_names]
-
-    # Function to create sets based on the new ordering
-    def make_sets(possibility):
-        ress_set = []
-        for ind in range(len(attr_categories)):
-            if ind in possibility:
-                ss = copy.deepcopy(attr_categories[ind])
-                try:
-                    ss.remove(-1)
-                except:
-                    pass
-                ress_set.append(ss)
-            else:
-                ress_set.append([-1])
-        return ress_set
-
-    # If using a predefined group
-    if predefined_group is not None:
-        # Use the predefined group's parameters
-        similarity = predefined_group.similarity
-        alea_uncertainty = predefined_group.alea_uncertainty
-        epis_uncertainty = predefined_group.epis_uncertainty
-        frequency = predefined_group.frequency
-        subgroup_bias = predefined_group.subgroup_bias
-        diff_percentage = predefined_group.diff_subgroup_size
-
-        # Calculate total group size based on predefined group
-        total_group_size = predefined_group.group_size
-
-        # For predefined groups, we need to handle preset values differently
-        # Convert attribute dictionaries to value lists in the schema's order
-        if subgroup1_vals is None:
-            subgroup1_vals = [-1] * len(data_schema.attr_names)
-            for attr, value in predefined_group.subgroup1.items():
-                if attr in data_schema.attr_names:
-                    idx = data_schema.attr_names.index(attr)
-                    subgroup1_vals[idx] = value
-
-        if subgroup2_vals is None:
-            subgroup2_vals = [-1] * len(data_schema.attr_names)
-            for attr, value in predefined_group.subgroup2.items():
-                if attr in data_schema.attr_names:
-                    idx = data_schema.attr_names.index(attr)
-                    subgroup2_vals[idx] = value
-    else:
-        # Use randomly generated parameters within specified ranges
-        subgroup_sets = make_sets(possibility)
-
-        similarity = random.uniform(min_similarity, max_similarity)
-        alea_uncertainty = random.uniform(min_alea_uncertainty, max_alea_uncertainty)
-        epis_uncertainty = random.uniform(min_epis_uncertainty, max_epis_uncertainty)
-        frequency = random.uniform(min_frequency, max_frequency)
-        diff_percentage = random.uniform(min_diff_subgroup_size, max_diff_subgroup_size)
-
-        # Calculate total group size based on frequency
-        total_group_size = max(min_group_size, math.ceil(max_group_size * frequency))
-        total_group_size = min(total_group_size, max_group_size)
-
-        # Generate samples for subgroups if not provided
-        if subgroup1_vals is None:
-            # Generate values for subgroups
-            subgroup1_vals = generate_data_from_distribution(data_schema.categorical_distribution,
-                                                             attr_categories, data_schema.attr_names, n_samples=1,
-                                                             preset_values=subgroup_sets).values.tolist()[0]
-
-        if subgroup2_vals is None:
-            num_same_attributes = min(len(possibility) - 1, round(similarity * len(possibility)))
-
-            # Ensure at least one attribute differs to maintain distinct subgroups
-            if num_same_attributes >= len(possibility):
-                num_same_attributes = len(possibility) - 1
-            # Randomly select which attributes can be the same
-            attributes_to_be_same = random.sample(possibility,
-                                                  num_same_attributes) if num_same_attributes > 0 else []
-            attributes_to_differ = [idx for idx in possibility if idx not in attributes_to_be_same]
-
-            # Create excluded_values list for subgroup2 (only exclude values for attributes that should differ)
-            excluded_values = [None] * len(attr_names)
-            for idx in attributes_to_differ:
-                excluded_values[idx] = [subgroup1_vals[idx]]
-
-            # Generate subgroup2 values with the updated function
-            subgroup2_vals = generate_data_from_distribution(data_schema.categorical_distribution,
-                                                             attr_categories, data_schema.attr_names, n_samples=1,
-                                                             preset_values=subgroup_sets,
-                                                             excluded_values=excluded_values,
-                                                             same_attributes=attributes_to_be_same,
-                                                             # Pass the indices of attributes that should be the same
-                                                             reference_values=subgroup1_vals
-                                                             # Pass the subgroup1 values as reference
-                                                             ).values.tolist()[0]
-
-        if collision_tracker is not None and not collision_tracker.is_collision(possibility, subgroup1_vals,
-                                                                                subgroup2_vals):
-            collision_tracker.add_combination(possibility, subgroup1_vals, subgroup2_vals)
-        else:
-            return None
-
-    # Ensure each subgroup meets minimum size requirements
-    diff_size = int(total_group_size * diff_percentage)
-    subgroup1_size = max(min_group_size // 2, (total_group_size + diff_size) // 2)
-    subgroup2_size = max(min_group_size // 2, total_group_size - subgroup1_size)
-
-    # Generate dataset for subgroup 1 and subgroup 2
-    with suppress_stdout():
-        col_values = {k: v for k, v in zip(data_schema.attr_names, subgroup1_vals) if v != -1}
-        subgroup1_individuals_df = data_schema.synthesizer.sample_from_conditions(conditions=[Condition(
-            num_rows=subgroup1_size,
-            column_values=col_values
-        )])
-    subgroup1_individuals_df = fill_nan_values(subgroup1_individuals_df, data_schema)
-
-    subgroup1_outcome, subgroup1_epistemic_uncertainty, subgroup1_aleatoric_uncertainty = generate_outcomes_with_uncertainty(
-        df=subgroup1_individuals_df,
-        feature_columns=data_schema.attr_names,
-        weights=W[-1], bias=0.0, group_column=None,
-        group_bias=0.0, epistemic_uncertainty=epis_uncertainty,
-        aleatoric_uncertainty=alea_uncertainty, n_estimators=50, random_state=None)
-
-    subgroup1_individuals_df['outcome'] = subgroup1_outcome
-    subgroup1_individuals_df['epis_uncertainty'] = subgroup1_epistemic_uncertainty
-    subgroup1_individuals_df['alea_uncertainty'] = subgroup1_aleatoric_uncertainty
-
-    with suppress_stdout():
-        col_values = {k: v for k, v in zip(data_schema.attr_names, subgroup2_vals) if v != -1}
-        try:
-            subgroup2_individuals_df = data_schema.synthesizer.sample_from_conditions(conditions=[Condition(
-                num_rows=subgroup2_size,
-                column_values=col_values
-            )])
-        except Exception as e:
-            raise e
-    subgroup2_individuals_df = fill_nan_values(subgroup2_individuals_df, data_schema)
-
-    subgroup2_outcome, subgroup2_epistemic_uncertainty, subgroup2_aleatoric_uncertainty = generate_outcomes_with_uncertainty(
-        df=subgroup2_individuals_df,
-        feature_columns=data_schema.attr_names,
-        weights=W[-1], bias=subgroup_bias, group_column=None,
-        group_bias=0.0, epistemic_uncertainty=epis_uncertainty,
-        aleatoric_uncertainty=alea_uncertainty, n_estimators=50, random_state=None)
-
-    subgroup2_individuals_df['outcome'] = subgroup2_outcome
-    subgroup2_individuals_df['epis_uncertainty'] = subgroup2_epistemic_uncertainty
-    subgroup2_individuals_df['alea_uncertainty'] = subgroup2_aleatoric_uncertainty
-
-    # Create keys based on the ordered attribute values
-    subgroup1_key = '|'.join(list(map(lambda x: '*' if x == -1 else str(x), subgroup1_vals)))
-    subgroup2_key = '|'.join(list(map(lambda x: '*' if x == -1 else str(x), subgroup2_vals)))
-    group_key = subgroup1_key + '-' + subgroup2_key
-
-    # Assign the new keys to the dataframe
-    subgroup1_individuals_df['subgroup_key'] = subgroup1_key
-    subgroup2_individuals_df['subgroup_key'] = subgroup2_key
-
-    subgroup1_individuals_df['indv_key'] = subgroup1_individuals_df[attr_names].apply(
-        lambda x: '|'.join(list(x.astype(int).astype(str))), axis=1)
-    subgroup2_individuals_df['indv_key'] = subgroup2_individuals_df[attr_names].apply(
-        lambda x: '|'.join(list(x.astype(int).astype(str))), axis=1)
-
-    result_df = pd.concat([subgroup1_individuals_df, subgroup2_individuals_df])
-
-    result_df['group_key'] = group_key
-    result_df['granularity_param'] = granularity
-    result_df['intersectionality_param'] = intersectionality
-    result_df['similarity_param'] = similarity
-    result_df['epis_uncertainty_param'] = epis_uncertainty
-    result_df['alea_uncertainty_param'] = alea_uncertainty
-    result_df['frequency_param'] = frequency
-    result_df['group_size'] = subgroup1_individuals_df.shape[0] + subgroup2_individuals_df.shape[0]
-    result_df['diff_subgroup_size'] = diff_percentage
-
-    return result_df
-
-
-class CollisionTracker:
-    def __init__(self, nb_attributes):
-        self.used_combinations = set()  # Will store tuples of (attr_index, value) pairs
-        self.nb_attributes = nb_attributes
-
-    def is_collision(self, attrs_indices, subgroup1_vals, subgroup2_vals):
-        # Create a unique signature for this group definition based on values
-        # Only include attributes that are part of the group definition (in attrs_indices)
-        group_signature = []
-
-        for idx in attrs_indices:
-            # Add the attribute index and values for both subgroups
-            # Skip attributes with -1 value as they aren't part of the group definition
-            if subgroup1_vals[idx] != -1:
-                group_signature.append((idx, 1, subgroup1_vals[idx]))
-            if subgroup2_vals[idx] != -1:
-                group_signature.append((idx, 2, subgroup2_vals[idx]))
-
-        # Convert to tuple for hashing
-        group_signature = tuple(sorted(group_signature))
-
-        # Check if this signature exists
-        return group_signature in self.used_combinations
-
-    def add_combination(self, attrs_indices, subgroup1_vals, subgroup2_vals):
-        # Create the same signature as in is_collision
-        group_signature = []
-
-        for idx in attrs_indices:
-            if subgroup1_vals[idx] != -1:
-                group_signature.append((idx, 1, subgroup1_vals[idx]))
-            if subgroup2_vals[idx] != -1:
-                group_signature.append((idx, 2, subgroup2_vals[idx]))
-
-        group_signature = tuple(sorted(group_signature))
-
-        # Add to the set of used combinations
-        self.used_combinations.add(group_signature)
 
 
 @dataclass

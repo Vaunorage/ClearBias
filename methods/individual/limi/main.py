@@ -153,7 +153,7 @@ class LatentImitator:
 
         return discriminatory_instances
 
-    def test(self, n_test_samples=10_000, n_approx_samples=50_000):
+    def test(self, n_test_samples=10_000, n_approx_samples=50_000, start_time=None, max_runtime_seconds=None):
         """
         Runs the full LIMI testing pipeline.
         """
@@ -161,18 +161,30 @@ class LatentImitator:
         self._approximate_boundary(n_samples=n_approx_samples, confidence_threshold=0.7)
 
         # Generate a new set of random latent vectors to test
-        z_test_set = np.random.randn(n_test_samples, self.latent_dim)
+        z_test = np.random.randn(n_test_samples, self.latent_dim)
 
-        # Step 2: Find candidate points near the boundary
-        candidate_triplets = self._probe_candidates(z_test_set)
+        if start_time and max_runtime_seconds and (time.time() - start_time > max_runtime_seconds):
+            print("LIMI testing timed out before starting probling and verifying.")
+            return []
 
-        # Step 3: Verify candidates and find discriminatory instances
-        found_instances = self._verify_and_generate(candidate_triplets)
+        all_found_instances = []
+        n_batches = 50
+        for z_batch in tqdm(np.array_split(z_test, n_batches), desc="Step 2 & 3: Probing and Verifying"):
+            if start_time and max_runtime_seconds and (time.time() - start_time > max_runtime_seconds):
+                print("LIMI testing timed out.")
+                break
 
-        return found_instances
+            # Step 2: Find candidate points near the boundary for the current batch
+            candidate_triplets = self._probe_candidates(z_batch)
+
+            # Step 3: Verify candidates and find discriminatory instances for the current batch
+            found_instances = self._verify_and_generate(candidate_triplets)
+            all_found_instances.extend(found_instances)
+
+        return all_found_instances
 
 
-def run_limi(discrimination_data: DiscriminationData, lambda_val=0.3, n_test_samples=2000, n_approx_samples=50000):
+def run_limi(discrimination_data: DiscriminationData, lambda_val=0.3, n_test_samples=2000, n_approx_samples=50000, max_runtime_seconds=None):
     start_time = time.time()
     print("\nTraining the black-box model (RandomForest)...")
     # RandomForestClassifier has `predict_proba`, so it's a suitable model for this corrected code.
@@ -201,7 +213,16 @@ def run_limi(discrimination_data: DiscriminationData, lambda_val=0.3, n_test_sam
         lambda_val=lambda_val
     )
 
-    discriminatory_instances = limi_tester.test(n_test_samples=n_test_samples, n_approx_samples=n_approx_samples)
+    discriminatory_instances = limi_tester.test(n_test_samples=n_test_samples, n_approx_samples=n_approx_samples, start_time=start_time, max_runtime_seconds=max_runtime_seconds)
+
+    # If the process timed out, it might return empty lists. We should handle this gracefully.
+    if not discriminatory_instances:
+        print("Warning: No inputs were processed. This might be due to a timeout or an issue in the test method.")
+        # Return empty results
+        return pd.DataFrame(), {
+            'TSN': 0, 'DSN': 0, 'SUR': 0, 'DSS': float('inf'),
+            'total_time': time.time() - start_time, 'dsn_by_attr_value': {}
+        }
 
     # 6. Analyze Results
     print("\n--- LIMI Test Results ---")

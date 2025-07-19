@@ -1,4 +1,5 @@
 import numpy as np
+import time
 from methods.group.verifair.util.log import *
 
 # Returns the (epsilon, delta) values of the adaptive concentration inequality
@@ -79,13 +80,18 @@ def get_fairness_type(c, Delta, n, delta, E_A, E_B, is_causal, is_log):
 # is_causal: bool (whether to use the causal specification)
 # int: log_iters 
 # return: (bool, int) (is fair, number of samples)
-def verify(model_A, model_B, c, Delta, delta, n_samples, n_max, is_causal, log_iters):
+def verify(model_A, model_B, c, Delta, delta, n_samples, n_max, is_causal, log_iters, max_runtime_seconds=None):
     # Step 1: Initialization
     nE_A = 0.0
     nE_B = 0.0
+    start_time = time.time() if max_runtime_seconds is not None else None
 
     # Step 2: Iteratively sample and check whether fairness holds
     for i in range(n_max):
+        if start_time and (time.time() - start_time) > max_runtime_seconds:
+            log(f'VeriFair analysis timed out after {max_runtime_seconds} seconds.', INFO)
+            return None
+
         # Step 2a: Sample points
         x = np.sum(model_A.sample(n_samples))
         y = np.sum(model_B.sample(n_samples))
@@ -110,4 +116,5 @@ def verify(model_A, model_B, c, Delta, delta, n_samples, n_max, is_causal, log_i
             return t + (2 * n, E_A / E_B)
 
     # Step 3: Failed to verify after maximum number of samples
+    log(f'VeriFair analysis did not converge within {n_max} iterations.', INFO)
     return None

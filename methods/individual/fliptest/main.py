@@ -175,7 +175,7 @@ def run_fliptest_on_dataset(
     return results_df, metrics
 
 
-def run_fliptest(data_obj: DiscriminationData, max_runs: int = None):
+def run_fliptest(data_obj: DiscriminationData, max_runs: int = None, max_runtime_seconds: int = None):
     """
     Run FlipTest on a dataset for multiple protected attributes.
     
@@ -226,6 +226,11 @@ def run_fliptest(data_obj: DiscriminationData, max_runs: int = None):
     total_start_time = time.time()
     
     for protected_attribute in attributes_to_check:
+        # Check if runtime has exceeded the limit
+        if max_runtime_seconds is not None and (time.time() - total_start_time) > max_runtime_seconds:
+            print(f"\nStopping FlipTest as runtime has exceeded the {max_runtime_seconds} second limit.")
+            break
+
         print("\n" + "=" * 50)
         print(f"Running FlipTest for '{protected_attribute}' attribute")
         print("=" * 50)
@@ -295,8 +300,8 @@ if __name__ == "__main__":
                                                     nb_categories_outcome=1,
                                                     use_cache=True)
 
-    # Example: limit to 2 runs
-    results_df, metrics = run_fliptest(data_obj, max_runs=2)
+    # Example: limit to 2 runs and a 60-second runtime
+    results_df, metrics = run_fliptest(data_obj, max_runs=2, max_runtime_seconds=60)
     
     # Print summary of results
     print("\n## Output")

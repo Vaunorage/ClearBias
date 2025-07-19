@@ -1,12 +1,14 @@
 import os
+import time
 import pandas as pd
 import numpy as np
 
 from itertools import combinations
-from data_generator.main import get_real_data
+from data_generator.main import get_real_data, DiscriminationData, generate_optimal_discrimination_data
 from methods.utils import train_sklearn_model
 from methods.group.verifair.verify.verify import verify
 from methods.group.verifair.util.log import log, setCurOutput, INFO
+from sklearn.metrics import mutual_info_score
 
 
 class SklearnModelSampler:
@@ -44,7 +46,7 @@ class SklearnModelSampler:
 
 
 def _run_single_verifair_analysis(model, X_test, analysis_attribute, group_a_val, group_b_val, c, Delta, delta,
-                                  n_samples, n_max, is_causal, log_iters):
+                                  n_samples, n_max, is_causal, log_iters, max_runtime_seconds=None):
     """
     Runs a single VeriFair analysis and returns the results as a dictionary.
     """
@@ -56,7 +58,8 @@ def _run_single_verifair_analysis(model, X_test, analysis_attribute, group_a_val
     sampler_a = SklearnModelSampler(model, group_a_data)
     sampler_b = SklearnModelSampler(model, group_b_data)
 
-    result = verify(sampler_a, sampler_b, c, Delta, delta, n_samples, n_max, is_causal, log_iters)
+    result = verify(sampler_a, sampler_b, c, Delta, delta, n_samples, n_max, is_causal, log_iters,
+                  max_runtime_seconds=max_runtime_seconds)
 
     if result is None:
         log('VeriFair analysis failed to converge!', INFO)
@@ -85,107 +88,128 @@ def _run_single_verifair_analysis(model, X_test, analysis_attribute, group_a_val
     }
 
 
-# --- Main Analysis Function ---
-def find_discrimination_with_verifair(dataset_name='adult', analysis_attribute=None, group_a_value=None,
-                                      group_b_value=None, analyze_all_combinations=False, c=0.15, Delta=0.0,
-                                      delta=0.5 * 1e-10, n_samples=1, n_max=100000, is_causal=False, log_iters=1000):
+def run_verifair(data: DiscriminationData, c=0.15, Delta=0.0,
+                   delta=0.5 * 1e-10, n_samples=1, n_max=100000, is_causal=False, log_iters=1000,
+                   max_runtime_seconds=None):
     """
-    Loads a dataset, trains a model, and uses VeriFair to find discrimination.
+    Trains a model and uses VeriFair to find discrimination on the given data.
+    By default, this will test all combinations of protected attributes, starting with the one
+    most likely to have discrimination based on mutual information score.
 
-    :param dataset_name: The name of the dataset to use (e.g., 'adult').
-    :param analysis_attribute: str, The attribute to analyze for discrimination. Defaults to the first sensitive attribute.
-    :param group_a_value: The value for the first group to compare. Defaults to the first unique value of the attribute.
-    :param group_b_value: The value for the second group to compare. Defaults to the second unique value of the attribute.
-    :param analyze_all_combinations: bool, if True, automatically runs analysis for all combinations of protected attributes.
-    :param c: float (minimum probability ratio to be fair)
+    :param data: A DiscriminationData object containing the dataset.
+    :param c: float (confidence parameter)
     :param Delta: float (threshold on inequalities)
-    :param delta: float (parameter delta)
-    :param n_samples: int (number of samples per iteration)
-    :param n_max: int (maximum number of iterations)
-    :param is_causal: bool (whether to use the causal specification)
-    :param log_iters: int (log every N iterations)
-    :return: A pandas DataFrame summarizing the analysis results.
+    :param delta: float (acceptable error probability)
+    :param n_samples: int (number of samples to draw in each iteration)
+    :param n_max: int, The maximum number of samples to draw from the model. Default is 100,000.
+    :param is_causal: bool, Whether to use the causal version of VeriFair. Default is False.
+    :param log_iters: int, The number of iterations after which to log progress.
+    :param max_runtime_seconds: int, The maximum time in seconds to run the analysis for. Default is None (no limit).
+    :return: A tuple containing a pandas DataFrame with the analysis results and a dictionary of summary metrics.
     """
-    # Step 1: Load the data
-    log(f"Loading dataset: {dataset_name}", INFO)
-    discrimination_data, data_schema = get_real_data(dataset_name, use_cache=True)
+    start_time = time.time()
 
-    # Step 2: Train the model
-    log("Training a RandomForest model...", INFO)
-    model, _, X_test, _, y_test, _, metrics = train_sklearn_model(
-        data=discrimination_data.training_dataframe,
-        model_type='rf',
-        target_col=discrimination_data.outcome_column,
-        sensitive_attrs=discrimination_data.protected_attributes
+    # Step 1: Train the model
+    model, X_train, X_test, y_train, y_test, feature_names, metrics = train_sklearn_model(
+        data=data.training_dataframe,
+        target_col=data.outcome_column,
+        sensitive_attrs=data.protected_attributes
     )
     accuracy = metrics['accuracy']
     log(f"Model trained with accuracy: {accuracy:.2f}", INFO)
 
-    # Step 3: Run VeriFair analysis
-    test_df = X_test.copy()
-    test_df[discrimination_data.outcome_column] = y_test
+    # Step 2: Determine order of attributes to analyze based on mutual information
+    log("\n--- Determining order of attributes to analyze... ---", INFO)
+    df = data.training_dataframe
+    outcome_col = data.outcome_column
+    mutual_info_scores = {
+        attr: mutual_info_score(df[attr], df[outcome_col])
+        for attr in data.protected_attributes
+    }
+    sorted_attributes = sorted(mutual_info_scores, key=mutual_info_scores.get, reverse=True)
+    for attr in sorted_attributes:
+        log(f"  - {attr} (Mutual Information: {mutual_info_scores[attr]:.4f})", INFO)
 
+    # Step 3: Run VeriFair analysis for all combinations
+    test_df = X_test.copy()
+    test_df[data.outcome_column] = y_test
     results_list = []
 
-    if analyze_all_combinations:
-        log("\n--- Analyzing all combinations of protected attributes ---", INFO)
-        for attribute in discrimination_data.protected_attributes:
-            unique_values = test_df[attribute].unique()
-            if len(unique_values) < 2:
-                log(f"Skipping attribute '{attribute}': has fewer than 2 unique values.", INFO)
-                continue
+    log("\n--- Analyzing all combinations of protected attributes ---", INFO)
+    for attribute in sorted_attributes:
+        if max_runtime_seconds and (time.time() - start_time) > max_runtime_seconds:
+            log(f'Global timeout of {max_runtime_seconds} seconds reached. Halting analysis.', INFO)
+            break
 
-            for group_a_val, group_b_val in combinations(unique_values, 2):
-                result = _run_single_verifair_analysis(model, X_test, attribute, group_a_val, group_b_val, c, Delta,
-                                                       delta,
-                                                       n_samples, n_max, is_causal, log_iters)
-                if result:
-                    results_list.append(result)
-    else:
-        if analysis_attribute is None:
-            analysis_attribute = discrimination_data.protected_attributes[0]
-            log(f"No analysis attribute specified. Using the first sensitive attribute: '{analysis_attribute}'", INFO)
-        elif analysis_attribute not in test_df.columns:
-            log(f"Error: The specified analysis attribute '{analysis_attribute}' is not in the dataset.", INFO)
-            return pd.DataFrame()
+        unique_values = test_df[attribute].unique()
+        if len(unique_values) < 2:
+            log(f"Skipping attribute '{attribute}': has fewer than 2 unique values.", INFO)
+            continue
 
-        unique_values = test_df[analysis_attribute].unique()
+        for group_a_val, group_b_val in combinations(unique_values, 2):
+            if max_runtime_seconds and (time.time() - start_time) > max_runtime_seconds:
+                log(f'Global timeout of {max_runtime_seconds} seconds reached. Halting analysis.', INFO)
+                break
 
-        if group_a_value is None or group_b_value is None:
-            if len(unique_values) < 2:
-                log(f"Attribute '{analysis_attribute}' has fewer than 2 unique values. Cannot perform comparison.",
-                    INFO)
-                return pd.DataFrame()
-            group_a_val_to_use, group_b_val_to_use = unique_values[0], unique_values[1]
-            log(f"No group values specified. Using the first two unique values for '{analysis_attribute}': {group_a_val_to_use} and {group_b_val_to_use}",
-                INFO)
+            # Calculate remaining time for this specific analysis run
+            remaining_time = None
+            if max_runtime_seconds:
+                remaining_time = max_runtime_seconds - (time.time() - start_time)
+                if remaining_time <= 0:
+                    continue # Skip if no time left
+
+            result = _run_single_verifair_analysis(model, X_test, attribute, group_a_val, group_b_val, c, Delta,
+                                                   delta,
+                                                   n_samples, n_max, is_causal, log_iters, remaining_time)
+            if result:
+                results_list.append(result)
         else:
-            if group_a_value not in unique_values:
-                log(f"Error: Group A value '{group_a_value}' not found for attribute '{analysis_attribute}'.", INFO)
-                return pd.DataFrame()
-            if group_b_value not in unique_values:
-                log(f"Error: Group B value '{group_b_value}' not found for attribute '{analysis_attribute}'.", INFO)
-                return pd.DataFrame()
-            group_a_val_to_use, group_b_val_to_use = group_a_value, group_b_value
+            continue # only executed when inner loop is not broken
+        break # only executed when inner loop is broken
 
-        result = _run_single_verifair_analysis(model, X_test, analysis_attribute, group_a_val_to_use,
-                                               group_b_val_to_use, c, Delta,
-                                               delta, n_samples, n_max, is_causal, log_iters)
-        if result:
-            results_list.append(result)
+    res_df = pd.DataFrame(results_list)
 
-    return pd.DataFrame(results_list)
+    # --- 7. Calculate Final Metrics ---
+    end_time = time.time()
+    total_time = end_time - start_time
+
+    if not res_df.empty:
+        tsn = res_df['total_samples'].sum()
+        dsn = res_df[res_df['is_fair'] == False].shape[0]
+    else:
+        tsn = 0
+        dsn = 0
+
+    sur = dsn / tsn if tsn > 0 else 0  # Success Rate
+    dss = total_time / dsn if dsn > 0 else float('inf')  # Discriminatory Sample Search time
+
+    metrics = {
+        'TSN': tsn,
+        'DSN': dsn,
+        'SUR': sur,
+        'DSS': dss,
+        'total_time': total_time,
+        'nodes_visited': tsn, # Using total samples as a proxy for nodes visited
+    }
+
+    # Add metrics to result dataframe for consistency with other methods
+    if not res_df.empty:
+        for key, value in metrics.items():
+            res_df[key] = value
+
+    return res_df, metrics
 
 
 if __name__ == '__main__':
     log('Starting VeriFair analysis script...', INFO)
 
-    # To automatically analyze all combinations of protected attributes:
-    summary_df = find_discrimination_with_verifair(
-        dataset_name='adult',
-        analysis_attribute=None, group_a_value=None,
-        group_b_value=None, analyze_all_combinations=False, c=0.15, Delta=0.0,
-        delta=0.5 * 1e-10, n_samples=1, n_max=1000, is_causal=False, log_iters=1000
+    data = generate_optimal_discrimination_data(use_cache=True)
+
+    summary_df, metrics = run_verifair(
+        data=data,
+        c=0.15, Delta=0.0,
+        delta=0.5 * 1e-10, n_samples=1, n_max=1000, is_causal=False, log_iters=1000,
+        max_runtime_seconds=80
     )
 
     log('Script finished.', INFO)
@@ -193,4 +217,7 @@ if __name__ == '__main__':
     if not summary_df.empty:
         print("\n--- Analysis Summary ---")
         print(summary_df.to_string())
-        print("----------------------")
+
+    print(f"\n--- Summary Metrics ---")
+    for key, value in metrics.items():
+        print(f"{key}: {value}")

@@ -1,4 +1,6 @@
 from typing import List, Optional
+import signal
+import os
 
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
@@ -172,15 +174,17 @@ def create_dataframe_from_nodes_for_tree_method(nodes_list: List[Node]) -> pd.Da
 
 def run_slicefinder(
         data_obj,
-        approach: str = "both",
-        model: Optional[object] = None,
-        # Model parameters
+        schema=None,
+        # General parameters
+        approach: str = "both",  # "lattice", "decision_tree", or "both"
+        model=None,
+        max_runtime_seconds: Optional[int] = None,
+        # Model training parameters (if no model is provided)
         max_depth: int = 5,
         n_estimators: int = 10,
-        # Common slice parameters
-        k: int = 5,
-        epsilon: float = 0.3,
         # Lattice search specific parameters
+        k: int = 10,
+        epsilon: float = 0.5,
         degree: int = 2,
         max_workers: int = 4,
         # Decision tree specific parameters
@@ -190,7 +194,7 @@ def run_slicefinder(
         # Display options
         verbose: bool = True,
         drop_na: bool = True
-) -> dict:
+):
     """
     Run SliceFinder analysis using lattice search and/or decision tree approaches.
 
@@ -277,80 +281,101 @@ def run_slicefinder(
         'dt_slices': None,
     }
 
-    # ========== APPROACH 1: LATTICE SEARCH ==========
-    if approach in ["lattice", "both"]:
+    # Timeout handler
+    def timeout_handler(signum, frame):
+        raise TimeoutError("SliceFinder execution timed out.")
+
+    # Set signal handler for timeout if max_runtime_seconds is set and not on Windows
+    if max_runtime_seconds is not None and os.name != 'nt':
+        signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(max_runtime_seconds)
+    elif max_runtime_seconds is not None and os.name == 'nt':
         if verbose:
-            print("\n===== USING LATTICE SEARCH APPROACH =====")
+            print("Warning: max_runtime_seconds is not supported on Windows and will be ignored.")
 
-        try:
-            # Initialize SliceFinder with your model and data
-            slice_finder = SliceFinder(model, (X, y))
-
-            # Find interesting slices
-            lattice_slices = slice_finder.find_slice(
-                k=k,
-                epsilon=epsilon,
-                degree=degree,
-                max_workers=max_workers
-            )
-
-            slices_df = lattice_slices_to_dataframe(lattice_slices, data_obj)
-
-            results['lattice_slices'] = slices_df
-
+    try:
+        # ========== APPROACH 1: LATTICE SEARCH ==========
+        if approach in ["lattice", "both"]:
             if verbose:
-                print(f"\nFound {len(lattice_slices)} slices using lattice search:")
-                for i, slice_obj in enumerate(lattice_slices):
-                    print(f"\n----- Lattice Slice {i + 1} -----")
-                    print(f"Slice: {slice_obj}")
-                    print(f"Effect size: {slice_obj.effect_size:.4f}")
-                    print(f"Size: {slice_obj.size} samples")
+                print("\n===== USING LATTICE SEARCH APPROACH =====")
 
-        except Exception as e:
+            try:
+                # Initialize SliceFinder with your model and data
+                slice_finder = SliceFinder(model, (X, y))
+
+                # Find interesting slices
+                lattice_slices = slice_finder.find_slice(
+                    k=k,
+                    epsilon=epsilon,
+                    degree=degree,
+                    max_workers=max_workers
+                )
+
+                slices_df = lattice_slices_to_dataframe(lattice_slices, data_obj)
+
+                results['lattice_slices'] = slices_df
+
+                if verbose:
+                    print(f"\nFound {len(lattice_slices)} slices using lattice search:")
+                    for i, slice_obj in enumerate(lattice_slices):
+                        print(f"\n----- Lattice Slice {i + 1} -----")
+                        print(f"Slice: {slice_obj}")
+                        print(f"Effect size: {slice_obj.effect_size:.4f}")
+                        print(f"Size: {slice_obj.size} samples")
+
+            except Exception as e:
+                if verbose:
+                    print(f"Error in lattice search: {e}")
+                results['lattice_slices'] = None
+
+        # ========== APPROACH 2: DECISION TREE ==========
+        if approach in ["decision_tree", "both"]:
             if verbose:
-                print(f"Error in lattice search: {e}")
-            results['lattice_slices'] = None
+                print("\n===== USING DECISION TREE APPROACH =====")
 
-    # ========== APPROACH 2: DECISION TREE ==========
-    if approach in ["decision_tree", "both"]:
+            try:
+                # Initialize DecisionTree with your data and model
+                dt_finder = DecisionTree((X, y), model)
+
+                # Build the decision tree
+                dt_finder = dt_finder.fit(max_depth=dt_max_depth, min_size=min_size)
+
+                # Find interesting slices
+                dt_slices = dt_finder.recommend_slices(k=k, min_effect_size=min_effect_size)
+
+                dt_slices = create_dataframe_from_nodes_for_tree_method(dt_slices)
+
+                results['dt_slices'] = dt_slices
+
+                if verbose:
+                    print(f"\nFound {len(dt_slices)} slices using decision tree:")
+                    for i, node in enumerate(dt_slices):
+                        print(f"\n----- Decision Tree Slice {i + 1} -----")
+
+                        # Get the path from root to this node
+                        ancestry = node.__ancestry__()
+                        if ancestry:
+                            print("Path from root:", " → ".join(ancestry))
+
+                        # Display the node description
+                        print(f"Node: {node}")
+
+                        # Display effect size and slice size
+                        print(f"Effect size: {node.eff_size:.4f}")
+                        print(f"Slice size: {node.size} samples")
+
+            except Exception as e:
+                if verbose:
+                    print(f"Error in decision tree approach: {e}")
+                results['dt_slices'] = None
+
+    except TimeoutError as e:
         if verbose:
-            print("\n===== USING DECISION TREE APPROACH =====")
-
-        try:
-            # Initialize DecisionTree with your data and model
-            dt_finder = DecisionTree((X, y), model)
-
-            # Build the decision tree
-            dt_finder = dt_finder.fit(max_depth=dt_max_depth, min_size=min_size)
-
-            # Find interesting slices
-            dt_slices = dt_finder.recommend_slices(k=k, min_effect_size=min_effect_size)
-
-            dt_slices = create_dataframe_from_nodes_for_tree_method(dt_slices)
-
-            results['dt_slices'] = dt_slices
-
-            if verbose:
-                print(f"\nFound {len(dt_slices)} slices using decision tree:")
-                for i, node in enumerate(dt_slices):
-                    print(f"\n----- Decision Tree Slice {i + 1} -----")
-
-                    # Get the path from root to this node
-                    ancestry = node.__ancestry__()
-                    if ancestry:
-                        print("Path from root:", " → ".join(ancestry))
-
-                    # Display the node description
-                    print(f"Node: {node}")
-
-                    # Display effect size and slice size
-                    print(f"Effect size: {node.eff_size:.4f}")
-                    print(f"Slice size: {node.size} samples")
-
-        except Exception as e:
-            if verbose:
-                print(f"Error in decision tree approach: {e}")
-            results['dt_slices'] = None
+            print(f"\n{e}")
+    finally:
+        # Disable the alarm
+        if max_runtime_seconds is not None and os.name != 'nt':
+            signal.alarm(0)
 
     return results
 
@@ -366,6 +391,7 @@ if __name__ == "__main__":
     results = run_slicefinder(data_obj, approach="lattice", model=None, max_depth=5,
                               n_estimators=1, k=2, epsilon=0.3, degree=2,
                               max_workers=4, dt_max_depth=3, min_size=100,
-                              min_effect_size=0.3, verbose=True, drop_na=True)
+                              min_effect_size=0.3, verbose=True, drop_na=True,
+                              max_runtime_seconds=60)
 
     print(results)

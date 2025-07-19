@@ -30,7 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger('FairNaiveBayes')
 
 
-def run_naive_bayes(data: DiscriminationData):
+def run_naive_bayes(data: DiscriminationData, max_runtime_seconds: int = None):
     """
     An example script that binarizes data, calculates Naive Bayes parameters, and then runs the
     PatternFinder to find discriminating patterns.
@@ -40,6 +40,9 @@ def run_naive_bayes(data: DiscriminationData):
         dict: A dictionary containing summary metrics.
     """
     start_time = time.time()
+    if max_runtime_seconds is not None and max_runtime_seconds <= 0:
+        logger.warning("max_runtime_seconds must be positive. Ignoring the time limit.")
+        max_runtime_seconds = None
     logger.info("--- Running Discrimination Finder with Fair Naive Bayes ---")
 
     df = data.dataframe
@@ -80,7 +83,7 @@ def run_naive_bayes(data: DiscriminationData):
     k = 5
     logger.info(f"\nSearching for the top {k} discriminating patterns with a threshold of {delta}...")
 
-    pf = PatternFinder(root_params, leaf_params, target_value, data.sensitive_indices)
+    pf = PatternFinder(root_params, leaf_params, target_value, data.sensitive_indices, start_time=start_time, max_runtime_seconds=max_runtime_seconds)
     raw_patterns = pf.get_discriminating_patterns(delta, k)
 
     # --- 6. Process and Format Results ---
@@ -144,7 +147,7 @@ def run_naive_bayes(data: DiscriminationData):
 
 if __name__ == '__main__':
     data = generate_optimal_discrimination_data(use_cache=True)
-    res_df, metrics = run_naive_bayes(data)
+    res_df, metrics = run_naive_bayes(data, max_runtime_seconds=60)
 
     if not res_df.empty:
         print("\n--- Discrimination Results ---")
