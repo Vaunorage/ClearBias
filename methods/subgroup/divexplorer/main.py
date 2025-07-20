@@ -6,8 +6,8 @@ import time
 import logging
 
 from data_generator.main import generate_optimal_discrimination_data, get_real_data, DiscriminationData
-from methods.subgroup.divexplorer.divexplorer.FP_Divergence import FP_Divergence
-from methods.subgroup.divexplorer.divexplorer.FP_DivergenceExplorer import FP_DivergenceExplorer
+from methods.subgroup.divexplorer.src.FP_Divergence import FP_Divergence
+from methods.subgroup.divexplorer.src.FP_DivergenceExplorer import FP_DivergenceExplorer
 from methods.utils import make_final_metrics_and_dataframe
 
 logging.basicConfig(level=logging.INFO)
