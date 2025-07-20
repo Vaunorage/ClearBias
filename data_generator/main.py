@@ -1805,6 +1805,7 @@ def generate_optimal_discrimination_data(
         categorical_outcome: bool = True,
         nb_categories_outcome: int = 6,
         classifier=None,
+        use_cache: bool = True,
         **kwargs
 ) -> 'DiscriminationData':
     """
