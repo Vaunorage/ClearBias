@@ -30,7 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger('FairNaiveBayes')
 
 
-def run_naive_bayes(data: DiscriminationData, max_runtime_seconds: int = None):
+def run_naive_bayes(data: DiscriminationData, delta=0.01, k=5, max_runtime_seconds: int = None):
     """
     An example script that binarizes data, calculates Naive Bayes parameters, and then runs the
     PatternFinder to find discriminating patterns.
@@ -79,11 +79,10 @@ def run_naive_bayes(data: DiscriminationData, max_runtime_seconds: int = None):
     root_params, leaf_params = convert_result_to_parameters(prob_dict, data.sensitive_indices, bn_dict, target_name)
 
     # --- 5. Find Discriminating Patterns ---
-    delta = 0.01
-    k = 5
     logger.info(f"\nSearching for the top {k} discriminating patterns with a threshold of {delta}...")
 
-    pf = PatternFinder(root_params, leaf_params, target_value, data.sensitive_indices, start_time=start_time, max_runtime_seconds=max_runtime_seconds)
+    pf = PatternFinder(root_params, leaf_params, target_value, data.sensitive_indices, start_time=start_time,
+                       max_runtime_seconds=max_runtime_seconds)
     raw_patterns = pf.get_discriminating_patterns(delta, k)
 
     # --- 6. Process and Format Results ---
@@ -93,12 +92,12 @@ def run_naive_bayes(data: DiscriminationData, max_runtime_seconds: int = None):
     else:
         logger.info(f"\n--- Top {len(raw_patterns)} Discriminating Patterns Found ---")
         for i, pattern in enumerate(raw_patterns):
-            base_features = {bn_dict.get(fid) : val for fid, val in pattern.base}
-            base_features = {**base_features, **{e:None for e in data.attr_columns if e not in base_features}}
+            base_features = {bn_dict.get(fid): val for fid, val in pattern.base}
+            base_features = {**base_features, **{e: None for e in data.attr_columns if e not in base_features}}
             base_features['nature'] = 'base'
 
-            sens_features = {bn_dict.get(fid) : val for fid, val in pattern.sens}
-            sens_features = {**sens_features, **{e:None for e in data.attr_columns if e not in sens_features}}
+            sens_features = {bn_dict.get(fid): val for fid, val in pattern.sens}
+            sens_features = {**sens_features, **{e: None for e in data.attr_columns if e not in sens_features}}
             sens_features['nature'] = 'sensitive'
 
             pattern_info = {

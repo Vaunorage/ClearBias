@@ -493,16 +493,15 @@ class DataSchema:
     @property
     def hash_key(self):
         diction = {
-            'attr_categories': self.attr_categories,
-            'protected_attr': self.protected_attr,
-            'attr_names': self.attr_names,
-            'categorical_distribution': self.categorical_distribution,
-            'correlation_matrix': self.correlation_matrix,
-            'gen_order': self.gen_order,
+            'attr_categories': tuple(list(map(tuple, self.attr_categories))),
+            'protected_attr': tuple(self.protected_attr),
+            'attr_names': tuple(self.attr_names),
+            'categorical_distribution': hash(frozenset({k:tuple(v) for k,v in self.categorical_distribution.items()}.items())),
+            'gen_order': tuple(self.gen_order),
             'category_maps': self.category_maps,  # Add category maps for encoding/decoding
             'column_mapping': self.column_mapping
         }
-        return hash(frozenset(diction.items()))
+        return str(hash(frozenset(diction.items())))
 
 
 @dataclass
@@ -549,7 +548,10 @@ class DiscriminationData:
 
     @property
     def hash_key(self):
-        return hash(frozenset(self.metadata.items()))
+        diction = copy.deepcopy(self.metadata)
+        diction['categorical_columns'] = tuple(self.categorical_columns)
+        diction['attributes'] = hash(frozenset(self.attributes.items()))
+        return str(hash(frozenset(diction.items())))
 
     @property
     def attr_columns(self) -> List[str]:
