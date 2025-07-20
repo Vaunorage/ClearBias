@@ -490,6 +490,20 @@ class DataSchema:
 
         return decoded_df
 
+    @property
+    def hash_key(self):
+        diction = {
+            'attr_categories': self.attr_categories,
+            'protected_attr': self.protected_attr,
+            'attr_names': self.attr_names,
+            'categorical_distribution': self.categorical_distribution,
+            'correlation_matrix': self.correlation_matrix,
+            'gen_order': self.gen_order,
+            'category_maps': self.category_maps,  # Add category maps for encoding/decoding
+            'column_mapping': self.column_mapping
+        }
+        return hash(frozenset(diction.items()))
+
 
 @dataclass
 class DiscriminationDataFrame(pd.DataFrame):
@@ -516,6 +530,23 @@ class DiscriminationData:
     relevance_metrics: pd.DataFrame = field(default_factory=pd.DataFrame)
     attr_possible_values: Dict[str, List[int]] = field(default_factory=dict)
     generation_arguments: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def hash_key(self):
+        diction = {
+            'categorical_columns': self.categorical_columns,
+            'attributes': self.attributes,
+            'collisions': self.collisions,
+            'nb_groups': self.nb_groups,
+            'max_group_size': self.max_group_size,
+            'hiddenlayers_depth': self.hiddenlayers_depth,
+            'schema': self.schema.hash_key,
+            'y_true_col': self.y_true_col,
+            'y_pred_col': self.y_pred_col,
+            'outcome_column': self.outcome_column,
+            'attr_possible_values': self.attr_possible_values
+        }
+        return hash(frozenset(diction.items()))
 
     @property
     def attr_columns(self) -> List[str]:
@@ -1831,12 +1862,18 @@ def generate_optimal_discrimination_data(
         DiscriminationData object with generated data
     """
     # Create a dictionary of parameters for caching
-    cache_params = locals()
-    # The data_schema object itself can be large and complex, so we'll use its string representation
-    # or a unique identifier if it has one, for the cache key.
-    if 'data_schema' in cache_params and cache_params['data_schema'] is not None:
-        # This is a placeholder. Ideally, DataSchema would have a method to generate a unique hash or key.
-        cache_params['data_schema'] = str(cache_params['data_schema'])
+    cache_params = {'data_schema': data_schema.hash_key,
+                    'nb_groups': nb_groups,
+                    'nb_attributes': nb_attributes,
+                    'min_number_of_classes': min_number_of_classes,
+                    'max_number_of_classes': max_number_of_classes,
+                    'prop_protected_attr': prop_protected_attr,
+                    'min_group_size': min_group_size,
+                    'max_group_size': max_group_size,
+                    'min_diff_subgroup_size': min_diff_subgroup_size,
+                    'max_diff_subgroup_size': max_diff_subgroup_size,
+                    'categorical_outcome': categorical_outcome,
+                    'nb_categories_outcome': nb_categories_outcome}
 
     if use_cache:
         cache = DataCache()
