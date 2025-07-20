@@ -1830,6 +1830,20 @@ def generate_optimal_discrimination_data(
     Returns:
         DiscriminationData object with generated data
     """
+    # Create a dictionary of parameters for caching
+    cache_params = locals()
+    # The data_schema object itself can be large and complex, so we'll use its string representation
+    # or a unique identifier if it has one, for the cache key.
+    if 'data_schema' in cache_params and cache_params['data_schema'] is not None:
+        # This is a placeholder. Ideally, DataSchema would have a method to generate a unique hash or key.
+        cache_params['data_schema'] = str(cache_params['data_schema'])
+
+    if use_cache:
+        cache = DataCache()
+        cached_data = cache.load(cache_params)
+        if cached_data:
+            print("Loaded data from cache.")
+            return cached_data
 
     # Generate DataSchema if not provided
     if data_schema is None:
@@ -1956,6 +1970,11 @@ def generate_optimal_discrimination_data(
     print(f"- Created {len(groups)} groups from subgroup combinations")
     print(f"- Final dataset contains {len(dataset)} individuals")
     print(f"- Efficiency: {len(groups) / len(subgroups):.1f} groups per subgroup")
+
+    # Cache the result if requested
+    if use_cache:
+        cache = DataCache()
+        cache.save(data, cache_params)
 
     return data
 
