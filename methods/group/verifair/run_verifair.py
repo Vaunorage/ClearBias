@@ -209,7 +209,7 @@ if __name__ == '__main__':
         data=data,
         c=0.15, Delta=0.0,
         delta=0.5 * 1e-10, n_samples=1, n_max=1000, is_causal=False, log_iters=1000,
-        max_runtime_seconds=80
+        max_runtime_seconds=300
     )
 
     log('Script finished.', INFO)
