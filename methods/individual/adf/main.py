@@ -324,7 +324,7 @@ def run_adf(data: DiscriminationData, max_global: int = 2000, max_local: int = 2
     if max_tsn:
         logger.info(f"Target TSN: {max_tsn}")
 
-    model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
+    model, X_train, X_test, y_train, y_test, feature_names, metrics = train_sklearn_model(
         data=data.training_dataframe.copy(),
         model_type='mlp',
         target_col=data.outcome_column,

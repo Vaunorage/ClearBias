@@ -237,7 +237,7 @@ def run_expga(data: DiscriminationData, threshold_rank: float, max_global: int, 
 
     X, Y = data.xdf, data.ydf
 
-    model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
+    model, X_train, X_test, y_train, y_test, feature_names, metrics = train_sklearn_model(
         data=data.training_dataframe.copy(),
         model_type=model_type,
         target_col=data.outcome_column,

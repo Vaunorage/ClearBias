@@ -46,7 +46,7 @@ def run_aequitas(data: DiscriminationData, model_type='rf', max_global=500, max_
 
     # Train model using provided training function
     logger.info("Training the model...")
-    model, X_train, X_test, y_train, y_test, feature_names = train_sklearn_model(
+    model, X_train, X_test, y_train, y_test, feature_names, metrics = train_sklearn_model(
         data=data.training_dataframe,
         model_type=model_type,
         sensitive_attrs=data.protected_attributes,

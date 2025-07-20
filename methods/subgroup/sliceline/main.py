@@ -102,10 +102,6 @@ def make_subgroup_metrics_and_dataframe(df_final, tsn, dsn, start_time, logger):
                                 row[col] is not None and col not in ['slice_size', 'slice_mean', 'effect_size',
                                                                     'metric', 'size']]), axis=1)
 
-    df_final = df_final.rename(columns={'size': 'slice_size', 'effect_size': 'slice_impact'})
-    df_final['slice_impact'] = df_final['slice_impact'].round(3)
-    df_final['slice_mean'] = df_final['slice_mean'].round(3)
-
     # Calculate metrics
     sur = dsn / tsn if tsn > 0 else 0
     dss = runtime / dsn if dsn > 0 else float('inf')
@@ -125,10 +121,7 @@ def make_subgroup_metrics_and_dataframe(df_final, tsn, dsn, start_time, logger):
         logger.info(f"Success Rate (SUR): {sur:.4f}")
         logger.info(f"Discriminatory Sample Search time (DSS): {dss:.4f}")
 
-    # Select and reorder columns for the final dataframe
-    res = df_final[['slice', 'slice_size', 'slice_mean', 'slice_impact', 'metric']]
-
-    return res, metrics
+    return df_final, metrics
 
 
 if __name__ == '__main__':
