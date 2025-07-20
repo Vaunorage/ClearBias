@@ -532,8 +532,8 @@ class DiscriminationData:
     generation_arguments: Dict[str, Any] = field(default_factory=dict)
 
     @property
-    def hash_key(self):
-        diction = {
+    def metadata(self):
+        return {
             'categorical_columns': self.categorical_columns,
             'attributes': self.attributes,
             'collisions': self.collisions,
@@ -546,7 +546,10 @@ class DiscriminationData:
             'outcome_column': self.outcome_column,
             'attr_possible_values': self.attr_possible_values
         }
-        return hash(frozenset(diction.items()))
+
+    @property
+    def hash_key(self):
+        return hash(frozenset(self.metadata.items()))
 
     @property
     def attr_columns(self) -> List[str]:
