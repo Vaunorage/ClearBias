@@ -7,13 +7,8 @@ from methods.utils import compare_discriminatory_groups, check_groups_in_synthet
 
 # %% Get real data and run KOSEI on it
 data_obj, schema = get_real_data('adult', use_cache=True)
-results_df_origin, metrics_origin = run_kosei(
-    discrimination_data=data_obj,
-    num_samples=200,
-    local_search_limit=100,
-    random_seed=42,
-    max_runtime_seconds=400
-)
+results_df_origin, metrics_origin = run_kosei(data=data_obj, num_samples=200, local_search_limit=100, random_seed=42,
+                                              max_runtime_seconds=400)
 
 # %% Extract discriminatory groups from the results
 predefined_groups_origin, nb_elements = get_groups(results_df_origin, data_obj, schema)
@@ -32,13 +27,8 @@ print(f"Found {group_check_results['groups_found']} out of {group_check_results[
 print(f"Coverage: {group_check_results['coverage_percentage']:.2f}%")
 
 # %% Run KOSEI on the synthetic data
-results_df_synth, metrics_synth = run_kosei(
-    discrimination_data=data_obj_synth,
-    num_samples=200,
-    local_search_limit=100,
-    random_seed=42,
-    max_runtime_seconds=600
-)
+results_df_synth, metrics_synth = run_kosei(data=data_obj_synth, num_samples=200, local_search_limit=100,
+                                            random_seed=42, max_runtime_seconds=600)
 
 # %% Extract discriminatory groups from the synthetic data results
 predefined_groups_synth, nb_elements_synth = get_groups(results_df_synth, data_obj, schema)

@@ -356,20 +356,13 @@ class KOSEI:
 
 
 def run_kosei(model: Optional[Union[Callable[[np.ndarray], Any], str]] = None,
-              discrimination_data: Optional[DiscriminationData] = None,
-              protected_attribute_indices: Optional[List[int]] = None,
-              attribute_domains: Optional[Dict[int, tuple]] = None,
-              total_attributes: Optional[int] = None,
-              gamma: float = 0.0,
-              model_type: str = 'rf',
-              model_params: Optional[Dict] = None,
-              num_samples: int = 1000,
-              local_search_limit: int = 500,
-              random_seed: int = 42,
-              max_runtime_seconds: int = 3600):
+              data: Optional[DiscriminationData] = None, protected_attribute_indices: Optional[List[int]] = None,
+              attribute_domains: Optional[Dict[int, tuple]] = None, total_attributes: Optional[int] = None,
+              gamma: float = 0.0, model_type: str = 'rf', model_params: Optional[Dict] = None, num_samples: int = 1000,
+              local_search_limit: int = 500, random_seed: int = 42, max_runtime_seconds: int = 3600):
     results_df, metrics = KOSEI(
         model=model,
-        discrimination_data=discrimination_data,
+        discrimination_data=data,
         protected_attribute_indices=protected_attribute_indices,
         attribute_domains=attribute_domains,
         total_attributes=total_attributes,
@@ -390,10 +383,6 @@ if __name__ == "__main__":
     # Create a simple synthetic dataset with discrimination
     discrimination_data, data_schema = get_real_data('adult', use_cache=True)
 
-    results_df, metrics = run_kosei(
-        discrimination_data=discrimination_data,
-        num_samples=100,
-        local_search_limit=50
-    )
+    results_df, metrics = run_kosei(data=discrimination_data, num_samples=100, local_search_limit=50)
 
     print(f"\nTesting Metrics: {metrics}")

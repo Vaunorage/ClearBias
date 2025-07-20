@@ -579,6 +579,10 @@ class DiscriminationData:
         input_bounds = getattr(self, '_input_bounds')
         return input_bounds
 
+    @property
+    def nb_outcomes(self):
+        return self.dataframe[self.outcome_column].unique().shape[0]
+
     def get_random_rows(self, n: int) -> pd.DataFrame:
         random_data = {}
 

@@ -175,12 +175,12 @@ def run_fliptest_on_dataset(
     return results_df, metrics
 
 
-def run_fliptest(data_obj: DiscriminationData, max_runs: int = None, max_runtime_seconds: int = None):
+def run_fliptest(data: DiscriminationData, max_runs: int = None, max_runtime_seconds: int = None):
     """
     Run FlipTest on a dataset for multiple protected attributes.
     
     Args:
-        data_obj: The dataset object containing the dataframe.
+        data: The dataset object containing the dataframe.
         max_runs: Maximum number of protected attributes to check. If None, all will be checked.
         
     Returns:
@@ -189,19 +189,19 @@ def run_fliptest(data_obj: DiscriminationData, max_runs: int = None, max_runtime
             - metrics_dict: A dictionary with summary statistics about the analysis
     """
     # Get all protected attributes
-    protected_attrs = data_obj.protected_attributes
+    protected_attrs = data.protected_attributes
     print(f"Found {len(protected_attrs)} protected attributes: {protected_attrs}")
     
     # Calculate class balance for each protected attribute
     protected_attrs_to_check = []
     for attr in protected_attrs:
-        unique_values = data_obj.dataframe[attr].unique()
+        unique_values = data.dataframe[attr].unique()
         if len(unique_values) < 2:
             print(f"Skipping attribute '{attr}' as it does not have at least two unique values.")
             continue
             
         # Get counts for each value
-        value_counts = data_obj.dataframe[attr].value_counts()
+        value_counts = data.dataframe[attr].value_counts()
         smallest_group = value_counts.min()
         largest_group = value_counts.max()
         
@@ -235,13 +235,13 @@ def run_fliptest(data_obj: DiscriminationData, max_runs: int = None, max_runtime
         print(f"Running FlipTest for '{protected_attribute}' attribute")
         print("=" * 50)
 
-        unique_values = np.sort(data_obj.dataframe[protected_attribute].unique())
+        unique_values = np.sort(data.dataframe[protected_attribute].unique())
         if len(unique_values) < 2:
             print(f"Skipping attribute '{protected_attribute}' as it does not have at least two unique values.")
             continue
 
         result = run_fliptest_on_dataset(
-            data_obj,
+            data,
             protected_attribute=protected_attribute,
             group1_val=unique_values[0],
             group2_val=unique_values[1]

@@ -184,14 +184,15 @@ class LatentImitator:
         return all_found_instances
 
 
-def run_limi(discrimination_data: DiscriminationData, lambda_val=0.3, n_test_samples=2000, n_approx_samples=50000, max_runtime_seconds=None):
+def run_limi(data: DiscriminationData, lambda_val=0.3, n_test_samples=2000, n_approx_samples=50000,
+             max_runtime_seconds=None):
     start_time = time.time()
     print("\nTraining the black-box model (RandomForest)...")
     # RandomForestClassifier has `predict_proba`, so it's a suitable model for this corrected code.
     model, X_train, X_test, y_train, y_test, feature_names, metrics = train_sklearn_model(
-        data=discrimination_data.training_dataframe,
-        target_col=discrimination_data.outcome_column,
-        sensitive_attrs=discrimination_data.protected_attributes,
+        data=data.training_dataframe,
+        target_col=data.outcome_column,
+        sensitive_attrs=data.protected_attributes,
         model_type='rf')
 
     print(f"Black-box model accuracy: {metrics['accuracy']:.2%}")
@@ -209,7 +210,7 @@ def run_limi(discrimination_data: DiscriminationData, lambda_val=0.3, n_test_sam
     limi_tester = LatentImitator(
         black_box_model=model,
         generator=generator_pca,
-        protected_attribute_indices=tuple(discrimination_data.sensitive_indices),
+        protected_attribute_indices=tuple(data.sensitive_indices),
         lambda_val=lambda_val
     )
 
@@ -234,8 +235,8 @@ def run_limi(discrimination_data: DiscriminationData, lambda_val=0.3, n_test_sam
     dsn_by_attr_value = {'total': {'TSN': 0, 'DSN': 0}}
     
     # Initialize counters for protected attributes
-    for attr in discrimination_data.protected_attributes:
-        for val in discrimination_data.training_dataframe[attr].unique():
+    for attr in data.protected_attributes:
+        for val in data.training_dataframe[attr].unique():
             key = f"{attr}={val}"
             dsn_by_attr_value[key] = {'TSN': 0, 'DSN': 0}
     
@@ -255,8 +256,8 @@ def run_limi(discrimination_data: DiscriminationData, lambda_val=0.3, n_test_sam
             all_discriminations.append((org_input, org_pred, mod_input, mod_pred))
             
             # Update counts for protected attributes
-            for i, attr in enumerate(discrimination_data.protected_attributes):
-                attr_idx = discrimination_data.feature_names.index(attr)
+            for i, attr in enumerate(data.protected_attributes):
+                attr_idx = data.feature_names.index(attr)
                 org_val = org_input[attr_idx]
                 mod_val = mod_input[attr_idx]
                 
@@ -275,7 +276,7 @@ def run_limi(discrimination_data: DiscriminationData, lambda_val=0.3, n_test_sam
                 dsn_by_attr_value['total']['TSN'] += 2  # Both original and modified
                 dsn_by_attr_value['total']['DSN'] += 1  # One discriminatory pair
     
-    res_df, metrics = make_final_metrics_and_dataframe(discrimination_data, tot_inputs, all_discriminations, dsn_by_attr_value,
+    res_df, metrics = make_final_metrics_and_dataframe(data, tot_inputs, all_discriminations, dsn_by_attr_value,
                                                        start_time)
 
     return res_df, metrics

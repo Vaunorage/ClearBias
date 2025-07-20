@@ -167,16 +167,9 @@ ge = generate_data(
 )
 
 # Run the BiasScan algorithm
-result_df, report = run_bias_scan(
-    ge,
-    test_size=0.3,
-    random_state=42,
-    n_estimators=200,
-    bias_scan_num_iters=100,
-    bias_scan_scoring='Poisson',
-    bias_scan_favorable_value='high',
-    bias_scan_mode='ordinal'
-)
+result_df, report = run_bias_scan(ge, test_size=0.3, random_state=42, n_estimators=200, bias_scan_num_iters=100,
+                                  bias_scan_scoring='Poisson', bias_scan_favorable_value='high',
+                                  bias_scan_mode='ordinal')
 
 # Print results
 print(result_df)

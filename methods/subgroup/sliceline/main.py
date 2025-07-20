@@ -4,7 +4,7 @@ import re
 import time
 import logging
 from pandas import json_normalize
-from sliceline.slicefinder import Slicefinder
+from methods.subgroup.sliceline.src.sliceline import Slicefinder
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder
@@ -36,15 +36,15 @@ def parse_sliceline_itemset(itemset_str, all_attributes):
     return items
 
 
-def run_sliceline(data_obj: DiscriminationData, K=5, alpha=0.95, max_l=3, max_runtime_seconds=60, logger=None):
+def run_sliceline(data: DiscriminationData, K=5, alpha=0.95, max_l=3, max_runtime_seconds=60, logger=None):
     """
     Finds top K slices with high FPR and FNR using Sliceline.
     """
     start_time = time.time()
-    df = data_obj.training_dataframe_with_ypred.copy()
-    X = df[data_obj.attr_columns]
-    y_true = df[data_obj.outcome_column]
-    y_pred = df[data_obj.y_pred_col]
+    df = data.training_dataframe_with_ypred.copy()
+    X = df[data.attr_columns]
+    y_true = df[data.outcome_column]
+    y_pred = df[data.y_pred_col]
 
     # Calculate False Positive and False Negative errors
     errors_fp = ((y_true == 0) & (y_pred == 1)).astype(int)
@@ -56,8 +56,10 @@ def run_sliceline(data_obj: DiscriminationData, K=5, alpha=0.95, max_l=3, max_ru
     slice_finder_fp = Slicefinder(k=K, alpha=alpha, max_l=max_l, max_time=max_runtime_seconds)
     slice_finder_fp.fit(X, errors_fp)
 
-    if getattr(slice_finder_fp, 'top_slices_', None) and slice_finder_fp.top_slices_.any():
-        top_k_fpr = pd.DataFrame(slice_finder_fp.top_slices_, columns=data_obj.attr_columns)
+    check_1_fp = getattr(slice_finder_fp, 'top_slices_', None) is not None
+    check_2_fp = slice_finder_fp.top_slices_.any()
+    if check_1_fp and check_2_fp:
+        top_k_fpr = pd.DataFrame(slice_finder_fp.top_slices_, columns=data.attr_columns)
         top_k_fpr = pd.concat([top_k_fpr, pd.DataFrame(slice_finder_fp.top_slices_statistics_)])
         top_k_fpr['metric'] = 'fpr'
         all_results.append(top_k_fpr)
@@ -66,20 +68,23 @@ def run_sliceline(data_obj: DiscriminationData, K=5, alpha=0.95, max_l=3, max_ru
     slice_finder_fn = Slicefinder(k=K, alpha=alpha, max_l=max_l, max_time=max_runtime_seconds)
     slice_finder_fn.fit(X, errors_fn)
 
-    if getattr(slice_finder_fn, 'top_slices_', None) and slice_finder_fn.top_slices_.any():
-        top_k_fnr = pd.DataFrame(slice_finder_fn.top_slices_, columns=data_obj.attr_columns)
+    check_1_fn = getattr(slice_finder_fn, 'top_slices_', None) is not None
+    check_2_fn = slice_finder_fn.top_slices_.any()
+
+    if check_1_fn and check_2_fn:
+        top_k_fnr = pd.DataFrame(slice_finder_fn.top_slices_, columns=data.attr_columns)
         top_k_fnr = pd.concat([top_k_fnr, pd.DataFrame(slice_finder_fn.top_slices_statistics_)])
         top_k_fnr['metric'] = 'fnr'
         all_results.append(top_k_fnr)
         
-    if not all_results:
+    if len(all_results) == 0:
         print("Sliceline did not find any significant slices.")
         return pd.DataFrame(), {}
 
     df_final = pd.concat(all_results, ignore_index=True)
 
-    tsn = len(df)
-    dsn = df_final['size'].sum()
+    tsn = X.shape[0]
+    dsn = df_final.shape[0]
 
     return make_subgroup_metrics_and_dataframe(df_final, tsn, dsn, start_time, logger=logger)
 

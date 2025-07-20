@@ -166,11 +166,7 @@ from methods.individual.kosei.main import run_kosei
 discrimination_data, data_schema = get_real_data('adult', use_cache=True)
 
 # Run KOSEI with default parameters
-results_df, metrics = run_kosei(
-    discrimination_data=discrimination_data,
-    num_samples=100,
-    local_search_limit=50
-)
+results_df, metrics = run_kosei(data=discrimination_data, num_samples=100, local_search_limit=50)
 
 # Print metrics summary
 print(f"Testing Metrics: {metrics}")

@@ -171,29 +171,10 @@ def create_dataframe_from_nodes_for_tree_method(nodes_list: List[Node]) -> pd.Da
     return df
 
 
-def run_slicefinder(
-        data_obj,
-        schema=None,
-        # General parameters
-        approach: str = "both",  # "lattice", "decision_tree", or "both"
-        model=None,
-        max_runtime_seconds: Optional[int] = None,
-        # Model training parameters (if no model is provided)
-        max_depth: int = 5,
-        n_estimators: int = 10,
-        # Lattice search specific parameters
-        k: int = 10,
-        epsilon: float = 0.5,
-        degree: int = 2,
-        max_workers: int = 4,
-        # Decision tree specific parameters
-        dt_max_depth: int = 3,
-        min_size: int = 100,
-        min_effect_size: float = 0.3,
-        # Display options
-        verbose: bool = True,
-        drop_na: bool = True
-) -> Tuple[Dict, Metrics]:
+def run_slicefinder(data, schema=None, approach: str = "both", model=None, max_runtime_seconds: Optional[int] = None,
+                    max_depth: int = 5, n_estimators: int = 10, k: int = 10, epsilon: float = 0.5, degree: int = 2,
+                    max_workers: int = 4, dt_max_depth: int = 3, min_size: int = 100, min_effect_size: float = 0.3,
+                    verbose: bool = True, drop_na: bool = True) -> Tuple[Dict, Metrics]:
     """
     Run SliceFinder analysis using lattice search and/or decision tree approaches.
 
@@ -246,17 +227,17 @@ def run_slicefinder(
     if verbose:
         print("===== DATA PREPARATION =====")
 
-    # Handle missing values
-    if drop_na:
-        data = data_obj.dataframe.dropna()
-        if verbose:
-            print(f"Dropped missing values. Shape: {data.shape}")
-    else:
-        data = data_obj.dataframe
+    # # Handle missing values
+    # if drop_na:
+    #     data = data.dataframe.dropna()
+    #     if verbose:
+    #         print(f"Dropped missing values. Shape: {data.shape}")
+    # else:
+    #     data = data.dataframe
 
     # Split features and target
-    X = data_obj.xdf
-    y = data_obj.ydf
+    X = data.xdf
+    y = data.ydf
 
     if verbose:
         print(f"Features shape: {X.shape}")
@@ -307,7 +288,7 @@ def run_slicefinder(
                     max_workers=max_workers
                 )
 
-                slices_df = lattice_slices_to_dataframe(lattice_slices, data_obj)
+                slices_df = lattice_slices_to_dataframe(lattice_slices, data)
 
                 results['lattice_slices'] = slices_df
 
@@ -422,10 +403,8 @@ if __name__ == "__main__":
     data_obj, schema = get_real_data('adult', use_cache=True)
 
     # Run with both approaches (default)
-    results = run_slicefinder(data_obj, approach="lattice", model=None, max_depth=2,
-                              n_estimators=1, k=2, epsilon=0.3, degree=2,
-                              max_workers=4, dt_max_depth=3, min_size=100,
-                              min_effect_size=0.3, verbose=True, drop_na=True,
-                              max_runtime_seconds=60)
+    results = run_slicefinder(data_obj, approach="lattice", model=None, max_runtime_seconds=60, max_depth=2,
+                              n_estimators=1, k=2, epsilon=0.3, degree=2, max_workers=4, dt_max_depth=3, min_size=100,
+                              min_effect_size=0.3, verbose=True, drop_na=True)
 
     print(results)

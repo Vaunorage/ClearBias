@@ -151,21 +151,16 @@ def format_mdss_results(subsets1, subsets2, all_attributes, ge) -> pd.DataFrame:
     return result
 
 
-def run_bias_scan(ge,
-                  test_size=0.2,
-                  random_state=42,
-                  n_estimators=100,
-                  bias_scan_num_iters=50,
-                  bias_scan_scoring='Poisson',
-                  bias_scan_favorable_value='high',
+def run_bias_scan(data, test_size=0.2, random_state=42, n_estimators=100, bias_scan_num_iters=50,
+                  bias_scan_scoring='Poisson', bias_scan_favorable_value='high',
                   bias_scan_mode='ordinal') -> Tuple[pd.DataFrame, dict]:
     # Split the data
-    train_df, test_df = train_test_split(ge.dataframe, test_size=test_size, random_state=random_state)
+    train_df, test_df = train_test_split(data.dataframe, test_size=test_size, random_state=random_state)
 
-    X_train = train_df[list(ge.attributes)].values
-    y_train = train_df[ge.outcome_column]
-    X_test = test_df[list(ge.attributes)].values
-    y_test = test_df[ge.outcome_column]
+    X_train = train_df[list(data.attributes)].values
+    y_train = train_df[data.outcome_column]
+    X_test = test_df[list(data.attributes)].values
+    y_test = test_df[data.outcome_column]
 
     # Train the model
     model = RandomForestClassifier(n_estimators=n_estimators, random_state=random_state)
@@ -177,11 +172,11 @@ def run_bias_scan(ge,
     report = classification_report(y_test, y_pred)
 
     # Prepare data for bias scan
-    observations = pd.Series(ge.dataframe[ge.outcome_column].to_numpy().squeeze())
-    expectations = pd.Series(model.predict(ge.dataframe[list(ge.attributes)].values))
+    observations = pd.Series(data.dataframe[data.outcome_column].to_numpy().squeeze())
+    expectations = pd.Series(model.predict(data.dataframe[list(data.attributes)].values))
 
     # Perform bias scan
-    l1, l2, subsets1 = bias_scan(data=ge.dataframe[list(ge.attributes)],
+    l1, l2, subsets1 = bias_scan(data=data.dataframe[list(data.attributes)],
                                  observations=observations,
                                  expectations=expectations,
                                  verbose=True,
@@ -191,7 +186,7 @@ def run_bias_scan(ge,
                                  overpredicted=True,
                                  mode=bias_scan_mode)
 
-    d1, d2, subsets2 = bias_scan(data=ge.dataframe[list(ge.attributes)],
+    d1, d2, subsets2 = bias_scan(data=data.dataframe[list(data.attributes)],
                                  observations=observations,
                                  expectations=expectations,
                                  verbose=True,
@@ -202,6 +197,6 @@ def run_bias_scan(ge,
                                  mode=bias_scan_mode)
 
     # Format results
-    result_df = format_mdss_results(subsets1, subsets2, list(ge.attributes), ge)
+    result_df = format_mdss_results(subsets1, subsets2, list(data.attributes), data)
 
     return result_df, {'accuracy': accuracy, 'report': report}

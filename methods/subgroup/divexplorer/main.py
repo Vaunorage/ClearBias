@@ -1,5 +1,3 @@
-import pandas as pd
-from pandas import json_normalize
 import signal
 from contextlib import contextmanager
 import time
@@ -29,18 +27,18 @@ def timeout(time):
         signal.alarm(0)
 
 
-def run_divexploer(data_obj: DiscriminationData, K=5, max_runtime_seconds=60, min_support=0.05):
+def run_divexploer(data: DiscriminationData, K=5, max_runtime_seconds=60, min_support=0.05):
     start_time = time.time()
     all_discriminations = []
     dsn_by_attr_value = {}
 
     try:
         with timeout(max_runtime_seconds):
-            decoded_df = data_obj.training_dataframe_with_ypred
+            decoded_df = data.training_dataframe_with_ypred
 
             fp_diver = FP_DivergenceExplorer(decoded_df,
-                                             true_class_name=data_obj.outcome_column,
-                                             predicted_class_name=data_obj.y_pred_col)
+                                             true_class_name=data.outcome_column,
+                                             predicted_class_name=data.y_pred_col)
 
             FP_fm = fp_diver.getFrequentPatternDivergence(min_support=min_support)
 
@@ -59,10 +57,10 @@ def run_divexploer(data_obj: DiscriminationData, K=5, max_runtime_seconds=60, mi
 
     # Mocking some values that are not directly available from divexplorer
     tot_inputs = set()
-    for i in range(len(data_obj.training_dataframe)):
-        tot_inputs.add(tuple(data_obj.training_dataframe.iloc[i]))
+    for i in range(len(data.training_dataframe)):
+        tot_inputs.add(tuple(data.training_dataframe.iloc[i]))
 
-    res_df, metrics = make_final_metrics_and_dataframe(data_obj, tot_inputs, all_discriminations, dsn_by_attr_value,
+    res_df, metrics = make_final_metrics_and_dataframe(data, tot_inputs, all_discriminations, dsn_by_attr_value,
                                                        start_time, logger=logger)
 
     return res_df, metrics
