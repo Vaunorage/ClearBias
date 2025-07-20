@@ -1862,8 +1862,7 @@ def generate_optimal_discrimination_data(
         DiscriminationData object with generated data
     """
     # Create a dictionary of parameters for caching
-    cache_params = {'data_schema': data_schema.hash_key,
-                    'nb_groups': nb_groups,
+    cache_params = {'nb_groups': nb_groups,
                     'nb_attributes': nb_attributes,
                     'min_number_of_classes': min_number_of_classes,
                     'max_number_of_classes': max_number_of_classes,
@@ -1874,6 +1873,9 @@ def generate_optimal_discrimination_data(
                     'max_diff_subgroup_size': max_diff_subgroup_size,
                     'categorical_outcome': categorical_outcome,
                     'nb_categories_outcome': nb_categories_outcome}
+
+    if data_schema is not None:
+        cache_params['data_schema'] = data_schema.hash_key
 
     if use_cache:
         cache = DataCache()
