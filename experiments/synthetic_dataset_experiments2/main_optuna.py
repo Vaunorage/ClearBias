@@ -22,6 +22,7 @@ from methods.subgroup.sliceline.main import run_sliceline
 from path import HERE
 
 DATABASE_FILE = HERE.joinpath('experiments/synthetic_dataset_experiments2/synthetic_experiments_optuna.db')
+STUDIES_DATABASE_FILE = HERE.joinpath('experiments/synthetic_dataset_experiments2/optuna_studies.db')
 N_TRIALS = 20  # Number of optimization trials for each method
 MAX_RUNTIME_SECONDS = 300
 
@@ -30,6 +31,11 @@ def setup_database():
     """Create the database file if it doesn't exist."""
     conn = sqlite3.connect(DATABASE_FILE)
     conn.close()
+
+
+def get_study_storage_url():
+    """Get the SQLite storage URL for Optuna studies."""
+    return f"sqlite:///{STUDIES_DATABASE_FILE}"
 
 
 def save_optuna_result(method, study, dataset_params):
@@ -43,9 +49,12 @@ def save_optuna_result(method, study, dataset_params):
     cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS {table_name} (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            study_name TEXT,
             best_params TEXT,
             best_value REAL,
-            dataset_params TEXT
+            dataset_params TEXT,
+            n_trials INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
 
@@ -53,9 +62,9 @@ def save_optuna_result(method, study, dataset_params):
     dataset_params_json = json.dumps(dataset_params)
 
     cursor.execute(f'''
-        INSERT INTO {table_name} (best_params, best_value, dataset_params)
-        VALUES (?, ?, ?)
-    ''', (params_json, study.best_value, dataset_params_json))
+        INSERT INTO {table_name} (study_name, best_params, best_value, dataset_params, n_trials)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (study.study_name, params_json, study.best_value, dataset_params_json, len(study.trials)))
 
     conn.commit()
     conn.close()
@@ -75,6 +84,13 @@ def create_objective(method_func, data, param_suggester):
             return float('-inf')  # Return negative infinity to penalize failures when maximizing
 
     return objective
+
+
+def generate_study_name(method_name, dataset_params):
+    """Generate a unique study name based on method and dataset parameters."""
+    # Create a hash of dataset parameters for uniqueness
+    dataset_hash = hash(json.dumps(dataset_params, sort_keys=True))
+    return f"{method_name}_study_{abs(dataset_hash)}"
 
 
 def run_all_optimizations():
@@ -98,6 +114,10 @@ def run_all_optimizations():
     }
     print("Generated dataset parameters:", json.dumps(dataset_params, indent=2))
     data = generate_optimal_discrimination_data(**dataset_params)
+
+    # Get storage URL for persistent studies
+    storage_url = get_study_storage_url()
+    print(f"Using storage: {storage_url}")
 
     def verifair_params(trial):
         return {
@@ -221,14 +241,36 @@ def run_all_optimizations():
 
     for name, (method_func, param_suggester) in methods_to_optimize.items():
         print(f"\n--- Optimizing {name} ---")
+        
+        # Generate unique study name
+        study_name = generate_study_name(name, dataset_params)
+        
         objective_func = create_objective(method_func, data, param_suggester)
-        # Changed direction to 'maximize' to maximize DSN
-        study = optuna.create_study(direction='maximize')
-        study.optimize(objective_func, n_trials=N_TRIALS)
+        
+        # Create study with SQLite storage - this will persist the study
+        study = optuna.create_study(
+            direction='maximize',
+            storage=storage_url,
+            study_name=study_name,
+            load_if_exists=True  # Resume if study already exists
+        )
+        
+        print(f"Study name: {study_name}")
+        print(f"Current number of trials: {len(study.trials)}")
+        
+        # Only run optimization if we haven't completed N_TRIALS yet
+        remaining_trials = max(0, N_TRIALS - len(study.trials))
+        if remaining_trials > 0:
+            print(f"Running {remaining_trials} more trials...")
+            study.optimize(objective_func, n_trials=remaining_trials)
+        else:
+            print("Study already completed!")
 
         print(f"Finished optimizing {name}.")
         print(f"  Best value: {study.best_value}")
         print(f"  Best params: {study.best_params}")
+        print(f"  Total trials: {len(study.trials)}")
+        
         save_optuna_result(name, study, dataset_params)
 
 
@@ -272,7 +314,57 @@ def get_best_params(method: str, dataset_params: dict) -> dict:
         conn.close()
 
 
+def load_existing_study(method_name: str, dataset_params: dict):
+    """Load an existing study from SQLite storage.
+    
+    Args:
+        method_name (str): Name of the method
+        dataset_params (dict): Dataset parameters used for the study
+        
+    Returns:
+        optuna.Study or None: The loaded study or None if not found
+    """
+    storage_url = get_study_storage_url()
+    study_name = generate_study_name(method_name, dataset_params)
+    
+    try:
+        study = optuna.load_study(
+            study_name=study_name,
+            storage=storage_url
+        )
+        return study
+    except KeyError:
+        print(f"Study '{study_name}' not found in storage.")
+        return None
+
+
+def list_all_studies():
+    """List all studies stored in the SQLite database."""
+    storage_url = get_study_storage_url()
+    
+    try:
+        # Get all study summaries
+        study_summaries = optuna.study.get_all_study_summaries(storage=storage_url)
+        
+        print(f"\nFound {len(study_summaries)} studies in storage:")
+        for summary in study_summaries:
+            print(f"  Study: {summary.study_name}")
+            print(f"    Direction: {summary.direction}")
+            print(f"    Trials: {summary.n_trials}")
+            if summary.best_trial is not None:
+                print(f"    Best value: {summary.best_trial.value}")
+            print()
+            
+    except Exception as e:
+        print(f"Error listing studies: {e}")
+
+
 if __name__ == "__main__":
     setup_database()
     run_all_optimizations()
-    print("\n--- All optimizations completed. Results saved to 'synthetic_experiments_optuna.db' ---")
+    print("\n--- All optimizations completed. Results saved to databases ---")
+    print(f"Study data stored in: {STUDIES_DATABASE_FILE}")
+    print(f"Results summary stored in: {DATABASE_FILE}")
+    
+    # Optional: List all studies
+    list_all_studies()
