@@ -31,9 +31,9 @@ def run_fliptest_on_dataset(
     df = discrimination_data.dataframe
     print(f"Splitting data based on protected attribute: '{protected_attribute}'")
 
-    if protected_attribute not in data_obj.attr_columns:
+    if protected_attribute not in discrimination_data.attr_columns:
         raise ValueError(
-            f"Protected attribute '{protected_attribute}' not found in dataset columns: {data_obj.attr_columns}")
+            f"Protected attribute '{protected_attribute}' not found in dataset columns: {discrimination_data.attr_columns}")
 
     group1_df = df[df[protected_attribute] == group1_val]
     group2_df = df[df[protected_attribute] == group2_val]
@@ -45,7 +45,7 @@ def run_fliptest_on_dataset(
     print(f"Group 1 ('{protected_attribute}' = {group1_val}) size: {len(group1_df)}")
     print(f"Group 2 ('{protected_attribute}' = {group2_val}) size: {len(group2_df)}")
 
-    feature_columns = [col for col in data_obj.attr_columns if col != protected_attribute]
+    feature_columns = [col for col in discrimination_data.attr_columns if col != protected_attribute]
     outcome_column = 'outcome'
 
     X1 = group1_df[feature_columns].values.astype(np.float64)
