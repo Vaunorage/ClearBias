@@ -4,7 +4,7 @@ import time
 import logging
 from data_generator.main import DiscriminationData, get_real_data
 from methods.subgroup.gerryfair import clean, model
-from methods.utils import make_final_metrics_and_dataframe
+from methods.utils import make_final_metrics_and_dataframe, make_subgroup_metrics_and_dataframe
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -62,16 +62,16 @@ def prepare_data_for_gerryfair(data, protected_attrs, outcome_col):
     return X, X_prime, y
 
 
-def run_gerryfair(ge: DiscriminationData, C=10, gamma=0.01, max_iters=3):
+def run_gerryfair(data: DiscriminationData, C=10, gamma=0.01, max_iters=3):
     start_time = time.time()
     print("Generating synthetic data...")
 
     # Extract protected attributes directly from the DiscriminationData object
-    protected_attrs = ge.protected_attributes
+    protected_attrs = data.protected_attributes
     print(f"Protected attributes: {protected_attrs}")
 
     # Prepare data for GerryFair
-    X, X_prime, y = prepare_data_for_gerryfair(ge.training_dataframe, ge.protected_attributes, ge.outcome_column)
+    X, X_prime, y = prepare_data_for_gerryfair(data.training_dataframe, data.protected_attributes, data.outcome_column)
 
     print("\nData preparation complete.")
     print(f"Total samples: {len(X)}")
