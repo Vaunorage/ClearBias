@@ -1,3 +1,12 @@
+import os
+import pathlib
+from path import HERE
+# Set the Gurobi license file path
+# Assumes the license file is in <project_root>/gurobi_licence/gurobi.lic
+license_path = HERE.joinpath("gurobi_licence/gurobi.lic")
+if license_path.exists():
+    os.environ['GRB_LICENSE_FILE'] = str(license_path)
+
 import numpy as np
 from gurobipy import Model, quicksum
 
