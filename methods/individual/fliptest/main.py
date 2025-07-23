@@ -273,17 +273,35 @@ def run_fliptest(data: DiscriminationData, max_runs: int = None, max_runtime_sec
                                                   'case_id', 'TSN', 'DSN', 'SUR', 'DSS', 'protected_attribute'])
     
     # Create overall metrics dictionary
-    overall_metrics = {
-        "total_runs": len(attributes_to_check),
-        "successful_runs": successful_runs,
-        "total_time": total_time,
-        "attribute_metrics": all_metrics
-    }
+    # Aggregate metrics across all attributes
+    total_tsn = sum(m['TSN'] for m in all_metrics.values())
+    total_dsn = sum(m['DSN'] for m in all_metrics.values())
     
+    # Calculate weighted average of DSS
+    total_dss_numerator = sum(m['DSS'] * m['DSN'] for m in all_metrics.values())
+    if total_dsn > 0:
+        overall_dss = total_dss_numerator / total_dsn
+    else:
+        overall_dss = 0
+
+    # Calculate overall SUR
+    if total_tsn > 0:
+        overall_sur = total_dsn / total_tsn
+    else:
+        overall_sur = 0
+
+    # Final metrics dictionary in the desired format
+    metrics = {
+        'DSN': total_dsn,
+        'TSN': total_tsn,
+        'DSS': overall_dss,
+        'SUR': overall_sur
+    }
+
     print(f"\nCompleted {successful_runs} successful FlipTest runs out of {len(attributes_to_check)} attempted.")
     print(f"Total execution time: {total_time:.2f} seconds")
-    
-    return combined_results_df, overall_metrics
+
+    return combined_results_df, metrics
 
 
 if __name__ == "__main__":
