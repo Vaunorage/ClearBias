@@ -1,3 +1,4 @@
+import pandas as pd
 import signal
 from contextlib import contextmanager
 import time
@@ -39,6 +40,10 @@ def run_divexploer(data: DiscriminationData, K=5, max_runtime_seconds=60, min_su
             fp_diver = FP_DivergenceExplorer(decoded_df,
                                              true_class_name=data.outcome_column,
                                              predicted_class_name=data.y_pred_col)
+            if not fp_diver.is_binary_problem:
+                return pd.DataFrame(columns=['indv_key', 'outcome', 'couple_key', 'diff_outcome', 'case_id', 'TSN', 'DSN', 'SUR', 'DSS']), \
+                       {'DSN': 0, 'TSN': 0, 'DSR':0, 'DSS': 0}
+
 
             FP_fm = fp_diver.getFrequentPatternDivergence(min_support=min_support)
 

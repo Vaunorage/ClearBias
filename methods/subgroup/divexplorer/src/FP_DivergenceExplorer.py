@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import warnings
 from mlxtend.frequent_patterns.apriori import (
     generate_new_combinations_low_memory,
     generate_new_combinations,
@@ -130,15 +131,16 @@ class FP_DivergenceExplorer:
             self.y_true_pred = self.y_true_pred.assign(predicted=self.y_predicted)
 
             self.class_map = class_map
+            self.is_binary_problem = True
             if self.class_map == {}:
                 from sklearn.utils.multiclass import unique_labels
 
                 labels = np.sort(unique_labels(self.y, self.y_predicted))
                 if len(labels) > 2:
-                    # todo error
-                    print("Binary class")
-                    raise ValueError(f"Not binary problem:{len(labels)}")
-                self.class_map = {"N": labels[0], "P": labels[1]}
+                    warnings.warn("Not a binary problem")
+                    self.is_binary_problem = False
+                else:
+                    self.class_map = {"N": labels[0], "P": labels[1]}
         else:
             # TODO - ADD MULTIPLE TARGETS --> TARGET COLUMNS
             cols = [target_name] + ignore_cols
