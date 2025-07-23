@@ -322,54 +322,5 @@ if __name__ == "__main__":
     results_df, metrics = run_fliptest(data_obj, max_runs=2, max_runtime_seconds=60)
     
     # Print summary of results
-    print("\n## Output")
-    print("\nThe algorithm returns two main outputs:")
-    
-    print("\n### Results DataFrame (results_df)")
-    print("A pandas DataFrame containing all identified discriminatory pairs with the following columns:")
-    print("- All original feature columns from the dataset")
-    print("- `indv_key`: A unique identifier for each individual instance")
-    print("- `outcome`: The predicted outcome for the instance")
-    print("- `couple_key`: A key linking two instances that form a discriminatory pair")
-    print("- `diff_outcome`: The absolute difference in outcomes between the pair")
-    print("- `case_id`: A unique identifier for each discriminatory case")
-    print("- `TSN`: Total Sample Number - total number of input pairs tested")
-    print("- `DSN`: Discriminatory Sample Number - number of discriminatory pairs found")
-    print("- `SUR`: Success Rate - ratio of DSN to TSN")
-    print("- `DSS`: Discriminatory Sample Search time - average time to find a discriminatory sample")
-    print("- `protected_attribute`: The protected attribute used for this pair")
-    
-    print("\n### Metrics Dictionary (metrics)")
-    print("A dictionary containing summary statistics:")
-    print("- `total_runs`: Total number of protected attributes tested")
-    print("- `successful_runs`: Number of protected attributes that completed successfully")
-    print("- `total_time`: Total execution time")
-    print("- `attribute_metrics`: Detailed metrics for each protected attribute")
-    
-    # Print summary statistics
-    print("\n## Summary Statistics")
-    print("-" * 60)
-    print(f"Total runs attempted: {metrics['total_runs']}")
-    print(f"Successful runs: {metrics['successful_runs']}")
-    print(f"Total execution time: {metrics['total_time']:.2f} seconds")
-    print("-" * 60)
-    
-    # Print details for each attribute
-    for attr, attr_metrics in metrics['attribute_metrics'].items():
-        print(f"Protected Attribute: {attr}")
-        print(f"  Total pairs analyzed: {attr_metrics['TSN']}")
-        print(f"  Discriminatory pairs found: {attr_metrics['DSN']}")
-        print(f"  Success rate: {attr_metrics['SUR']:.4f}")
-        print(f"  Mean L1 Distance: {attr_metrics['mean_distance']:.4f}")
-        print("-" * 60)
-    
-    # Print sample of the results DataFrame
-    if not results_df.empty:
-        print("\n## Example Output DataFrame")
-        print("\nHere's a sample of the output DataFrame:")
-        print("\n", results_df.head().to_string())
-        print(f"\nTotal discriminatory pairs found: {len(results_df) // 2}")
-        print("(Each pair consists of two rows in the DataFrame)")
-    else:
-        print("\nNo discriminatory pairs found.")
+    print(metrics)
 

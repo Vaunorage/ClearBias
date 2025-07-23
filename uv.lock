@@ -345,6 +345,7 @@ dependencies = [
     { name = "patsy" },
     { name = "pgmpy" },
     { name = "plotly" },
+    { name = "pot" },
     { name = "prettytable" },
     { name = "pydot" },
     { name = "pysat" },
@@ -395,6 +396,7 @@ requires-dist = [
     { name = "patsy", specifier = ">=1.0.1" },
     { name = "pgmpy", specifier = ">=1.0.0" },
     { name = "plotly", specifier = "==5.24.1" },
+    { name = "pot", specifier = ">=0.9.5" },
     { name = "prettytable", specifier = ">=3.16.0" },
     { name = "pydot", specifier = ">=4.0.1" },
     { name = "pysat", specifier = ">=3.2.2" },
@@ -2167,6 +2169,25 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5e/77/65b857a69ed876e1951e88aaba60f5ce6120c33703f7cb61a3c894b8c1b6/portalocker-3.2.0.tar.gz", hash = "sha256:1f3002956a54a8c3730586c5c77bf18fae4149e07eaf1c29fc3faf4d5a3f89ac", size = 95644, upload-time = "2025-06-14T13:20:40.03Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4b/a6/38c8e2f318bf67d338f4d629e93b0b4b9af331f455f0390ea8ce4a099b26/portalocker-3.2.0-py3-none-any.whl", hash = "sha256:3cdc5f565312224bc570c49337bd21428bba0ef363bbcf58b9ef4a9f11779968", size = 22424, upload-time = "2025-06-14T13:20:38.083Z" },
+]
+
+[[package]]
+name = "pot"
+version = "0.9.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c1/40/3e0c8dd88328d944f9d82b30cafd2a1c911bddff0b8bccc8dc9dd5e45b7c/pot-0.9.5.tar.gz", hash = "sha256:9644ee7ff51c3cffa3c2632b9dd9dff4f3520266f9fb771450935ffb646d6042", size = 440808, upload-time = "2024-11-07T10:05:05.567Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/95/deecc996c5e147159f37191b90a6cf4ee2494e40badc79bed743bfb6478b/POT-0.9.5-cp312-cp312-macosx_10_9_universal2.whl", hash = "sha256:7d57f96b333c9816a2af7817753108739b38155e52648c5967681dbd89d92ed2", size = 410824, upload-time = "2024-11-07T10:04:28.313Z" },
+    { url = "https://files.pythonhosted.org/packages/d3/d3/d9ae1ae96ad461a900b4ffb38f0a830201d4c43135e1a3be48a82e77303e/POT-0.9.5-cp312-cp312-macosx_10_9_x86_64.whl", hash = "sha256:afad647c78f999439f8c5cbcf74b03c5c0afefb08727cd7d68994130fabfc761", size = 351023, upload-time = "2024-11-07T10:04:29.851Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/97/ca785fc539388696838f34ab6bde8ee8ad625999221e3746c8d410f8c20f/POT-0.9.5-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:bca891c28592d6e0e8f04b35989de7005f0fb9b3923f00537f1b269c5084aa7b", size = 344150, upload-time = "2024-11-07T10:04:30.974Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/bd/fd000d9217a6cb47f25414d1bfce885fcb28fc23876266422a3a2d8fab31/POT-0.9.5-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:088c930a5fcd1e8e36fb6af710df47ce6e9331b6b5a28eb09c673df4186dcb10", size = 894749, upload-time = "2024-11-07T10:04:32.163Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/39/9c3eed29e954ddbac3ebe68123213826c8995e8acf8b54aa79d1956fda6a/POT-0.9.5-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:dfb18268fac1e982e21821a03f802802a0d579c4690988b764115dd886dc38f5", size = 901694, upload-time = "2024-11-07T10:04:33.919Z" },
+    { url = "https://files.pythonhosted.org/packages/83/8d/bf8af71e2f36da7598da946a81fbaebb362abaebf6eeba81ebc8efbc860a/POT-0.9.5-cp312-cp312-win32.whl", hash = "sha256:931fa46ff8e01d47309207243988c783a2d8364452bc080b130c5d319349ad3f", size = 343682, upload-time = "2024-11-07T10:04:35.19Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/95/14902c778117ad9ac7af62dd1d951942440c57df991d7f937f416ee6320f/POT-0.9.5-cp312-cp312-win_amd64.whl", hash = "sha256:be786612b391c2e4d3b5db4e7d51cdb2360284e3a6949990051c2eb102f60d3c", size = 347949, upload-time = "2024-11-07T10:04:36.497Z" },
 ]
 
 [[package]]

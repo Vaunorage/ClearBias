@@ -51,4 +51,5 @@ dependencies = [
     "setuptools>=80.9.0",
     "wheel>=0.45.1",
     "cython>=3.1.2",
+    "pot>=0.9.5",
 ]
