@@ -1529,7 +1529,12 @@ class OptimalDataGenerator:
                 used_combinations.add(signature)
 
                 # Calculate subgroup size (will be adjusted during group formation)
-                base_size = np.random.randint(min_group_size // 2, max_group_size // 2)
+                low = min_group_size // 2
+                high = max_group_size // 2
+                if low >= high:
+                    base_size = low
+                else:
+                    base_size = np.random.randint(low, high)
 
                 subgroup = SubgroupDefinition(
                     subgroup_id=f"subgroup_{len(subgroups):03d}",
