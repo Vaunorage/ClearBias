@@ -76,7 +76,7 @@ class KOSEI:
                 model_type_to_use = model if isinstance(model, str) else model_type
 
                 # Train the model
-                trained_model, _, _, _, _, _ = train_sklearn_model(
+                trained_model, X_train, X_test, y_train, y_test, feature_names, metrics = train_sklearn_model(
                     data=self.discrimination_data.training_dataframe,
                     model_type=model_type_to_use,
                     model_params=model_params,

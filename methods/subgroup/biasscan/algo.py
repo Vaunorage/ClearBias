@@ -153,7 +153,7 @@ def format_mdss_results(subsets1, subsets2, all_attributes, ge) -> pd.DataFrame:
 
 def run_bias_scan(data, test_size=0.2, random_state=42, n_estimators=100, bias_scan_num_iters=50,
                   bias_scan_scoring='Poisson', bias_scan_favorable_value='high',
-                  bias_scan_mode='ordinal') -> Tuple[pd.DataFrame, dict]:
+                  bias_scan_mode='ordinal', max_runtime_seconds=None) -> Tuple[pd.DataFrame, dict]:
     # Split the data
     train_df, test_df = train_test_split(data.dataframe, test_size=test_size, random_state=random_state)
 

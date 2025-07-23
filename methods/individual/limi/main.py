@@ -1,3 +1,5 @@
+import itertools
+
 import pandas as pd
 import numpy as np
 import time
@@ -24,6 +26,8 @@ class LatentImitator:
     """
     Implementation of the Latent Imitator (LIMI) framework for fairness testing.
     This class uses PCA to simulate a GAN's latent space and generator.
+
+    VERSION 2: Handles more than two protected attributes by iterating through all pairs.
     """
 
     def __init__(self, black_box_model, generator, protected_attribute_indices, lambda_val=0.3):
@@ -33,7 +37,7 @@ class LatentImitator:
         Args:
             black_box_model: The pre-trained classification model to be tested. Must have a `predict_proba` method.
             generator (PCA): A fitted PCA object that acts as our generator.
-            protected_attribute_indices (tuple): A tuple of indices for the one-hot encoded protected attribute.
+            protected_attribute_indices (tuple or list): A tuple/list of indices for the one-hot encoded protected attributes.
             lambda_val (float): The step size for probing around the surrogate boundary.
         """
         self.black_box_model = black_box_model
@@ -50,24 +54,14 @@ class LatentImitator:
         on a refined, high-confidence, and balanced dataset, as described in the paper.
         """
         print(f"Step 1: Approximating decision boundary with {n_samples} synthetic samples...")
-
-        # 1. Generate random latent vectors
         z_init = np.random.randn(n_samples, self.latent_dim)
-
-        # 2. Use the generator to create synthetic data samples
         x_synthetic = self.generator.inverse_transform(z_init)
 
-        # --- REFINEMENT STAGE (As per paper) ---
-
-        # 3a. Get prediction probabilities from the black-box model
-        y_probs = self.black_box_model.predict_proba(x_synthetic)
-        y_pred = np.argmax(y_probs, axis=1)  # Get the hard labels
-
-        # 3b. Filter for high-confidence samples
         print(f"Filtering for samples with confidence > {confidence_threshold}...")
+        y_probs = self.black_box_model.predict_proba(x_synthetic)
+        y_pred = np.argmax(y_probs, axis=1)
         confidence_scores = np.max(y_probs, axis=1)
         high_confidence_mask = confidence_scores >= confidence_threshold
-
         z_high_confidence = z_init[high_confidence_mask]
         y_high_confidence = y_pred[high_confidence_mask]
 
@@ -76,21 +70,16 @@ class LatentImitator:
                 f"No samples met the confidence threshold of {confidence_threshold}. "
                 "Try lowering the threshold or increasing n_samples."
             )
-
         print(f"Retained {len(z_high_confidence)} high-confidence samples out of {n_samples}.")
 
-        # 3c. Balance the dataset using random over-sampling
         print("Balancing the high-confidence dataset using RandomOverSampler...")
         ros = RandomOverSampler(random_state=42)
         z_balanced, y_balanced = ros.fit_resample(z_high_confidence, y_high_confidence)
-
         print(f"Dataset size after balancing: {len(z_balanced)} samples.")
 
-        # 4. Train a simple, linear surrogate model (SVM) on the REFINED latent vectors and predictions
         print("Training surrogate linear SVM on the refined latent space...")
         surrogate_svm = SVC(kernel='linear', C=1.0, random_state=42)
-        surrogate_svm.fit(z_balanced, y_balanced)  # Fit on balanced, high-confidence data
-
+        surrogate_svm.fit(z_balanced, y_balanced)
         self.surrogate_model = surrogate_svm
         print("Surrogate boundary learned.")
 
@@ -105,7 +94,6 @@ class LatentImitator:
 
         w = self.surrogate_model.coef_[0]
         b = self.surrogate_model.intercept_[0]
-
         w_norm = np.linalg.norm(w)
         if w_norm == 0:
             raise ValueError("Surrogate model weight vector is zero. Cannot proceed.")
@@ -118,38 +106,56 @@ class LatentImitator:
             z_plus = z0 + self.lambda_val * w_u
             z_minus = z0 - self.lambda_val * w_u
             candidate_triplets.append((z0, z_plus, z_minus))
-
         return candidate_triplets
 
     def _verify_and_generate(self, candidate_triplets):
         """
-        STEP 3: Generation and Verification
+        STEP 3: Generation and Verification (MODIFIED)
         Generate data from latent candidates and check for discrimination.
+        This version iterates through all unique pairs of protected attributes.
         """
         print("Step 3: Verifying candidates and generating discriminatory instances...")
         discriminatory_instances = []
-        idx1, idx2 = self.protected_attribute_indices
+
+        # Handle cases with fewer than 2 protected attributes gracefully.
+        if len(self.protected_attribute_indices) < 2:
+            print("Warning: Less than two protected attribute indices provided. Cannot perform pair-wise swapping.")
+            return []
+
+        # Generate all unique pairs of indices to test for swaps.
+        attribute_index_pairs = list(itertools.combinations(self.protected_attribute_indices, 2))
 
         for triplet in tqdm(candidate_triplets, desc="Verifying Triplets"):
+            found_for_triplet = False
             for z_candidate in triplet:
+                if found_for_triplet:
+                    break
+
                 x_orig_vector = self.generator.inverse_transform(z_candidate.reshape(1, -1))
                 pred_orig = self.black_box_model.predict(x_orig_vector)[0]
 
-                x_mod_vector = x_orig_vector.copy()
-                val1 = round(x_mod_vector[0, idx1])
-                val2 = round(x_mod_vector[0, idx2])
-                x_mod_vector[0, idx1] = val2
-                x_mod_vector[0, idx2] = val1
-                pred_mod = self.black_box_model.predict(x_mod_vector)[0]
+                # Iterate through each pair of protected attributes to perform a swap.
+                for idx1, idx2 in attribute_index_pairs:
+                    x_mod_vector = x_orig_vector.copy()
 
-                if pred_orig != pred_mod:
-                    discriminatory_instances.append({
-                        'original_input': x_orig_vector[0],
-                        'modified_input': x_mod_vector[0],
-                        'original_prediction': pred_orig,
-                        'modified_prediction': pred_mod
-                    })
-                    break
+                    # Perform the swap of values at the two protected indices
+                    val1 = round(x_mod_vector[0, idx1])
+                    val2 = round(x_mod_vector[0, idx2])
+                    x_mod_vector[0, idx1] = val2
+                    x_mod_vector[0, idx2] = val1
+
+                    pred_mod = self.black_box_model.predict(x_mod_vector)[0]
+
+                    if pred_orig != pred_mod:
+                        discriminatory_instances.append({
+                            'original_input': x_orig_vector[0],
+                            'modified_input': x_mod_vector[0],
+                            'original_prediction': pred_orig,
+                            'modified_prediction': pred_mod,
+                            'swapped_indices': (idx1, idx2)  # Also record which swap caused the issue
+                        })
+                        found_for_triplet = True
+                        break  # Found discrimination, move to the next triplet
 
         return discriminatory_instances
 
@@ -157,10 +163,7 @@ class LatentImitator:
         """
         Runs the full LIMI testing pipeline.
         """
-        # Step 1: Learn the surrogate boundary using more samples for better approximation
         self._approximate_boundary(n_samples=n_approx_samples, confidence_threshold=0.7)
-
-        # Generate a new set of random latent vectors to test
         z_test = np.random.randn(n_test_samples, self.latent_dim)
 
         if start_time and max_runtime_seconds and (time.time() - start_time > max_runtime_seconds):
@@ -173,16 +176,11 @@ class LatentImitator:
             if start_time and max_runtime_seconds and (time.time() - start_time > max_runtime_seconds):
                 print("LIMI testing timed out.")
                 break
-
-            # Step 2: Find candidate points near the boundary for the current batch
             candidate_triplets = self._probe_candidates(z_batch)
-
-            # Step 3: Verify candidates and find discriminatory instances for the current batch
             found_instances = self._verify_and_generate(candidate_triplets)
             all_found_instances.extend(found_instances)
 
         return all_found_instances
-
 
 def run_limi(data: DiscriminationData, lambda_val=0.3, n_test_samples=2000, n_approx_samples=50000,
              max_runtime_seconds=None):
