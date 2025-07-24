@@ -171,52 +171,10 @@ def create_dataframe_from_nodes_for_tree_method(nodes_list: List[Node]) -> pd.Da
     return df
 
 
-def run_slicefinder(data, schema=None, approach: str = "both", model=None, max_runtime_seconds: Optional[int] = None,
-                    max_depth: int = 5, n_estimators: int = 10, k: int = 10, epsilon: float = 0.5, degree: int = 2,
+def run_slicefinder(data, approach: str = "both", model=None, max_runtime_seconds: int = 60, max_depth: int = 2,
+                    n_estimators: int = 1, k: int = 10, epsilon: float = 0.3, degree: int = 2,
                     max_workers: int = 4, dt_max_depth: int = 3, min_size: int = 100, min_effect_size: float = 0.3,
-                    verbose: bool = True, drop_na: bool = True) -> Tuple[Dict, Metrics]:
-    """
-    Run SliceFinder analysis using lattice search and/or decision tree approaches.
-
-    Parameters:
-    -----------
-    data_obj : object
-        Data object containing dataframe, xdf, and ydf attributes
-    schema : object
-        Schema object for the dataset
-    approach : str, default="both"
-        Which approach to use: "lattice", "decision_tree", or "both"
-    model : object, optional
-        Pre-trained model to use. If None, will train RandomForestClassifier
-    max_depth : int, default=5
-        Maximum depth for RandomForestClassifier
-    n_estimators : int, default=10
-        Number of estimators for RandomForestClassifier
-    k : int, default=5
-        Number of slices to return
-    epsilon : float, default=0.3
-        Minimum effect size threshold for lattice search
-    degree : int, default=2
-        Maximum complexity of slice filters for lattice search
-    max_workers : int, default=4
-        Number of parallel workers for lattice search
-    dt_max_depth : int, default=3
-        Maximum depth for decision tree approach
-    min_size : int, default=100
-        Minimum number of samples required to split a node in decision tree
-    min_effect_size : float, default=0.3
-        Minimum effect size threshold for decision tree
-    verbose : bool, default=True
-        Whether to print detailed results
-    drop_na : bool, default=True
-        Whether to drop missing values from data
-
-    Returns:
-    --------
-    tuple : A tuple containing:
-        - dict: Dictionary containing results from both approaches
-        - Metrics: A TypedDict containing performance metrics (TSN, DSN, etc.)
-    """
+                    verbose: bool = True, drop_na: bool = True) -> Tuple[pd.DataFrame, Dict]:
 
     # Validate approach parameter
     valid_approaches = ["lattice", "decision_tree", "both"]
@@ -366,12 +324,12 @@ def run_slicefinder(data, schema=None, approach: str = "both", model=None, max_r
 
     dsn = dsn_lattice + dsn_dt
 
-    metrics = Metrics(
-        TSN=tsn,
-        DSN=dsn,
-        DSS=dsn / tsn if tsn > 0 else 0.0,  # Discrimination Success Score
-        SUR=0.0  # SUR is not applicable here, set to 0
-    )
+    metrics = {
+        'TSN':tsn,
+        'DSN':dsn,
+        'DSS':dsn / tsn if tsn > 0 else 0.0,  # Discrimination Success Score
+        'SUR':0.0  # SUR is not applicable here, set to 0
+    }
 
     results['summary'] = {
         'total_samples': tsn,
@@ -388,11 +346,14 @@ def run_slicefinder(data, schema=None, approach: str = "both", model=None, max_r
         if results['dt_slices'] is not None:
             print(f"Found {dsn_dt} slices using decision tree.")
 
-    # Add model and data to results for further inspection
-    results['model'] = model
-    results['data'] = (X, y)
+    # Combine results into a single dataframe
+    final_df = pd.DataFrame()
+    if results['lattice_slices'] is not None and not results['lattice_slices'].empty:
+        final_df = pd.concat([final_df, results['lattice_slices']], ignore_index=True)
+    if results['dt_slices'] is not None and not results['dt_slices'].empty:
+        final_df = pd.concat([final_df, results['dt_slices']], ignore_index=True)
 
-    return results, metrics
+    return final_df, metrics
 
 
 # Example usage:
@@ -403,8 +364,10 @@ if __name__ == "__main__":
     data_obj, schema = get_real_data('adult', use_cache=True)
 
     # Run with both approaches (default)
-    results = run_slicefinder(data_obj, approach="lattice", model=None, max_runtime_seconds=60, max_depth=2,
-                              n_estimators=1, k=2, epsilon=0.3, degree=2, max_workers=4, dt_max_depth=3, min_size=100,
-                              min_effect_size=0.3, verbose=True, drop_na=True)
+    results_df = run_slicefinder(data_obj, approach="both", model=None, max_runtime_seconds=60, max_depth=2,
+                                 n_estimators=1, k=2, epsilon=0.3, degree=2, max_workers=4, dt_max_depth=3,
+                                 min_size=100,
+                                 min_effect_size=0.3, verbose=True, drop_na=True)
 
-    print(results)
+    print("Discovered Slices:")
+    print(results_df)
