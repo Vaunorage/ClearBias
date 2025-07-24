@@ -6,6 +6,7 @@ from methods.subgroup.biasscan.scoring_function import (
     Gaussian,
     ScoringFunction,
     Poisson,
+    Entropy
 )
 from methods.subgroup.biasscan.mdss import MDSS
 
@@ -75,6 +76,8 @@ def bias_scan(
         scoring = Gaussian(**kwargs)
     elif scoring == "Poisson":
         scoring = Poisson(**kwargs)
+    elif scoring == "Entropy":
+        scoring = Entropy(**kwargs)
     else:
         scoring = scoring(**kwargs)
 

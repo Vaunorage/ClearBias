@@ -362,6 +362,50 @@ from aif360.detectors.mdss.ScoringFunctions import optim
 import numpy as np
 
 
+class Entropy(ScoringFunction):
+    def __init__(self, **kwargs):
+        """
+        Entropy score function. May be appropriate to use when the outcome of
+        interest is assumed to be categorical.
+
+        kwargs must contain
+        'direction (str)' - direction of the severity; could be higher than expected outcomes ('positive') or lower than expected ('negative')
+        """
+
+        super(Entropy, self).__init__(**kwargs)
+
+    def score(self, observed_sum: float, expectations: np.array, penalty: float, q: float):
+        return 0.0
+
+    def qmle(self, observed_sum: float, expectations: np.array):
+        return 1.0
+
+    def compute_qs(self, observed_sum: float, expectations: np.array, penalty: float):
+        return [0, 1.0, 0, 0]
+
+
+class Entropy(ScoringFunction):
+    def __init__(self, **kwargs):
+        """
+        Entropy score function. May be appropriate to use when the outcome of
+        interest is assumed to be categorical.
+
+        kwargs must contain
+        'direction (str)' - direction of the severity; could be higher than expected outcomes ('positive') or lower than expected ('negative')
+        """
+
+        super(Entropy, self).__init__(**kwargs)
+
+    def score(self, observed_sum: float, expectations: np.array, penalty: float, q: float):
+        return 0.0
+
+    def qmle(self, observed_sum: float, expectations: np.array):
+        return 1.0
+
+    def compute_qs(self, observed_sum: float, expectations: np.array, penalty: float):
+        return [0, 1.0, 0, 0]
+
+
 class Gaussian(ScoringFunction):
     def __init__(self, **kwargs):
         """
