@@ -749,36 +749,35 @@ def make_final_metrics_and_dataframe(discrimination_data, tot_inputs, all_discri
         logger.info(f"Total time: {total_time:.2f} seconds")
 
     # Generate result dataframe
-    res_df = []
-    case_id = 0
-    for org, org_res, counter_org, counter_org_res in all_discriminations:
-        indv1 = pd.DataFrame([list(org)], columns=discrimination_data.attr_columns)
-        indv2 = pd.DataFrame([list(counter_org)], columns=discrimination_data.attr_columns)
-
-        indv_key1 = "|".join(str(x) for x in indv1[discrimination_data.attr_columns].iloc[0])
-        indv_key2 = "|".join(str(x) for x in indv2[discrimination_data.attr_columns].iloc[0])
-
-        # Add the additional columns
-        indv1['indv_key'] = indv_key1
-        indv1['outcome'] = org_res
-        indv2['indv_key'] = indv_key2
-        indv2['outcome'] = counter_org_res
-
-        # Create couple_key
-        couple_key = f"{indv_key1}-{indv_key2}"
-        diff_outcome = abs(indv1['outcome'] - indv2['outcome'])
-
-        df_res = pd.concat([indv1, indv2])
-        df_res['couple_key'] = couple_key
-        df_res['diff_outcome'] = diff_outcome
-        df_res['case_id'] = case_id
-        res_df.append(df_res)
-        case_id += 1
-
-    if len(res_df) != 0:
-        res_df = pd.concat(res_df)
-    else:
+    if not all_discriminations:
         res_df = pd.DataFrame([])
+    else:
+        rows = []
+        for case_id, (org, org_res, counter_org, counter_org_res) in enumerate(all_discriminations):
+            # Original instance
+            row1 = list(org)
+            indv_key1 = "|".join(map(str, row1))
+            row1.extend([indv_key1, org_res])
+            rows.append(row1)
+
+            # Counterfactual instance
+            row2 = list(counter_org)
+            indv_key2 = "|".join(map(str, row2))
+            row2.extend([indv_key2, counter_org_res])
+            rows.append(row2)
+
+        # Create the DataFrame in one go
+        res_df = pd.DataFrame(rows, columns=discrimination_data.attr_columns + ['indv_key', 'outcome'])
+
+        # Add couple-level information
+        num_cases = len(all_discriminations)
+        res_df['case_id'] = np.repeat(np.arange(num_cases), 2)
+
+        couple_keys = res_df.groupby('case_id')['indv_key'].apply(lambda x: f"{x.iloc[0]}-{x.iloc[1]}")
+        res_df['couple_key'] = res_df['case_id'].map(couple_keys)
+
+        diff_outcomes = res_df.groupby('case_id')['outcome'].apply(lambda x: abs(x.iloc[0] - x.iloc[1]))
+        res_df['diff_outcome'] = res_df['case_id'].map(diff_outcomes)
 
     # Add metrics to result dataframe
     res_df['TSN'] = tsn
