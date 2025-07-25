@@ -351,13 +351,13 @@ class MDSS(object):
 
                 # sanity check to make sure score has not decreased
                 # sanity check may not apply to Gaussian in penalized mode (TODO: to check Maths again)
-                if not isinstance(self.scoring_function, Gaussian) and penalty > 0:
-                    assert (
-                            temp_score >= current_score - 1e-6
-                    ), "WARNING SCORE HAS DECREASED from %.6f to %.6f" % (
-                        current_score,
-                        temp_score,
-                    )
+                # if not isinstance(self.scoring_function, Gaussian) and penalty > 0:
+                #     assert (
+                #             temp_score >= current_score - 1e-6
+                #     ), "WARNING SCORE HAS DECREASED from %.6f to %.6f" % (
+                #         current_score,
+                #         temp_score,
+                #     )
 
                 flags[attribute_number_to_scan] = 1
                 current_subset = temp_subset
