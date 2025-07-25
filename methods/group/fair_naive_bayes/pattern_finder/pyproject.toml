@@ -1,0 +1,17 @@
+[build-system]
+requires = [
+    "setuptools>=61.0",
+    "wheel",
+    "cython>=3.1.2",
+    "numpy>=1.21.0"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pfwrapper"
+version = "0.1.0"
+description = "Pattern finder wrapper with Cython extensions"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.21.0",
+]
