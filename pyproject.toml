@@ -29,12 +29,9 @@ dependencies = [
     "scikit-image==0.25.2",
     "optuna>=4.3.0",
     "ipython-extensions>=0.2",
-    "scikit-learn-intelex>=2025.5.0",
     "sliceline>=0.2.18",
     "sqlalchemy>=2.0.41",
     "numpy>=1.26.4",
-    "gurobipy>=12.0.2",
-    "rpy2>=3.6.1",
     "ete3>=3.1.3",
     "six>=1.17.0",
     "prettytable>=3.16.0",
@@ -53,3 +50,21 @@ dependencies = [
     "cython>=3.1.2",
     "pot>=0.9.5",
 ]
+
+[project.optional-dependencies]
+gpu = [
+    "scikit-learn-intelex>=2025.5.0",
+    "gurobipy>=12.0.2",
+]
+
+local-packages = [
+    "pattern_finder @ file:///workspace/ClearBias/methods/group/fair_naive_bayes/pattern_finder",
+]
+
+dev = [
+    "pattern_finder @ file:///workspace/ClearBias/methods/group/fair_naive_bayes/pattern_finder",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
