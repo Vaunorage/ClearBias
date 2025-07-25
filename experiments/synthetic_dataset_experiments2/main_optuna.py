@@ -365,7 +365,7 @@ def run_all_optimizations():
         'verifair': (run_verifair, verifair_params),
         'bias_scan': (run_bias_scan, biasscan_params),
         'slicefinder': (run_slicefinder, slicefinder_params),
-        'sliceline': (run_sliceline, slicelinee_params),
+        'sliceline': (run_sliceline, sliceline_params),
         'adf': (run_adf, adf_params),
         'aequitas': (run_aequitas, aequitas_params),
         'expga': (run_expga, expga_params),
