@@ -68,3 +68,13 @@ dev = [
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Don't include any packages - this is just a dependency management project
+packages = []
+
+# Explicitly exclude directories that aren't Python packages
+[tool.setuptools.packages.find]
+where = ["."]
+include = []
+exclude = ["*"]
