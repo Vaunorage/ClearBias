@@ -362,20 +362,20 @@ def run_all_optimizations():
         }
 
     methods_to_optimize = {
-        # 'verifair': (run_verifair, verifair_params),
-        # 'bias_scan': (run_bias_scan, biasscan_params),
-        # 'slicefinder': (run_slicefinder, slicefinder_params),
-        # 'sliceline': (run_sliceline, slicelinee_params),
+        'verifair': (run_verifair, verifair_params),
+        'bias_scan': (run_bias_scan, biasscan_params),
+        'slicefinder': (run_slicefinder, slicefinder_params),
+        'sliceline': (run_sliceline, slicelinee_params),
         'adf': (run_adf, adf_params),
-        # 'aequitas': (run_aequitas, aequitas_params),
-        # 'expga': (run_expga, expga_params),
-        # 'kosei': (run_kosei, kosei_params),
-        # 'limi': (run_limi, limi_params),
-        # 'naive_bayes': (run_naive_bayes, naive_bayes_params),
-        # 'fliptest': (run_fliptest, fliptest_params),
-        # 'divexplorer': (run_divexploer, divexplorer_params),
-        # 'gerryfair': (run_gerryfair, gerryfair_params),
-        # 'sg': (run_sg, sg_params),
+        'aequitas': (run_aequitas, aequitas_params),
+        'expga': (run_expga, expga_params),
+        'kosei': (run_kosei, kosei_params),
+        'limi': (run_limi, limi_params),
+        'naive_bayes': (run_naive_bayes, naive_bayes_params),
+        'fliptest': (run_fliptest, fliptest_params),
+        'divexplorer': (run_divexploer, divexplorer_params),
+        'gerryfair': (run_gerryfair, gerryfair_params),
+        'sg': (run_sg, sg_params),
     }
 
     for name, (method_func, param_suggester) in methods_to_optimize.items():
