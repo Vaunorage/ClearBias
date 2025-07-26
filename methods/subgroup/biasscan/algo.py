@@ -1,4 +1,5 @@
 from typing import TypedDict, Tuple
+import time
 
 import pandas as pd
 from itertools import product
@@ -154,6 +155,8 @@ def format_mdss_results(subsets1, subsets2, all_attributes, ge) -> pd.DataFrame:
 def run_bias_scan(data, test_size=0.2, random_state=42, n_estimators=100, bias_scan_num_iters=50,
                   bias_scan_scoring='Poisson', bias_scan_favorable_value='high',
                   bias_scan_mode='ordinal', max_runtime_seconds=None) -> Tuple[pd.DataFrame, dict]:
+    start_time = time.time()
+
     # Split the data
     train_df, test_df = train_test_split(data.dataframe, test_size=test_size, random_state=random_state)
 
@@ -168,15 +171,13 @@ def run_bias_scan(data, test_size=0.2, random_state=42, n_estimators=100, bias_s
 
     # Make predictions and evaluate
     y_pred = model.predict(X_test)
-    accuracy = accuracy_score(y_test, y_pred)
-    report = classification_report(y_test, y_pred)
 
     # Prepare data for bias scan
     observations = pd.Series(data.dataframe[data.outcome_column].to_numpy().squeeze())
     expectations = pd.Series(model.predict(data.dataframe[list(data.attributes)].values))
 
     # Perform bias scan
-    l1, l2, subsets1 = bias_scan(data=data.dataframe[list(data.attributes)],
+    _, _, subsets1 = bias_scan(data=data.dataframe[list(data.attributes)],
                                  observations=observations,
                                  expectations=expectations,
                                  verbose=True,
@@ -186,7 +187,7 @@ def run_bias_scan(data, test_size=0.2, random_state=42, n_estimators=100, bias_s
                                  overpredicted=True,
                                  mode=bias_scan_mode)
 
-    d1, d2, subsets2 = bias_scan(data=data.dataframe[list(data.attributes)],
+    _, _, subsets2 = bias_scan(data=data.dataframe[list(data.attributes)],
                                  observations=observations,
                                  expectations=expectations,
                                  verbose=True,
@@ -199,4 +200,18 @@ def run_bias_scan(data, test_size=0.2, random_state=42, n_estimators=100, bias_s
     # Format results
     result_df = format_mdss_results(subsets1, subsets2, list(data.attributes), data)
 
-    return result_df, {'accuracy': accuracy, 'report': report}
+    # Calculate metrics
+    total_time = time.time() - start_time
+    tsn = len(data.dataframe)
+    dsn = result_df['couple_key'].nunique()
+    dsr = dsn / tsn if tsn > 0 else 0
+    dss = total_time / dsn if dsn > 0 else float('inf')
+
+    metrics = {
+        'TSN': tsn,
+        'DSN': dsn,
+        'DSR': dsr,
+        'DSS': dss
+    }
+
+    return result_df, metrics
