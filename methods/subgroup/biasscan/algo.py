@@ -203,7 +203,7 @@ def run_bias_scan(data, test_size=0.2, random_state=42, n_estimators=100, bias_s
     # Calculate metrics
     total_time = time.time() - start_time
     tsn = len(data.dataframe)
-    dsn = result_df['couple_key'].nunique()
+    dsn = result_df['couple_key'].nunique() if 'couple_key' in result_df.columns else 0
     dsr = dsn / tsn if tsn > 0 else 0
     dss = total_time / dsn if dsn > 0 else float('inf')
 
