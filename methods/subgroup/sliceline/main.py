@@ -15,20 +15,21 @@ from data_generator.main import DiscriminationData, get_real_data
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 def parse_sliceline_itemset(itemset_str, all_attributes):
     """Convert sliceline itemset string to dictionary"""
     items = {}
     # Regex to find all 'column_name == value' or 'column_name <= value' etc.
     pattern = re.compile(r'(`?)([^`=><!]+)\1\s*([=><!]+)\s*(\S+)')
     matches = pattern.findall(itemset_str)
-    
+
     for _, col, op, val in matches:
         col = col.strip()
         # Try to convert value to numeric, otherwise keep as string
         try:
             items[col] = pd.to_numeric(val)
         except (ValueError, TypeError):
-            items[col] = val.strip("'\"") # remove quotes
+            items[col] = val.strip("'\"")  # remove quotes
 
     for attribute in all_attributes:
         if attribute not in items:
@@ -76,7 +77,7 @@ def run_sliceline(data: DiscriminationData, K=5, alpha=0.95, max_l=3, max_runtim
         top_k_fnr = pd.concat([top_k_fnr, pd.DataFrame(slice_finder_fn.top_slices_statistics_)])
         top_k_fnr['metric'] = 'fnr'
         all_results.append(top_k_fnr)
-        
+
     if len(all_results) == 0:
         print("Sliceline did not find any significant slices.")
         return pd.DataFrame(), {}
@@ -88,18 +89,19 @@ def run_sliceline(data: DiscriminationData, K=5, alpha=0.95, max_l=3, max_runtim
 
     return make_subgroup_metrics_and_dataframe(df_final, tsn, dsn, start_time, logger=logger)
 
+
 def make_subgroup_metrics_and_dataframe(df_final, tsn, dsn, start_time, logger):
     """
     Processes the sliceline results, calculates metrics, and formats the output.
     """
     runtime = time.time() - start_time
     if df_final.empty:
-        return pd.DataFrame(), {"runtime": runtime, "tsn": tsn, "dsn": 0, "sur": 0, "dss": float('inf')}
+        return pd.DataFrame(), {"runtime": runtime, "TSN": tsn, "DSN": 0, "SUR": 0, "DSS": float('inf')}
 
     # Format the dataframe
     df_final['slice'] = df_final.apply(
         lambda row: ', '.join([f"{col}={row[col]}" for col in row.index if
-                                row[col] is not None and col not in ['slice_size', 'slice_mean', 'effect_size',
+                               row[col] is not None and col not in ['slice_size', 'slice_mean', 'effect_size',
                                                                     'metric', 'size']]), axis=1)
 
     # Calculate metrics
@@ -107,11 +109,11 @@ def make_subgroup_metrics_and_dataframe(df_final, tsn, dsn, start_time, logger):
     dss = runtime / dsn if dsn > 0 else float('inf')
 
     metrics = {
-        "runtime": runtime,
-        "tsn": tsn,
-        "dsn": dsn,
-        "sur": sur,
-        "dss": dss
+        "RUNTIME": runtime,
+        "TSN": tsn,
+        "DSN": dsn,
+        "SUR": sur,
+        "DSS": dss
     }
 
     if logger:
