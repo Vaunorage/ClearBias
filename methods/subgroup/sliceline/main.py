@@ -87,6 +87,8 @@ def run_sliceline(data: DiscriminationData, K=5, alpha=0.95, max_l=3, max_runtim
     tsn = X.shape[0]
     dsn = df_final.shape[0]
 
+    df_final['indv_key'] = df_final[data.attr_columns].fillna('*').apply(lambda x: "|".join(x.astype(int).astype(str)), axis=1)
+
     return make_subgroup_metrics_and_dataframe(df_final, tsn, dsn, start_time, logger=logger)
 
 

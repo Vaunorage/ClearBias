@@ -1,4 +1,3 @@
-import os
 import time
 import pandas as pd
 import numpy as np
@@ -59,7 +58,7 @@ def _run_single_verifair_analysis(model, X_test, analysis_attribute, group_a_val
     sampler_b = SklearnModelSampler(model, group_b_data)
 
     result = verify(sampler_a, sampler_b, c, Delta, delta, n_samples, n_max, is_causal, log_iters,
-                  max_runtime_seconds=max_runtime_seconds)
+                    max_runtime_seconds=max_runtime_seconds)
 
     if result is None:
         log('VeriFair analysis failed to converge!', INFO)
@@ -89,8 +88,8 @@ def _run_single_verifair_analysis(model, X_test, analysis_attribute, group_a_val
 
 
 def run_verifair(data: DiscriminationData, c=0.15, Delta=0.0,
-                   delta=0.5 * 1e-10, n_samples=1, n_max=100000, is_causal=False, log_iters=1000,
-                   max_runtime_seconds=None):
+                 delta=0.5 * 1e-10, n_samples=1, n_max=100000, is_causal=False, log_iters=1000,
+                 max_runtime_seconds=None):
     """
     Trains a model and uses VeriFair to find discrimination on the given data.
     By default, this will test all combinations of protected attributes, starting with the one
@@ -156,7 +155,7 @@ def run_verifair(data: DiscriminationData, c=0.15, Delta=0.0,
             if max_runtime_seconds:
                 remaining_time = max_runtime_seconds - (time.time() - start_time)
                 if remaining_time <= 0:
-                    continue # Skip if no time left
+                    continue  # Skip if no time left
 
             result = _run_single_verifair_analysis(model, X_test, attribute, group_a_val, group_b_val, c, Delta,
                                                    delta,
@@ -164,16 +163,39 @@ def run_verifair(data: DiscriminationData, c=0.15, Delta=0.0,
             if result:
                 results_list.append(result)
         else:
-            continue # only executed when inner loop is not broken
-        break # only executed when inner loop is broken
+            continue  # only executed when inner loop is not broken
+        break  # only executed when inner loop is broken
 
     res_df = pd.DataFrame(results_list)
 
+    new_res_df = []
+    for row in results_list:
+        el1 = {e: None for e in data.attr_columns}
+        el2 = {e: None for e in data.attr_columns}
+
+        el1[row['attribute']] = row['group_a']
+        el2[row['attribute']] = row['group_b']
+
+        diff_outcome = data.dataframe[data.dataframe[row['attribute']] == row['group_a']]['outcome'].mean() - \
+                       data.dataframe[data.dataframe[row['attribute']] == row['group_b']]['outcome'].mean()
+
+        el1['indv_key'] = '|'.join([str(row['group_a']) if e == row['attribute'] else "*" for e in data.attr_columns])
+        el2['indv_key'] = '|'.join([str(row['group_b']) if e == row['attribute'] else "*" for e in data.attr_columns])
+
+        el1['diff_outcome'] = diff_outcome
+        el2['diff_outcome'] = diff_outcome
+
+        el1['couple_key'] = f"{el1['indv_key']}-{el2['indv_key']}"
+        el2['couple_key'] = f"{el1['indv_key']}-{el2['indv_key']}"
+
+        new_res_df.extend([el1, el2])
+
+    new_res_df = pd.DataFrame.from_records(new_res_df)
     # --- 7. Calculate Final Metrics ---
     end_time = time.time()
     total_time = end_time - start_time
 
-    if not res_df.empty:
+    if not new_res_df.empty:
         tsn = res_df['total_samples'].sum()
         dsn = res_df[res_df['is_fair'] == False].shape[0]
     else:
@@ -189,15 +211,15 @@ def run_verifair(data: DiscriminationData, c=0.15, Delta=0.0,
         'SUR': sur,
         'DSS': dss,
         'total_time': total_time,
-        'nodes_visited': tsn, # Using total samples as a proxy for nodes visited
+        'nodes_visited': tsn,  # Using total samples as a proxy for nodes visited
     }
 
     # Add metrics to result dataframe for consistency with other methods
-    if not res_df.empty:
+    if not new_res_df.empty:
         for key, value in metrics.items():
-            res_df[key] = value
+            new_res_df[key] = value
 
-    return res_df, metrics
+    return new_res_df, metrics
 
 
 if __name__ == '__main__':

@@ -1,5 +1,11 @@
 from typing import Dict, List
-
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.stats import ttest_ind  # Correctly imported for statistical testing
+from dataclasses import dataclass, field
+from typing import Dict, Any, List
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -456,28 +462,6 @@ def plot_correlation_matrices(input_correlation_matrix, generated_data, figsize=
     print(f"Correlation coefficient: {correlation:.4f}")
 
 
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-import numpy as np
-from scipy.stats import ttest_ind  # Correctly imported for statistical testing
-from dataclasses import dataclass, field
-from typing import Dict, Any, List
-
-
-# To make this script runnable, we'll define a minimal version
-# of your DiscriminationData dataclass. You can replace this with an
-# import from your own module.
-@dataclass
-class DiscriminationData:
-    """A minimal placeholder for your DiscriminationData class."""
-    dataframe: pd.DataFrame
-    y_true_col: str
-    y_pred_col: str
-    attributes: Dict[str, bool] = field(default_factory=dict)
-    categorical_columns: List[str] = field(default_factory=list)
-
-
 def visualize_injected_discrimination(
         data: DiscriminationData,
         sample_size: int = 5000,
@@ -635,7 +619,6 @@ def visualize_injected_discrimination(
     g.fig.suptitle('Ground Truth vs. Prediction for Different Subgroup Types', y=1.03, fontsize=16)
     g.add_legend()
     plt.show()
-
 
 # if __name__ == '__main__':
 #     # ==================================================================

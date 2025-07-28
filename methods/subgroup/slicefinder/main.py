@@ -3,6 +3,7 @@ import signal
 import os
 from sklearn.ensemble import RandomForestClassifier
 
+from data_generator.main import DiscriminationData
 from methods.individual.exp_ga.algo import Metrics
 from methods.subgroup.slicefinder.slice_finder import SliceFinder, Slice
 from methods.subgroup.slicefinder.decision_tree import DecisionTree, Node
@@ -171,7 +172,7 @@ def create_dataframe_from_nodes_for_tree_method(nodes_list: List[Node]) -> pd.Da
     return df
 
 
-def run_slicefinder(data, approach: str = "both", model=None, max_runtime_seconds: int = 60, max_depth: int = 2,
+def run_slicefinder(data: DiscriminationData, approach: str = "both", model=None, max_runtime_seconds: int = 60, max_depth: int = 2,
                     n_estimators: int = 1, k: int = 10, epsilon: float = 0.3, degree: int = 2,
                     max_workers: int = 4, dt_max_depth: int = 3, min_size: int = 100, min_effect_size: float = 0.3,
                     verbose: bool = True, drop_na: bool = True) -> Tuple[pd.DataFrame, Dict]:
@@ -185,15 +186,6 @@ def run_slicefinder(data, approach: str = "both", model=None, max_runtime_second
     if verbose:
         print("===== DATA PREPARATION =====")
 
-    # # Handle missing values
-    # if drop_na:
-    #     data = data.dataframe.dropna()
-    #     if verbose:
-    #         print(f"Dropped missing values. Shape: {data.shape}")
-    # else:
-    #     data = data.dataframe
-
-    # Split features and target
     X = data.xdf
     y = data.ydf
 
@@ -353,6 +345,8 @@ def run_slicefinder(data, approach: str = "both", model=None, max_runtime_second
     if results['dt_slices'] is not None and not results['dt_slices'].empty:
         final_df = pd.concat([final_df, results['dt_slices']], ignore_index=True)
 
+    final_df['indv_key'] = final_df[data.attr_columns].fillna('*').apply(lambda x: "|".join(x.astype(int).astype(str)), axis=1)
+
     return final_df, metrics
 
 
@@ -364,10 +358,9 @@ if __name__ == "__main__":
     data_obj, schema = get_real_data('adult', use_cache=True)
 
     # Run with both approaches (default)
-    results_df = run_slicefinder(data_obj, approach="both", model=None, max_runtime_seconds=60, max_depth=2,
+    results_df = run_slicefinder(data_obj, approach="lattice", model=None, max_runtime_seconds=300, max_depth=2,
                                  n_estimators=1, k=2, epsilon=0.3, degree=2, max_workers=4, dt_max_depth=3,
-                                 min_size=100,
-                                 min_effect_size=0.3, verbose=True, drop_na=True)
+                                 min_size=100, min_effect_size=0.3, verbose=True, drop_na=True)
 
     print("Discovered Slices:")
     print(results_df)
