@@ -112,6 +112,8 @@ def run_naive_bayes(data: DiscriminationData, delta=0.01, k=5, max_runtime_secon
 
     res_df = pd.DataFrame(pattern_results)
 
+    res_df['indv_key'] = ''
+
     # --- 7. Calculate Final Metrics ---
     end_time = time.time()
     total_time = end_time - start_time
