@@ -28,10 +28,19 @@ def timeout(time):
         signal.alarm(0)
 
 
-def run_divexploer(data: DiscriminationData, K=5, max_runtime_seconds=60, min_support=0.05):
+def run_divexploer(data: DiscriminationData, K=5, max_runtime_seconds=60, min_support=0.05, random_state=42, use_cache=True):
     start_time = time.time()
     all_discriminations = []
     dsn_by_attr_value = {}
+
+    model, X_train, X_test, y_train, y_test, feature_names, metrics = train_sklearn_model(
+        data=data.training_dataframe.copy(),
+        model_type='rf',
+        target_col=data.outcome_column,
+        sensitive_attrs=list(data.protected_attributes),
+        random_state=random_state,
+        use_cache=use_cache
+    )
 
     try:
         with timeout(max_runtime_seconds):
@@ -65,10 +74,45 @@ def run_divexploer(data: DiscriminationData, K=5, max_runtime_seconds=60, min_su
     for i in range(len(data.training_dataframe)):
         tot_inputs.add(tuple(data.training_dataframe.iloc[i]))
 
-    res_df, metrics = make_final_metrics_and_dataframe(data, tot_inputs, all_discriminations, dsn_by_attr_value,
-                                                       start_time, logger=logger)
+    result_df = []
+    for el in all_discriminations:
+        result_df.append({e:el.get(e, None) for e in data.attr_columns})
 
-    return res_df, metrics
+    result_df = pd.DataFrame(result_df)
+
+    for col in data.attr_columns:
+        if result_df[col].isnull().any():
+            median_val = data.training_dataframe[col].median()
+            result_df[col].fillna(median_val, inplace=True)
+
+    # Predict outcomes using the trained model
+    predicted_outcomes = model.predict(result_df[feature_names])
+    result_df[data.outcome_column] = predicted_outcomes
+
+    # Add individual key
+    result_df['subgroup_key'] = result_df.apply(
+        lambda row: '|'.join(str(int(row[col])) if row[col] is not None else '*' for col in list(data.attributes)),
+        axis=1
+    )
+
+    # Calculate outcome differences from the mean
+    mean_outcome = result_df[data.outcome_column].mean()
+    result_df['diff_outcome'] = (result_df[data.outcome_column] - mean_outcome).abs()
+
+    total_time = time.time() - start_time
+    tsn = len(data.dataframe)
+    dsn = result_df['subgroup_key'].nunique() if 'subgroup_key' in result_df.columns else 0
+    dsr = dsn / tsn if tsn > 0 else 0
+    dss = total_time / dsn if dsn > 0 else float('inf')
+
+    metrics = {
+        'TSN': tsn,
+        'DSN': dsn,
+        'DSR': dsr,
+        'DSS': dss
+    }
+
+    return result_df, metrics
 
 
 if __name__ == '__main__':
