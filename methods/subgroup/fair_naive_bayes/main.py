@@ -14,12 +14,12 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from data_generator.main import generate_optimal_discrimination_data, DiscriminationData, DataSchema
-from methods.group.fair_naive_bayes.parameter_learner.data_processor import (
+from methods.subgroup.fair_naive_bayes.parameter_learner.data_processor import (
     get_params_dict,
     maximum_likelihood_from_data,
     convert_result_to_parameters
 )
-from methods.group.fair_naive_bayes.pattern_finder.pattern_finder import PatternFinder
+from methods.subgroup.fair_naive_bayes.pattern_finder.pattern_finder import PatternFinder
 
 # Configure logging
 logging.basicConfig(

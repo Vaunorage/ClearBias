@@ -5,8 +5,8 @@ import numpy as np
 from itertools import combinations
 from data_generator.main import get_real_data, DiscriminationData, generate_optimal_discrimination_data
 from methods.utils import train_sklearn_model
-from methods.group.verifair.verify.verify import verify
-from methods.group.verifair.util.log import log, setCurOutput, INFO
+from methods.subgroup.verifair.verify.verify import verify
+from methods.subgroup.verifair.util.log import log, setCurOutput, INFO
 from sklearn.metrics import mutual_info_score
 
 

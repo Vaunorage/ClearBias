@@ -1,40 +1,11 @@
 import pandas as pd
-import numpy as np
-import re
 import time
 import logging
-from pandas import json_normalize
 from methods.subgroup.sliceline.src.sliceline import Slicefinder
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OneHotEncoder
-from sklearn.compose import ColumnTransformer
-
 from data_generator.main import DiscriminationData, get_real_data
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-def parse_sliceline_itemset(itemset_str, all_attributes):
-    """Convert sliceline itemset string to dictionary"""
-    items = {}
-    # Regex to find all 'column_name == value' or 'column_name <= value' etc.
-    pattern = re.compile(r'(`?)([^`=><!]+)\1\s*([=><!]+)\s*(\S+)')
-    matches = pattern.findall(itemset_str)
-
-    for _, col, op, val in matches:
-        col = col.strip()
-        # Try to convert value to numeric, otherwise keep as string
-        try:
-            items[col] = pd.to_numeric(val)
-        except (ValueError, TypeError):
-            items[col] = val.strip("'\"")  # remove quotes
-
-    for attribute in all_attributes:
-        if attribute not in items:
-            items[attribute] = None
-    return items
 
 
 def run_sliceline(data: DiscriminationData, K=5, alpha=0.95, max_l=3, max_runtime_seconds=60, logger=None):
@@ -87,15 +58,9 @@ def run_sliceline(data: DiscriminationData, K=5, alpha=0.95, max_l=3, max_runtim
     tsn = X.shape[0]
     dsn = df_final.shape[0]
 
-    df_final['indv_key'] = df_final[data.attr_columns].fillna('*').apply(lambda x: "|".join(x.astype(int).astype(str)), axis=1)
+    df_final['indv_key'] = df_final[data.attr_columns].fillna('*').apply(lambda x: "|".join(x.astype(str)), axis=1)
+    df_final['diff_outcome'] = df_final['outcome'] - df_final['outcome'].mean()
 
-    return make_subgroup_metrics_and_dataframe(df_final, tsn, dsn, start_time, logger=logger)
-
-
-def make_subgroup_metrics_and_dataframe(df_final, tsn, dsn, start_time, logger):
-    """
-    Processes the sliceline results, calculates metrics, and formats the output.
-    """
     runtime = time.time() - start_time
     if df_final.empty:
         return pd.DataFrame(), {"runtime": runtime, "TSN": tsn, "DSN": 0, "SUR": 0, "DSS": float('inf')}

@@ -1,15 +1,13 @@
-from typing import List, Optional, Tuple
+from typing import Tuple
 import signal
 import os
 from sklearn.ensemble import RandomForestClassifier
 
 from data_generator.main import DiscriminationData
-from methods.individual.exp_ga.algo import Metrics
 from methods.subgroup.slicefinder.slice_finder import SliceFinder, Slice
 from methods.subgroup.slicefinder.decision_tree import DecisionTree, Node
-from typing import List, Dict, Any, Optional
+from typing import List, Dict
 import pandas as pd
-from methods.subgroup.slicefinder.slice_finder import Slice
 
 
 def lattice_slices_to_dataframe(slices: List[Slice], data_obj) -> pd.DataFrame:
@@ -346,6 +344,7 @@ def run_slicefinder(data: DiscriminationData, approach: str = "both", model=None
         final_df = pd.concat([final_df, results['dt_slices']], ignore_index=True)
 
     final_df['indv_key'] = final_df[data.attr_columns].fillna('*').apply(lambda x: "|".join(x.astype(int).astype(str)), axis=1)
+    final_df['diff_outcome'] = final_df['outcome'] - final_df['outcome'].mean()
 
     return final_df, metrics
 

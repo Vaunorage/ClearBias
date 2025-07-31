@@ -680,7 +680,7 @@ def check_for_error_condition(dsn_by_attr_value, discrimination_data: Discrimina
     return new_df['discrimination'].any(), new_df[new_df['discrimination']], max_discrimination, instance, tested_inp
 
 
-def make_subgroup_metrics_and_dataframe(res_df, tsn, dsn, start_time, logger=None):
+def make_subgroup_metrics_and_dataframe(res_df, tsn, dsn, start_time):
     end_time = time.time()
     total_time = end_time - start_time
 

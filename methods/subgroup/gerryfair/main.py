@@ -4,7 +4,7 @@ import time
 import logging
 from data_generator.main import DiscriminationData, get_real_data
 from methods.subgroup.gerryfair import clean, model
-from methods.utils import make_final_metrics_and_dataframe, make_subgroup_metrics_and_dataframe
+from methods.utils import make_subgroup_metrics_and_dataframe
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -111,7 +111,6 @@ def run_gerryfair(data: DiscriminationData, C=10, gamma=0.01, max_iters=3):
 
     res_df = pd.DataFrame(subgroup_data)
 
-    # Since GerryFair operates on subgroups, we consider the entire training set as the input space.
     tsn = len(X_train)
     dsn = len(res_df)
 
@@ -120,7 +119,6 @@ def run_gerryfair(data: DiscriminationData, C=10, gamma=0.01, max_iters=3):
         tsn,
         dsn,
         start_time,
-        logger=logger
     )
 
     print("\nAudit complete!")
