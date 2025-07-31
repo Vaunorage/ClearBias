@@ -100,12 +100,24 @@ def run_gerryfair(data: DiscriminationData, C=10, gamma=0.01, max_iters=3):
     print("\n--- History of Subgroups Found During Training ---")
     all_subgroups = fp_subgroups_history + fn_subgroups_history
     subgroup_data = []
+    protected_attr_names = X_prime_train.columns.tolist()
     for i, group_obj in enumerate(all_subgroups):
+        description = []
+        coefficients = group_obj.func.b1.coef_[0]
+        intercept = group_obj.func.b1.intercept_[0]
+
+        for attr_name, coef in zip(protected_attr_names, coefficients):
+            if abs(coef) > 1e-6:  # Only include non-trivial coefficients
+                description.append(f"{coef:.2f} * {attr_name}")
+
+        description_str = " + ".join(description) + f" > {-intercept:.2f}"
+
         subgroup_info = {
             'subgroup_id': i,
             'type': 'FP' if i < len(fp_subgroups_history) else 'FN',
-            'coefficients': group_obj.func.b1.coef_,
-            'intercept': group_obj.func.b1.intercept_
+            'description': description_str,
+            'coefficients': coefficients,
+            'intercept': intercept
         }
         subgroup_data.append(subgroup_info)
 
