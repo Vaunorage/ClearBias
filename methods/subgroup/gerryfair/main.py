@@ -110,8 +110,27 @@ def run_gerryfair(data: DiscriminationData, C=10, gamma=0.01, max_iters=3):
     
     for i, group_obj in enumerate(all_subgroups):
         description = []
-        coefficients = group_obj.func.b1.coef_[0]
-        intercept = group_obj.func.b1.intercept_[0]
+        # Handle coefficients - check if it's a 1D or 2D array
+        if hasattr(group_obj.func.b1, 'coef_'):
+            if group_obj.func.b1.coef_.ndim > 1:
+                coefficients = group_obj.func.b1.coef_[0]
+            else:
+                coefficients = group_obj.func.b1.coef_
+        else:
+            # If no coefficients attribute, use empty array
+            coefficients = []
+            
+        # Handle intercept - check if it's a scalar or array
+        if hasattr(group_obj.func.b1, 'intercept_'):
+            if hasattr(group_obj.func.b1.intercept_, '__len__') and not isinstance(group_obj.func.b1.intercept_, (str, bytes)):
+                # It's an array-like object
+                intercept = group_obj.func.b1.intercept_[0]
+            else:
+                # It's a scalar
+                intercept = group_obj.func.b1.intercept_
+        else:
+            # If no intercept attribute, use 0
+            intercept = 0
         
         # Mathematical description (original)
         math_description = []
@@ -122,33 +141,51 @@ def run_gerryfair(data: DiscriminationData, C=10, gamma=0.01, max_iters=3):
         math_description_str = " + ".join(math_description) + f" > {-intercept:.2f}"
         
         # Identify the discriminated groups based on attribute values
-        # Create a sample dataframe to test which combinations satisfy the subgroup condition
         discriminated_groups = []
         
-        # For each sample in the training data, check if it belongs to this subgroup
-        subgroup_mask = group_obj.predict(X_prime_train) == 1
-        if subgroup_mask.sum() > 0:
-            # Get samples that belong to this subgroup
-            subgroup_samples = X_prime_train[subgroup_mask]
+        try:
+            # For each sample in the training data, check if it belongs to this subgroup
+            subgroup_mask = group_obj.predict(X_prime_train) == 1
+            subgroup_size = subgroup_mask.sum()
             
-            # For each protected attribute, find the most common values in the subgroup
-            group_description = []
-            for attr in protected_attr_names:
-                if attr in subgroup_samples.columns:
-                    value_counts = subgroup_samples[attr].value_counts(normalize=True)
-                    if not value_counts.empty:
-                        # Get values that appear in more than 60% of the subgroup samples
-                        significant_values = value_counts[value_counts > 0.6]
-                        if not significant_values.empty:
-                            values_str = ", ".join([f"{val}" for val in significant_values.index])
-                            group_description.append(f"{attr} = {values_str} ({significant_values.iloc[0]:.1%})")
-            
-            if group_description:
-                discriminated_groups = group_description
+            if subgroup_size > 0:
+                # Get samples that belong to this subgroup
+                subgroup_samples = X_prime_train[subgroup_mask]
+                print(f"\nSubgroup {i} ({subgroup_size} samples):")
+                
+                # For each protected attribute, find the most common values in the subgroup
+                group_description = []
+                for attr in protected_attr_names:
+                    if attr in subgroup_samples.columns:
+                        # Print the distribution of values for this attribute in the subgroup
+                        value_counts = subgroup_samples[attr].value_counts(normalize=True)
+                        print(f"  {attr} distribution:")
+                        for val, freq in value_counts.items():
+                            print(f"    {val}: {freq:.1%}")
+                        
+                        # Find significant values (those that appear more frequently than in the overall population)
+                        overall_counts = X_prime_train[attr].value_counts(normalize=True)
+                        
+                        # Compare subgroup distribution to overall distribution
+                        for val, freq in value_counts.items():
+                            overall_freq = overall_counts.get(val, 0)
+                            if freq > overall_freq * 1.5 and freq > 0.2:  # 50% more frequent and at least 20% present
+                                group_description.append(f"{attr} = {val} ({freq:.1%}, overall: {overall_freq:.1%})")
+                
+                if group_description:
+                    discriminated_groups = group_description
+                else:
+                    # If no clear pattern, show the top values for each attribute
+                    for attr in protected_attr_names:
+                        if attr in subgroup_samples.columns:
+                            top_val = subgroup_samples[attr].value_counts(normalize=True).idxmax()
+                            top_freq = subgroup_samples[attr].value_counts(normalize=True).max()
+                            discriminated_groups.append(f"{attr} most common: {top_val} ({top_freq:.1%})")
             else:
-                discriminated_groups = ["Complex group (no single dominant attribute value)"]
-        else:
-            discriminated_groups = ["No samples found in this subgroup"]
+                discriminated_groups = ["No samples found in this subgroup"]
+        except Exception as e:
+            print(f"Error analyzing subgroup {i}: {str(e)}")
+            discriminated_groups = [f"Error analyzing subgroup: {str(e)}"]
 
         subgroup_info = {
             'subgroup_id': i,
