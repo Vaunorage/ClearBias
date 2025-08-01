@@ -101,21 +101,61 @@ def run_gerryfair(data: DiscriminationData, C=10, gamma=0.01, max_iters=3):
     all_subgroups = fp_subgroups_history + fn_subgroups_history
     subgroup_data = []
     protected_attr_names = X_prime_train.columns.tolist()
+    
+    # Get unique values for each protected attribute
+    attr_values = {}
+    for attr in protected_attr_names:
+        attr_values[attr] = X_prime_train[attr].unique()
+        print(f"Attribute '{attr}' has values: {attr_values[attr]}")
+    
     for i, group_obj in enumerate(all_subgroups):
         description = []
         coefficients = group_obj.func.b1.coef_[0]
         intercept = group_obj.func.b1.intercept_[0]
-
+        
+        # Mathematical description (original)
+        math_description = []
         for attr_name, coef in zip(protected_attr_names, coefficients):
             if abs(coef) > 1e-6:  # Only include non-trivial coefficients
-                description.append(f"{coef:.2f} * {attr_name}")
-
-        description_str = " + ".join(description) + f" > {-intercept:.2f}"
+                math_description.append(f"{coef:.2f} * {attr_name}")
+        
+        math_description_str = " + ".join(math_description) + f" > {-intercept:.2f}"
+        
+        # Identify the discriminated groups based on attribute values
+        # Create a sample dataframe to test which combinations satisfy the subgroup condition
+        discriminated_groups = []
+        
+        # For each sample in the training data, check if it belongs to this subgroup
+        subgroup_mask = group_obj.predict(X_prime_train) == 1
+        if subgroup_mask.sum() > 0:
+            # Get samples that belong to this subgroup
+            subgroup_samples = X_prime_train[subgroup_mask]
+            
+            # For each protected attribute, find the most common values in the subgroup
+            group_description = []
+            for attr in protected_attr_names:
+                if attr in subgroup_samples.columns:
+                    value_counts = subgroup_samples[attr].value_counts(normalize=True)
+                    if not value_counts.empty:
+                        # Get values that appear in more than 60% of the subgroup samples
+                        significant_values = value_counts[value_counts > 0.6]
+                        if not significant_values.empty:
+                            values_str = ", ".join([f"{val}" for val in significant_values.index])
+                            group_description.append(f"{attr} = {values_str} ({significant_values.iloc[0]:.1%})")
+            
+            if group_description:
+                discriminated_groups = group_description
+            else:
+                discriminated_groups = ["Complex group (no single dominant attribute value)"]
+        else:
+            discriminated_groups = ["No samples found in this subgroup"]
 
         subgroup_info = {
             'subgroup_id': i,
             'type': 'FP' if i < len(fp_subgroups_history) else 'FN',
-            'description': description_str,
+            'mathematical_description': math_description_str,
+            'attribute_values': discriminated_groups,
+            'sample_count': subgroup_mask.sum(),
             'coefficients': coefficients,
             'intercept': intercept
         }
