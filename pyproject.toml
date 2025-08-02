@@ -38,7 +38,10 @@ dependencies = [
     "pydot>=4.0.1",
     "imbalanced-learn>=0.13.0",
     "pysat>=3.2.2",
-#    "pgmpy>=1.0.0",
+    # Use CPU-only PyTorch to avoid CUDA disk space issues
+    "torch>=2.0.0,<3.0.0; sys_platform != 'darwin'",
+    "torch>=2.0.0,<3.0.0; sys_platform == 'darwin'",
+    "pgmpy>=1.0.0",
     "feature-engine>=1.8.3",
     "python-sat>=1.8.dev17",
     "gpkit>=1.1.1",
@@ -55,12 +58,12 @@ dependencies = [
 gpu = [
     "scikit-learn-intelex>=2025.5.0",
     "gurobipy>=12.0.2",
+    # GPU-enabled PyTorch (only install when explicitly requested)
+    "torch[cuda]>=2.0.0,<3.0.0",
 ]
-
 local-packages = [
     "pfwrapper @ file:///workspace/ClearBias/methods/subgroup/fair_naive_bayes/pattern_finder",
 ]
-
 dev = [
     "pfwrapper @ file:///workspace/ClearBias/methods/subgroup/fair_naive_bayes/pattern_finder",
 ]
@@ -72,3 +75,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 # Don't include any packages - this is just a dependency management project
 packages = []
+
+# UV-specific configuration to use CPU-only PyTorch by default
+[tool.uv]
+index-url = "https://pypi.org/simple"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
