@@ -158,8 +158,7 @@ def run_verifair(data: DiscriminationData, c=0.15, Delta=0.0,
                     continue  # Skip if no time left
 
             result = _run_single_verifair_analysis(model, X_test, attribute, group_a_val, group_b_val, c, Delta,
-                                                   delta,
-                                                   n_samples, n_max, is_causal, log_iters, remaining_time)
+                                                   delta, n_samples, n_max, is_causal, log_iters, remaining_time)
             if result:
                 results_list.append(result)
         else:
