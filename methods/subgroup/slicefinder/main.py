@@ -358,7 +358,8 @@ def run_slicefinder(data: DiscriminationData, approach: str = "both", model=None
             print("No slices found. Returning empty dataframe with correct columns.")
     else:
         # Only add these columns if we have actual data
-        final_df['subgroup_key'] = final_df[data.attr_columns].fillna('*').apply(lambda x: "|".join(x.astype(int).astype(str)), axis=1)
+        # Convert to string first, then handle '*' values separately to avoid int conversion errors
+        final_df['subgroup_key'] = final_df[data.attr_columns].fillna('*').apply(lambda x: "|".join([str(val) if val != '*' else '*' for val in x]), axis=1)
         final_df['diff_outcome'] = final_df['outcome'] - final_df['outcome'].mean()
 
     return final_df, metrics
