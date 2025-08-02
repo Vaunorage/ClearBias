@@ -7,7 +7,7 @@ import logging
 from data_generator.main import generate_optimal_discrimination_data, get_real_data, DiscriminationData
 from methods.subgroup.divexplorer.src.FP_Divergence import FP_Divergence
 from methods.subgroup.divexplorer.src.FP_DivergenceExplorer import FP_DivergenceExplorer
-from methods.utils import make_final_metrics_and_dataframe
+from methods.utils import make_final_metrics_and_dataframe, train_sklearn_model
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ def timeout(time):
         signal.alarm(0)
 
 
-def run_divexploer(data: DiscriminationData, K=5, max_runtime_seconds=60, min_support=0.05, random_state=42, use_cache=True):
+def run_divexplorer(data: DiscriminationData, K=5, max_runtime_seconds=60, min_support=0.05, random_state=42, use_cache=True):
     start_time = time.time()
     all_discriminations = []
     dsn_by_attr_value = {}
@@ -123,6 +123,6 @@ if __name__ == '__main__':
     #                                                 use_cache=True)
     data_obj, schema = get_real_data('adult', use_cache=False)
 
-    res, metrics = run_divexploer(data_obj, max_runtime_seconds=60)
+    res, metrics = run_divexplorer(data_obj, max_runtime_seconds=60)
     print(res)
     print(metrics)
