@@ -342,9 +342,24 @@ def run_slicefinder(data: DiscriminationData, approach: str = "both", model=None
         final_df = pd.concat([final_df, results['lattice_slices']], ignore_index=True)
     if results['dt_slices'] is not None and not results['dt_slices'].empty:
         final_df = pd.concat([final_df, results['dt_slices']], ignore_index=True)
-
-    final_df['subgroup_key'] = final_df[data.attr_columns].fillna('*').apply(lambda x: "|".join(x.astype(int).astype(str)), axis=1)
-    final_df['diff_outcome'] = final_df['outcome'] - final_df['outcome'].mean()
+    
+    # If no slices were found, create an empty dataframe with the correct columns
+    if final_df.empty:
+        # Create a dataframe with all necessary columns but no rows
+        # Include all attribute columns from the data object
+        columns = data.attr_columns.copy()
+        # Add other required columns that would normally be present
+        additional_columns = ['slice_index', 'slice_size', 'effect_size', 'metric', 'outcome', 'subgroup_key', 'diff_outcome']
+        for col in additional_columns:
+            if col not in columns:
+                columns.append(col)
+        final_df = pd.DataFrame(columns=columns)
+        if verbose:
+            print("No slices found. Returning empty dataframe with correct columns.")
+    else:
+        # Only add these columns if we have actual data
+        final_df['subgroup_key'] = final_df[data.attr_columns].fillna('*').apply(lambda x: "|".join(x.astype(int).astype(str)), axis=1)
+        final_df['diff_outcome'] = final_df['outcome'] - final_df['outcome'].mean()
 
     return final_df, metrics
 
