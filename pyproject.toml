@@ -3,7 +3,7 @@ name = "clearbias"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "aif360>=0.6.1",
     "boto>=2.49.0",
@@ -39,7 +39,7 @@ dependencies = [
     "imbalanced-learn>=0.13.0",
     "pysat>=3.2.2",
     # Use CPU-only PyTorch to avoid CUDA disk space issues
-    "torch==2.7.1+cpu",
+    "torch>=2.0.0,<3.0.0",
     "pgmpy>=1.0.0",
     "feature-engine>=1.8.3",
     "python-sat>=1.8.dev17",
