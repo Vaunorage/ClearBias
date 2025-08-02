@@ -1,6 +1,6 @@
 import numpy as np
 import time
-from methods.group.verifair.util.log import *
+from methods.subgroup.verifair.util.log import *
 
 # Returns the (epsilon, delta) values of the adaptive concentration inequality
 # for the given parameters.

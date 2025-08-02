@@ -179,18 +179,20 @@ def run_verifair(data: DiscriminationData, c=0.15, Delta=0.0,
         diff_outcome = data.dataframe[data.dataframe[row['attribute']] == row['group_a']]['outcome'].mean() - \
                        data.dataframe[data.dataframe[row['attribute']] == row['group_b']]['outcome'].mean()
 
-        el1['indv_key'] = '|'.join([str(row['group_a']) if e == row['attribute'] else "*" for e in data.attr_columns])
-        el2['indv_key'] = '|'.join([str(row['group_b']) if e == row['attribute'] else "*" for e in data.attr_columns])
+        el1['subgroup_key'] = '|'.join([str(row['group_a']) if e == row['attribute'] else "*" for e in data.attr_columns])
+        el2['subgroup_key'] = '|'.join([str(row['group_b']) if e == row['attribute'] else "*" for e in data.attr_columns])
 
         el1['diff_outcome'] = diff_outcome
         el2['diff_outcome'] = diff_outcome
 
-        el1['couple_key'] = f"{el1['indv_key']}-{el2['indv_key']}"
-        el2['couple_key'] = f"{el1['indv_key']}-{el2['indv_key']}"
+        el1['group_key'] = f"{el1['subgroup_key']}-{el2['subgroup_key']}"
+        el2['group_key'] = f"{el1['subgroup_key']}-{el2['subgroup_key']}"
 
         new_res_df.extend([el1, el2])
 
     new_res_df = pd.DataFrame.from_records(new_res_df)
+    new_res_df.fillna(pd.NA, inplace=True)
+
     # --- 7. Calculate Final Metrics ---
     end_time = time.time()
     total_time = end_time - start_time

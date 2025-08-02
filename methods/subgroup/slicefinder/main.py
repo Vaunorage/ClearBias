@@ -343,7 +343,7 @@ def run_slicefinder(data: DiscriminationData, approach: str = "both", model=None
     if results['dt_slices'] is not None and not results['dt_slices'].empty:
         final_df = pd.concat([final_df, results['dt_slices']], ignore_index=True)
 
-    final_df['indv_key'] = final_df[data.attr_columns].fillna('*').apply(lambda x: "|".join(x.astype(int).astype(str)), axis=1)
+    final_df['subgroup_key'] = final_df[data.attr_columns].fillna('*').apply(lambda x: "|".join(x.astype(int).astype(str)), axis=1)
     final_df['diff_outcome'] = final_df['outcome'] - final_df['outcome'].mean()
 
     return final_df, metrics

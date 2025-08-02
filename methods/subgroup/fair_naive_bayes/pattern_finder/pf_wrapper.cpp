@@ -9,7 +9,7 @@
         ],
         "include_dirs": [
             "pf_src",
-            "/workspace/ClearBias/.venv/lib/python3.12/site-packages/numpy/core/include"
+            "/home/gitpod/.cache/uv/builds-v0/.tmpM4mJ6r/lib/python3.12/site-packages/numpy/_core/include"
         ],
         "language": "c++",
         "name": "pfwrapper",

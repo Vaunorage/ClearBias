@@ -58,11 +58,11 @@ gpu = [
 ]
 
 local-packages = [
-    "pfwrapper @ file:///workspace/ClearBias/methods/group/fair_naive_bayes/pattern_finder",
+    "pfwrapper @ file:///workspace/ClearBias/methods/subgroup/fair_naive_bayes/pattern_finder",
 ]
 
 dev = [
-    "pfwrapper @ file:///workspace/ClearBias/methods/group/fair_naive_bayes/pattern_finder",
+    "pfwrapper @ file:///workspace/ClearBias/methods/subgroup/fair_naive_bayes/pattern_finder",
 ]
 
 [build-system]

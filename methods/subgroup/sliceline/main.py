@@ -3,12 +3,14 @@ import time
 import logging
 from methods.subgroup.sliceline.src.sliceline import Slicefinder
 from data_generator.main import DiscriminationData, get_real_data
+from methods.utils import train_sklearn_model
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def run_sliceline(data: DiscriminationData, K=5, alpha=0.95, max_l=3, max_runtime_seconds=60, logger=None):
+def run_sliceline(data: DiscriminationData, K=5, alpha=0.95, max_l=3, max_runtime_seconds=60, random_state=42,
+                  use_cache=True, logger=None):
     """
     Finds top K slices with high FPR and FNR using Sliceline.
     """
@@ -17,6 +19,15 @@ def run_sliceline(data: DiscriminationData, K=5, alpha=0.95, max_l=3, max_runtim
     X = df[data.attr_columns]
     y_true = df[data.outcome_column]
     y_pred = df[data.y_pred_col]
+
+    model, X_train, X_test, y_train, y_test, feature_names, metrics = train_sklearn_model(
+        data=data.training_dataframe.copy(),
+        model_type='rf',
+        target_col=data.outcome_column,
+        sensitive_attrs=list(data.protected_attributes),
+        random_state=random_state,
+        use_cache=use_cache
+    )
 
     # Calculate False Positive and False Negative errors
     errors_fp = ((y_true == 0) & (y_pred == 1)).astype(int)
@@ -58,8 +69,22 @@ def run_sliceline(data: DiscriminationData, K=5, alpha=0.95, max_l=3, max_runtim
     tsn = X.shape[0]
     dsn = df_final.shape[0]
 
-    df_final['indv_key'] = df_final[data.attr_columns].fillna('*').apply(lambda x: "|".join(x.astype(str)), axis=1)
-    df_final['diff_outcome'] = df_final['outcome'] - df_final['outcome'].mean()
+    df_final['subgroup_key'] = df_final[data.attr_columns].fillna('*').apply(lambda x: "|".join(x.astype(str)), axis=1)
+
+    feature_cols = list(data.attributes)
+    result_df_filled = df_final[feature_cols].copy()
+
+    # Handle potential None values by filling with median from training data
+    for col in feature_cols:
+        if result_df_filled[col].isnull().any():
+            median_val = data.training_dataframe[col].median()
+            result_df_filled[col].fillna(median_val, inplace=True)
+
+    # Predict outcomes using the trained model
+    predicted_outcomes = model.predict(result_df_filled[feature_names])
+    df_final[data.outcome_column] = predicted_outcomes
+
+    df_final['diff_outcome'] = df_final[data.outcome_column] - df_final[data.outcome_column].mean()
 
     runtime = time.time() - start_time
     if df_final.empty:

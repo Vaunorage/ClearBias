@@ -62,7 +62,7 @@ def prepare_data_for_gerryfair(data, protected_attrs, outcome_col):
     return X, X_prime, y
 
 
-def run_gerryfair(data: DiscriminationData, C=10, gamma=0.01, max_iters=3):
+def run_gerryfair(data: DiscriminationData, C=10, gamma=0.01, max_iters=3, heatmap_iter=10):
     start_time = time.time()
     print("Generating synthetic data...")
 
@@ -87,12 +87,11 @@ def run_gerryfair(data: DiscriminationData, C=10, gamma=0.01, max_iters=3):
 
     # Train a simple model (GerryFair's model)
     print("\nTraining a model...")
-    fair_model_fp = model.Model(C=C, printflag=True, gamma=gamma, fairness_def='FP')
-    fair_model_fp.set_options(max_iters=max_iters)
+    fair_model_fp = model.Model(C=C, printflag=True, gamma=gamma, fairness_def='FP',
+                        heatmapflag=True, heatmap_iter=heatmap_iter,  max_iters=max_iters)
 
-    fair_model_fn = model.Model(C=C, printflag=True, gamma=gamma, fairness_def='FP')
-    fair_model_fn.set_options(max_iters=max_iters)
-
+    fair_model_fn = model.Model(C=C, printflag=True, gamma=gamma, fairness_def='FP',
+                                heatmapflag=True, heatmap_iter=heatmap_iter,  max_iters=max_iters)
     # Train the model
     fp_errors, fp_difference, fp_subgroups_history = fair_model_fp.train(X_train, X_prime_train, y_train)
     fn_errors, fn_difference, fn_subgroups_history = fair_model_fn.train(X_train, X_prime_train, y_train)
@@ -216,7 +215,7 @@ def run_gerryfair(data: DiscriminationData, C=10, gamma=0.01, max_iters=3):
 
 if __name__ == "__main__":
     ge, schema = get_real_data('adult', use_cache=False)
-    res_df, metrics = run_gerryfair(ge, C=10, gamma=0.001, max_iters=4)
+    res_df, metrics = run_gerryfair(ge, C=10, gamma=0.001, max_iters=2)
     print("\n--- Results ---")
     print(res_df)
     print(f"\n--- Metrics ---")

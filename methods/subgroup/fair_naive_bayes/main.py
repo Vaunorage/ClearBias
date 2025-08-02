@@ -4,6 +4,8 @@ import time
 import logging
 import pandas as pd
 
+from methods.utils import train_sklearn_model
+
 # Add the project root to the Python path
 try:
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
@@ -30,7 +32,8 @@ logging.basicConfig(
 logger = logging.getLogger('FairNaiveBayes')
 
 
-def run_naive_bayes(data: DiscriminationData, delta=0.01, k=5, max_runtime_seconds: int = None):
+def run_naive_bayes(data: DiscriminationData, delta=0.01, k=5, max_runtime_seconds: int = None,
+                    random_state=42, use_cache=True):
     """
     An example script that binarizes data, calculates Naive Bayes parameters, and then runs the
     PatternFinder to find discriminating patterns.
@@ -46,6 +49,15 @@ def run_naive_bayes(data: DiscriminationData, delta=0.01, k=5, max_runtime_secon
     logger.info("--- Running Discrimination Finder with Fair Naive Bayes ---")
 
     df = data.dataframe
+
+    model, X_train, X_test, y_train, y_test, feature_names, metrics = train_sklearn_model(
+        data=data.training_dataframe.copy(),
+        model_type='rf',
+        target_col=data.outcome_column,
+        sensitive_attrs=list(data.protected_attributes),
+        random_state=random_state,
+        use_cache=use_cache
+    )
 
     logger.info("Dataset loaded. Binarizing data for the Naive Bayes model...")
 
@@ -112,7 +124,31 @@ def run_naive_bayes(data: DiscriminationData, delta=0.01, k=5, max_runtime_secon
 
     res_df = pd.DataFrame(pattern_results)
 
-    res_df['indv_key'] = ''
+    res_df.drop_duplicates(inplace=True)
+
+    # Calculate outcome for the generated subgroups
+    feature_cols = list(data.attributes)
+    result_df_filled = res_df[feature_cols].copy()
+
+    # Handle potential None values by filling with median from training data
+    for col in feature_cols:
+        if result_df_filled[col].isnull().any():
+            median_val = data.training_dataframe[col].median()
+            result_df_filled[col].fillna(median_val, inplace=True)
+
+    # Predict outcomes using the trained model
+    predicted_outcomes = model.predict(result_df_filled[feature_names])
+    res_df[data.outcome_column] = predicted_outcomes
+
+    # Add individual key
+    res_df['subgroup_key'] = res_df.apply(
+        lambda row: '|'.join(str(int(row[col])) if not pd.isna(row[col]) else '*' for col in list(data.attributes)),
+        axis=1
+    )
+
+    # Calculate outcome differences from the mean
+    mean_outcome = res_df[data.outcome_column].mean()
+    res_df['diff_outcome'] = (res_df[data.outcome_column] - mean_outcome).abs()
 
     # --- 7. Calculate Final Metrics ---
     end_time = time.time()
