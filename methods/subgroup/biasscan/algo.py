@@ -124,6 +124,18 @@ def run_bias_scan(data, random_state=42, bias_scan_num_iters=50,
 
     result_df = pd.concat([product_dfs1, product_dfs2], ignore_index=True)
     result_df.drop_duplicates(inplace=True)
+    
+    # Check if result_df is empty
+    if result_df.empty:
+        # Return an empty DataFrame with the required columns
+        empty_result = pd.DataFrame(columns=list(data.attributes) + [data.outcome_column, 'subgroup_key', 'diff_outcome'])
+        metrics = {
+            'TSN': len(data.dataframe),
+            'DSN': 0,
+            'DSR': 0,
+            'DSS': float('inf')
+        }
+        return empty_result, metrics
 
     # Calculate outcome for the generated subgroups
     feature_cols = list(data.attributes)
