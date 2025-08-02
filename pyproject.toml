@@ -39,8 +39,7 @@ dependencies = [
     "imbalanced-learn>=0.13.0",
     "pysat>=3.2.2",
     # Use CPU-only PyTorch to avoid CUDA disk space issues
-    "torch>=2.0.0,<3.0.0; sys_platform != 'darwin'",
-    "torch>=2.0.0,<3.0.0; sys_platform == 'darwin'",
+    "torch==2.7.1+cpu",
     "pgmpy>=1.0.0",
     "feature-engine>=1.8.3",
     "python-sat>=1.8.dev17",
@@ -79,8 +78,4 @@ packages = []
 # UV-specific configuration to use CPU-only PyTorch by default
 [tool.uv]
 index-url = "https://pypi.org/simple"
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
+extra-index-url = ["https://download.pytorch.org/whl/cpu"]
