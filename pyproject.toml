@@ -3,7 +3,7 @@ name = "clearbias"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "aif360>=0.6.1",
     "boto>=2.49.0",
@@ -38,6 +38,8 @@ dependencies = [
     "pydot>=4.0.1",
     "imbalanced-learn>=0.13.0",
     "pysat>=3.2.2",
+    # Use CPU-only PyTorch to avoid CUDA disk space issues
+    "torch>=2.0.0,<3.0.0",
     "pgmpy>=1.0.0",
     "feature-engine>=1.8.3",
     "python-sat>=1.8.dev17",
@@ -45,8 +47,8 @@ dependencies = [
     "mlxtend>=0.23.4",
     "stopit>=1.1.2",
     "divexplorer>=0.2.6",
-    "setuptools>=80.9.0",
-    "wheel>=0.45.1",
+    "setuptools>=61.0",
+    "wheel>=0.37.0",
     "cython>=3.1.2",
     "pot>=0.9.5",
 ]
@@ -55,12 +57,12 @@ dependencies = [
 gpu = [
     "scikit-learn-intelex>=2025.5.0",
     "gurobipy>=12.0.2",
+    # GPU-enabled PyTorch (only install when explicitly requested)
+    "torch[cuda]>=2.0.0,<3.0.0",
 ]
-
 local-packages = [
     "pfwrapper @ file:///workspace/ClearBias/methods/subgroup/fair_naive_bayes/pattern_finder",
 ]
-
 dev = [
     "pfwrapper @ file:///workspace/ClearBias/methods/subgroup/fair_naive_bayes/pattern_finder",
 ]
@@ -72,3 +74,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 # Don't include any packages - this is just a dependency management project
 packages = []
+
+# UV-specific configuration
+[tool.uv]
+index-strategy = "unsafe-best-match"
