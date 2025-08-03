@@ -127,8 +127,18 @@ def run_naive_bayes(data: DiscriminationData, delta=0.01, k=5, max_runtime_secon
     res_df.drop_duplicates(inplace=True)
 
     # Calculate outcome for the generated subgroups
-    feature_cols = list(data.attributes)
-    result_df_filled = res_df[feature_cols].copy()
+    feature_cols = data.attr_columns
+    # Check if all feature columns exist in res_df
+    existing_cols = [col for col in feature_cols if col in res_df.columns]
+    if not existing_cols:
+        logger.warning(f"None of the feature columns {feature_cols} exist in the result DataFrame. Using available columns instead.")
+        # Use columns that are in both data.attr_columns and res_df.columns
+        existing_cols = [col for col in res_df.columns if col in data.attr_columns]
+        if not existing_cols:
+            logger.warning("No matching columns found. Cannot calculate outcomes.")
+            return res_df, {}
+    
+    result_df_filled = res_df[existing_cols].copy()
 
     # Handle potential None values by filling with median from training data
     for col in feature_cols:
