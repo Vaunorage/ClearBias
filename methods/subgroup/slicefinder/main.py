@@ -358,8 +358,42 @@ def run_slicefinder(data: DiscriminationData, approach: str = "both", model=None
             print("No slices found. Returning empty dataframe with correct columns.")
     else:
         # Only add these columns if we have actual data
-        final_df['subgroup_key'] = final_df[data.attr_columns].fillna('*').apply(lambda x: "|".join(x.astype(int).astype(str)), axis=1)
-        final_df['diff_outcome'] = final_df['outcome'] - final_df['outcome'].mean()
+        # Convert to string first, then handle '*' values separately to avoid int conversion errors
+        final_df['subgroup_key'] = final_df[data.attr_columns].fillna('*').apply(lambda x: "|".join([str(val) if val != '*' else '*' for val in x]), axis=1)
+        
+        # Create a copy of the dataframe for prediction
+        result_df_filled = final_df.copy()
+        
+        # Fill missing values in feature columns to enable prediction
+        feature_names = list(X.columns)
+        for col in feature_names:
+            if col in result_df_filled.columns and result_df_filled[col].isnull().any():
+                # Use median from training data to fill missing values
+                median_val = X[col].median()
+                result_df_filled[col].fillna(median_val, inplace=True)
+        
+        # Check if we have all required feature columns for prediction
+        missing_features = [col for col in feature_names if col not in result_df_filled.columns]
+        if missing_features:
+            # If features are missing, use the mean of the target variable as a default outcome value
+            if verbose:
+                print(f"Warning: Missing features for prediction: {missing_features}. Using mean of target variable as default.")
+            final_df[data.outcome_column] = y.mean()
+        else:
+            # Predict outcomes using the trained model
+            try:
+                predicted_outcomes = model.predict(result_df_filled[feature_names])
+                final_df[data.outcome_column] = predicted_outcomes
+                if verbose:
+                    print("Successfully predicted outcomes using the model.")
+            except Exception as e:
+                # Fallback to mean if prediction fails
+                if verbose:
+                    print(f"Warning: Failed to predict outcomes: {e}. Using mean of target variable as default.")
+                final_df[data.outcome_column] = y.mean()
+        
+        # Now calculate diff_outcome using the outcome column
+        final_df['diff_outcome'] = final_df[data.outcome_column] - final_df[data.outcome_column].mean()
 
     return final_df, metrics
 
