@@ -14,7 +14,6 @@ from scipy.optimize import basinhopping
 from methods.utils import train_sklearn_model, check_for_error_condition, make_final_metrics_and_dataframe
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-# from sklearnex import patch_sklearn
 from data_generator.main import DiscriminationData
 from sklearn.neural_network._base import DERIVATIVES
 from sklearn.utils.extmath import safe_sparse_dot

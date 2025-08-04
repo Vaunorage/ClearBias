@@ -1,153 +1,118 @@
 ### **Title**
-Identifying Significant Predictive Bias in Classifiers
+Identifying Significant Predictive Bias in Classifiers using BiasScan
 
 ### **Metric**
-The method relies on a statistical measure of **predictive bias**, which quantifies the discrepancy between a classifier's predicted risk and the observed outcomes for a subgroup.
+The method relies on a statistical measure of **predictive bias**, which quantifies the discrepancy between a classifier's predicted outcomes and the observed outcomes for subgroups. The implementation uses the **MDSS (Multidimensional Subset Scanning)** detector with configurable scoring functions.
 
-The core metric is a subgroup scoring statistic called `scorebias`, which is a likelihood ratio score. It compares two hypotheses:
-*   **Null Hypothesis (H₀):** The classifier is unbiased. The odds of an event for any individual (`odds(yi)`) are equal to the odds predicted by the model (`pi / (1-pi)`).
-*   **Alternative Hypothesis (H₁):** The classifier has a constant multiplicative bias `q` for a specific subgroup `S`. For individuals within that subgroup, `odds(yi) = q * (pi / (1-pi))`.
+The core approach compares:
+*   **Observations:** Actual outcomes from the dataset (`data.outcome_column`)
+*   **Expectations:** Model predictions on the same data using a trained RandomForest classifier
 
-The method seeks to find the subgroup `S` and the bias factor `q` that maximize this likelihood ratio score, thus identifying the most statistically significant biased subgroup.
+The method performs two complementary bias scans:
+1. **Overprediction Scan:** Identifies subgroups where the model predicts higher outcomes than observed
+2. **Underprediction Scan:** Identifies subgroups where the model predicts lower outcomes than observed
 
 ### **Discrimination Granularity**
-*   **Type:** The method is designed to find **subgroup discrimination**.
-*   **Granularity & Intersectionality:** The primary strength of this method is its ability to move beyond simple, pre-defined groups (like race or gender) and analyze a vast, exponential number of potential subgroups. A subgroup is defined as any multi-dimensional, intersectional combination of feature values (an "M-dimension Cartesian set product"). For example, it can identify a subgroup like "females who initially committed misdemeanors with COMPAS risk scores of 2, 3, 6, 9, or 10." This allows for the discovery of complex, subtle, and previously unconsidered biased subgroups.
+*   **Type:** The method is designed to find **subgroup discrimination** through multidimensional subset scanning.
+*   **Granularity & Intersectionality:** The algorithm analyzes all possible intersectional combinations of attribute values across the feature space. It can identify complex, multi-dimensional subgroups defined by specific combinations of feature values (e.g., "individuals with attribute1=1, attribute2=0, attribute3=1"). The `make_products_df` function generates Cartesian products of attribute combinations to create comprehensive subgroup representations.
 
 ### **Location of Discrimination**
-The method locates discrimination within the **model's predictions** (the classifier). It is a form of model checking or a goodness-of-fit test. It aims to find "regions of poor classifier fit" by analyzing the residuals (the difference between predicted probabilities and actual outcomes) across all possible subgroups, identifying where the classifier is systematically over- or under-predicting risk.
+The method locates discrimination within the **model's predictions** by comparing predicted outcomes against actual outcomes. It performs model checking by:
+- Training a RandomForest classifier on the data
+- Generating predictions for all data points
+- Using MDSS to identify regions where predictions systematically deviate from observations
+- Scanning both overprediction and underprediction patterns
 
 ### **What They Find**
-The method identifies one or more **subgroups for which a classifier is statistically biased**. Specifically, it finds subgroups where the model's predicted risk is significantly different from the actual, observed risk. The output highlights whether the subgroup is being **over-estimated** (predicted risk is higher than actual) or **under-estimated** (predicted risk is lower than actual).
+The method identifies **subgroups where the classifier exhibits systematic prediction bias**. Specifically, it finds:
+1. **Overpredicted subgroups:** Where model predictions are consistently higher than actual outcomes
+2. **Underpredicted subgroups:** Where model predictions are consistently lower than actual outcomes
 
-It does *not* compare different groups to each other (like disparate impact) but rather compares a single group's predictions to its own ground-truth outcomes.
+The algorithm generates subgroup representations and calculates outcome differences from the mean to quantify bias magnitude.
 
 ### **Output Data Structure**
-The method returns the **most anomalous subgroup (S*)**, which is described by a set of feature-value pairs that define its members. It also provides:
-1.  A **bias score (`scorebias`)** indicating the magnitude of the detected bias.
-2.  A **statistical significance value (p-value)**, calculated using a parametric bootstrap, to determine if the detected bias is greater than what would be expected by chance.
-3.  The direction of the bias (over- or under-estimation).
+The method returns a tuple containing:
+
+#### result_df (DataFrame)
+Contains identified biased subgroups with columns:
+- **Attribute columns:** Values defining each subgroup (from `data.attributes`)
+- **outcome:** Predicted outcome for the subgroup (from `data.outcome_column`)
+- **subgroup_key:** String representation of subgroup attributes (pipe-separated values)
+- **diff_outcome:** Absolute difference between subgroup outcome and dataset mean outcome
+
+#### metrics (Dictionary)
+Performance metrics including:
+- **TSN (Total Sample Number):** Total number of instances in the dataset
+- **DSN (Detected Subgroup Number):** Number of unique subgroups identified
+- **DSR (Detection Success Rate):** Ratio of detected subgroups to total samples (DSN/TSN)
+- **DSS (Detection Speed Score):** Time per detected subgroup (total_time/DSN)
 
 ### **Performance**
-The method's performance was evaluated using both synthetic data and real-world case studies.
+The algorithm's performance is measured through:
 
-*   **Synthetic Experiments:**
-    *   **Method:** The authors injected a known bias into synthetic datasets and compared the "bias scan" method against a lasso regression analysis of residuals.
-    *   **Result:** The bias scan method demonstrated superior performance, particularly in scenarios where the bias was spread across multiple related interactions (i.e., "grouping weak, related signals"). For example, when bias was spread across eight 3-way interactions, the bias scan achieved ~75% recall and ~80% precision, compared to ~35% recall and ~45% precision for the lasso method.
+*   **Computational Efficiency:**
+    - Memory-efficient chunk processing in `make_products_df` (default chunk_size=10000)
+    - Configurable number of iterations (`bias_scan_num_iters`, default=50)
+    - Optional runtime limits (`max_runtime_seconds`)
 
-*   **Real-World Case Studies (COMPAS Recidivism Data):**
-    *   **Result:** The method identified significant, multi-dimensional subgroups that were not the primary focus of previous analyses.
-        *   **Under-estimated:** Young males (< 25 years) had an observed recidivism rate of 0.60 vs. a predicted rate of 0.50.
-        *   **Over-estimated:** Females whose initial crimes were misdemeanors and had specific COMPAS decile scores were significantly over-estimated (observed rate of 0.21 vs. predicted rate of 0.38).
+*   **Detection Capabilities:**
+    - Identifies both overprediction and underprediction bias patterns
+    - Handles various data types through configurable modes ('binary', 'continuous', 'nominal', 'ordinal')
+    - Supports multiple scoring functions ('Bernoulli', 'BerkJones', 'Gaussian', 'Poisson')
 
-# Implementation of BiasScan Algorithm
+*   **Model Integration:**
+    - Uses RandomForest classifier with configurable parameters
+    - Leverages existing model training utilities (`train_sklearn_model`)
+    - Supports caching for improved performance (`use_cache=True`)
 
-After analyzing the code, I can provide a detailed explanation of the BiasScan algorithm's input parameters and output.
+### **Input Parameters**
 
-## Input Parameters
+The `run_bias_scan` function accepts:
+- **data:** DiscriminationData object containing dataset, attributes, and outcome information
+- **random_state:** Seed for reproducibility (default=42)
+- **bias_scan_num_iters:** Number of bias scan iterations (default=50)
+- **bias_scan_scoring:** Scoring function ('Poisson', 'Bernoulli', 'BerkJones', 'Gaussian')
+- **bias_scan_favorable_value:** Definition of favorable outcomes ('high', 'low', or specific value)
+- **bias_scan_mode:** Data type handling ('ordinal', 'binary', 'continuous', 'nominal')
+- **max_runtime_seconds:** Optional runtime limit
+- **use_cache:** Enable caching for performance optimization
 
-The BiasScan algorithm is implemented in the `run_bias_scan` function, which takes the following parameters:
+### **Example Output**
 
-### ge
-A data generator object that contains:
-- **dataframe**: The dataset to analyze
-- **attributes**: Dictionary of attributes with boolean values indicating if they're protected
-- **outcome_column**: Name of the target variable column
+Here's an example of what the algorithm returns:
 
-### test_size (default=0.2)
-Proportion of the dataset to use for testing
-- Example: 0.3 means 30% of data will be used for testing, 70% for training
-
-### random_state (default=42)
-Seed for reproducibility of random operations
-- Controls the randomness in train/test split and model training
-
-### n_estimators (default=100)
-Number of trees in the RandomForest classifier
-- Higher values typically improve model performance but increase computation time
-
-### bias_scan_num_iters (default=50)
-Number of iterations for the bias scan algorithm
-- More iterations may find better subgroups but increase computation time
-
-### bias_scan_scoring (default='Poisson')
-Scoring function used to evaluate bias
-- Options: 'Bernoulli', 'BerkJones', 'Gaussian', 'Poisson'
-- Each scoring function measures discrepancies between observations and expectations differently
-
-### bias_scan_favorable_value (default='high')
-Defines which outcome values are considered favorable
-- Options: 'high' (maximum value is favorable), 'low' (minimum value is favorable), or specific value
-
-### bias_scan_mode (default='ordinal')
-Type of data being analyzed
-- Options: 'binary', 'continuous', 'nominal', 'ordinal'
-- Determines how the algorithm treats the outcome variable
-
-## How the Algorithm Works
-
-1. The algorithm splits the data into training and testing sets
-2. Trains a RandomForest classifier on the training data
-3. Makes predictions on the entire dataset
-4. Performs two bias scans:
-   - One to find subgroups where the model overpredicts outcomes
-   - One to find subgroups where the model underpredicts outcomes
-5. Formats the results into a dataframe showing the identified biased subgroups
-
-## Output
-
-The algorithm returns a tuple containing:
-
-### result_df
-A DataFrame containing the identified biased subgroups with the following columns:
-- **group_id**: Unique identifier for each subgroup
-- **Attribute columns**: Values of attributes that define the subgroup
-- **outcome**: The outcome value for each instance
-- **diff_outcome**: The difference in outcome values within a group
-- **indv_key**: String representation of individual attribute values
-- **couple_key**: String representation of paired instances within a group
-
-### report
-A dictionary containing:
-- **accuracy**: The accuracy of the trained model on the test set
-- **report**: A classification report with precision, recall, and F1-score metrics
-
-## Example Output
-
-Here's an example of what the output dataframe might look like:
-
+#### result_df Example:
 ```
-   group_id  attr1  attr2  attr3  outcome  diff_outcome          indv_key                   couple_key
-0         0    1.0    0.0    1.0        0            1          1|0|1|0|0           1|0|1|0|0-1|0|1|1|0
-1         0    1.0    0.0    1.0        1            1          1|0|1|1|0           1|0|1|0|0-1|0|1|1|0
-2         1    0.0    1.0    0.0        0            1          0|1|0|0|0           0|1|0|0|0-0|1|0|1|0
-3         1    0.0    1.0    0.0        1            1          0|1|0|1|0           0|1|0|0|0-0|1|0|1|0
-4         2    1.0    1.0    0.0        0            1          1|1|0|0|0           1|1|0|0|0-1|1|0|1|0
-5         2    1.0    1.0    0.0        1            1          1|1|0|1|0           1|1|0|0|0-1|1|0|1|0
+   attr1  attr2  attr3  outcome  subgroup_key  diff_outcome
+0    1.0    0.0    1.0        1      1|0|1|1           0.25
+1    0.0    1.0    0.0        0      0|1|0|0           0.18
+2    1.0    1.0    0.0        1      1|1|0|1           0.32
+3    0.0    0.0    1.0        0      0|0|1|0           0.15
+4    1.0    0.0    0.0        1      1|0|0|1           0.28
 ```
 
-In this example:
-- Each pair of rows represents a subgroup (identified by group_id)
-- The algorithm found instances with similar attribute values but different outcomes
-- diff_outcome shows the magnitude of the difference in outcomes
-- Higher values of diff_outcome indicate stronger bias
-
-The classification report would look something like:
-
-```
-              precision    recall  f1-score   support
-           0       0.85      0.82      0.83       120
-           1       0.79      0.83      0.81       105
-    accuracy                           0.82       225
-   macro avg       0.82      0.82      0.82       225
-weighted avg       0.82      0.82      0.82       225
+#### metrics Example:
+```python
+{
+    'TSN': 1000,        # Total number of instances in dataset
+    'DSN': 45,          # Number of unique subgroups detected
+    'DSR': 0.045,       # Detection success rate (45/1000)
+    'DSS': 0.022        # Detection speed: 0.022 seconds per subgroup
+}
 ```
 
-This shows the model's performance metrics on the test set, which helps contextualize the bias findings.
+**Interpretation:**
+- Each row in `result_df` represents a biased subgroup identified by the algorithm
+- `subgroup_key` provides a human-readable identifier for each subgroup (pipe-separated attribute values)
+- `diff_outcome` shows how much each subgroup's outcome deviates from the dataset mean (higher values indicate stronger bias)
+- The metrics help assess the algorithm's performance: detecting 45 biased subgroups from 1000 total instances in approximately 1 second total runtime
 
-## Usage Example
-
-As seen in the test.py file, the algorithm is typically used as follows:
+### **Implementation Notes**
+- The algorithm processes subgroups in memory-efficient chunks to handle large combinatorial spaces
+- Handles missing values by filling with median values from training data
+- Removes duplicates from generated subgroup combinations
+- Calculates absolute deviations from mean outcomes to quantify bias magnitude
+- Supports both overprediction and underprediction bias detection in a single run
 
 ```python
 from data_generator.main import generate_data
