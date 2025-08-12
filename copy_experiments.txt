@@ -4,7 +4,7 @@ chmod 600 ~/.ssh/id_ed25519
 
 scp -P 41071 -i ~/.ssh/id_ed25519 root@213.192.2.70:/workspace/ClearBias/experiments/synthetic_dataset_experiments2/optuna_studies.db /workspace/ClearBias/experiments/synthetic_dataset_experiments2/optuna_studies.db
 scp -P 41071 -i ~/.ssh/id_ed25519 root@213.192.2.70:/workspace/ClearBias/experiments/synthetic_dataset_experiments2/synthetic_experiments_optuna.db /workspace/ClearBias/experiments/synthetic_dataset_experiments2/synthetic_experiments_optuna.db
-scp -P 41071 -i ~/.ssh/id_ed25519 root@213.192.2.70:/workspace/ClearBias/experiments/synthetic_dataset_experiments2/analysis_results.db /workspace/ClearBias/experiments/synthetic_dataset_experiments2/analysis_results.db
+scp -P 40320 -i ~/.ssh/id_ed25519 root@213.192.2.70:/workspace/ClearBias/experiments/synthetic_dataset_experiments2/analysis_results.db /workspace/ClearBias/experiments/synthetic_dataset_experiments2/analysis_results.db
 scp -r -P 41071 -i ~/.ssh/id_ed25519 root@213.192.2.70:/workspace/ClearBias/experiments/synthetic_dataset_experiments2/group_attributes_analysis /workspace/ClearBias/experiments/synthetic_dataset_experiments2/
 scp -r -P 41071 -i ~/.ssh/id_ed25519 root@213.192.2.70:/workspace/ClearBias/experiments/synthetic_dataset_experiments2/paper_figures_final_pattern_match /workspace/ClearBias/experiments/paper_figures_final_pattern_match/
 
